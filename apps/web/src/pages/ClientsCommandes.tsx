@@ -505,7 +505,7 @@ interface DonationPayload { ecru: DonationPiece[]; fini: DonationPiece[] }
 interface ClientLite { IDclient: number; nom: string; IDmode_paiement?: number; IDecheance?: number }
 interface ModePaiement { IDmode_paiement: number; libelle: string }
 interface Echeance { IDecheance: number; libelle: string }
-interface RefEcru { IDref_ecru: number; reference: string }
+interface RefEcru { IDref_ecru: number; reference: string; /** the client's selling unit (API refs-ecru lookup): 1 Kg, 3 Ml when sold by the metre (#1355) */ unite_vente?: number }
 interface RefFini { IDref_fini: number; reference: string; designation: string; avec_teinture: number
   /** the client's selling unit for it (API prixUnitOf): 3 Ml, 1 Kg (Sigvaris, #1253) */
   unite_vente?: number }
@@ -6268,10 +6268,12 @@ function LineFormDialog({
   const { data: refsEcru } = useQuery<RefEcru[]>({ queryKey: ['cc-refs-ecru', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-ecru?client=${commande.IDclient}`), enabled: open })
   const { data: refsFini } = useQuery<RefFini[]>({ queryKey: ['cc-refs-fini', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-fini?client=${commande.IDclient}`), enabled: open })
   // The unit is the article's, never picked (Vincent 2026-10-30): a tombé de métier by the Kg (API
-  // lib/unite-ecru.ts), a fini by the Ml unless the client's designation sells it by the Kg (Sigvaris,
+  // lib/unite-ecru.ts) — Ml when sold by the metre to this client (#1355) —, a fini by the Ml unless the client's designation sells it by the Kg (Sigvaris,
   // #1253). Only a divers line picks its unit. A line saved in another unit keeps the picker, so an
   // old line is never silently re-labelled.
-  const uniteImposee: number | null = form.type === 1 ? 1
+  const uniteImposee: number | null = form.type === 1
+    // An écru sold by the metre to this client is in Ml (LIVA #1355), else by the Kg.
+    ? (form.IDreference > 0 ? (refsEcru?.find((r) => r.IDref_ecru === form.IDreference)?.unite_vente ?? 1) : 1)
     : form.type === 2 && form.IDreference > 0 ? (refsFini?.find((r) => r.IDref_fini === form.IDreference)?.unite_vente ?? null)
     : null
   const uniteHeritee = !!line && line.type === form.type && line.IDreference === form.IDreference && line.unite !== uniteImposee

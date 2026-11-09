@@ -1782,13 +1782,17 @@ interface RefColoris {
   IDref_client_colori: number; label: string; coloris_id: number; lst_tranche: string; contrat: number
   tarif_mode: TarifMode; coefficient: number; contrats: ContratTarif[]; contrat_actif: ContratTarif | null; contrat_expire: boolean
 }
-interface ClientReference { IDdesignation_client: number; client_ref: string; IDref_fini: number; IDref_ecru: number; ref_interne: string; designation: string; avec_teinture: number; soumettre: number; unite: number; fil_non_facture: number[]; associees: number[]; coloris: RefColoris[] }
+interface ClientReference { IDdesignation_client: number; client_ref: string; IDref_fini: number; IDref_ecru: number; ref_interne: string; designation: string; avec_teinture: number; soumettre: number; unite: number; rendement_vente_ecru?: number; fil_non_facture: number[]; associees: number[]; coloris: RefColoris[] }
 /** Unit every price of a reference is negotiated and displayed in: €/Kg on a
- *  tombé de métier — always sold by the Kg (#1144) — and on an ennobli the
+ *  tombé de métier (#1144) — €/Ml when its « Unité » is Ml AND the écru is sold
+ *  by the metre (« Vente au mètre » on its fiche, #1355) — and on an ennobli the
  *  client buys by the Kg (its « Unité » set to Kg — Sigvaris, #1253), €/Ml on
  *  any other ennobli. Mirrors `prixUnitOf` in the API's lib/tarif-client.ts. */
 type PrixUnit = 'Kg' | 'Ml'
-const prixUnitOf = (r: ClientReference): PrixUnit => (r.IDref_fini > 0 && r.unite !== 1 ? 'Ml' : 'Kg')
+const prixUnitOf = (r: ClientReference): PrixUnit => {
+  if (r.IDref_fini > 0) return r.unite !== 1 ? 'Ml' : 'Kg'
+  return r.unite === 3 && (r.rendement_vente_ecru ?? 0) > 0 ? 'Ml' : 'Kg'
+}
 
 interface RefAssocieeLookup { IDref_fini: number; reference: string; designation: string }
 
@@ -1916,6 +1920,8 @@ function ReferencesTab({ clientId, isEditing, canManageTarifs, canManageRefs, ca
                     <p className="text-sm font-medium truncate">{r.client_ref || '—'}</p>
                     {r.ref_interne && <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0">{r.ref_interne}</Badge>}
                     {r.unite === 1 && <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0">Kg</Badge>}
+                    {/* A tombé de métier sold to this client by the metre (#1355). */}
+                    {r.IDref_fini === 0 && prixUnitOf(r) === 'Ml' && <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0">Ml</Badge>}
                     <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
                       {/* designation_client.soumettre bits (LIVA #1313): 2 coloris, 1 stabilités */}
                       {(r.soumettre & 2) !== 0 && (
@@ -2261,7 +2267,7 @@ function AddColorisDialog({ open, refItem, clientId, canManageTarifs, onClose }:
 // ── Référence client settings dialog (create / edit, mirrors the legacy "Référence client" window) ──
 
 interface RefFiniLookup { IDref_fini: number; reference: string; designation: string; avec_teinture: number }
-interface RefEcruLookup { IDref_ecru: number; reference: string; designation: string }
+interface RefEcruLookup { IDref_ecru: number; reference: string; designation: string; /** Ml per kg when sold by the metre (#1355), 0 otherwise */ rendement_vente?: number }
 interface CompoFil { IDref_fil: number; reference: string }
 
 /** Two-option segmented control for small exclusive choices (Finition, Unité). */
@@ -2558,6 +2564,13 @@ function RefSettingsDialog({ open, existing, clientId, onClose, canManageTarifs,
                 value={unite} onChange={setUnite} />
             </div>
           </div>
+          {/* A tombé de métier is sold by the kilo unless its fiche allows the metre (#1355). */}
+          {finition === 'tm' && unite === 3 && refId > 0 && ecruQ.data && !((ecruQ.data.find((r) => r.IDref_ecru === refId)?.rendement_vente ?? 0) > 0) && (
+            <p className="text-[11px] text-muted-foreground -mt-1">
+              Ce tombé de métier ne se vend pas au mètre : il reste tarifé et facturé au kilo.
+              Pour le vendre au mètre, activez « Vente au mètre » sur sa fiche (Tombé Métier › Références › Informations).
+            </p>
+          )}
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Référence interne</label>
             {finition === 'ennobli' ? (

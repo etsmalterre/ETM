@@ -29,7 +29,7 @@
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
-import { ecruEnMl, MESSAGE_ECRU_EN_ML } from '../lib/unite-ecru.js'
+import { refusEcruEnMl, rendementVenteEcru } from '../lib/unite-ecru.js'
 import multer from 'multer'
 import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
@@ -347,11 +347,15 @@ devisRouter.get('/lookups/adresses', async (req: Request, res: Response) => {
 
 devisRouter.get('/lookups/refs-ecru', async (_req: Request, res: Response) => {
   try {
-    const rows = await query<{ IDref_ecru: number; reference: string | null }>(
-      `SELECT IDref_ecru, reference FROM ref_ecru ORDER BY reference`,
+    const rows = await query<{ IDref_ecru: number; reference: string | null; vente_au_metre: number | null; rendement_metre: number | null }>(
+      `SELECT IDref_ecru, reference, vente_au_metre, rendement_metre FROM ref_ecru ORDER BY reference`,
     )
     const fixed = await fixEncoding(rows, 'ref_ecru', 'IDref_ecru', ['reference'])
-    res.json(fixed.map((r) => ({ IDref_ecru: Number(r.IDref_ecru), reference: r.reference ?? '' })))
+    res.json(fixed.map((r) => ({
+      IDref_ecru: Number(r.IDref_ecru), reference: r.reference ?? '',
+      // Ml per kg when sold by the metre (LIVA #1355): the only écru a line may quote in Ml.
+      rendement_vente: rendementVenteEcru(r),
+    })))
   } catch (err) {
     console.error('Error fetching refs-ecru lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -1050,7 +1054,11 @@ devisRouter.post('/:id/lignes', async (req: Request, res: Response) => {
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
-    if (ecruEnMl(d.type, d.unite)) { res.status(400).json({ error: 'ecru_en_kg', message: MESSAGE_ECRU_EN_ML }); return }
+    // An écru in Ml only when its reference is sold by the metre (LIVA #1355).
+    {
+      const refus = await refusEcruEnMl(d.type, d.unite, d.IDreference)
+      if (refus) { res.status(400).json({ error: 'ecru_en_kg', message: refus }); return }
+    }
     const typeKind = Number(d.type) || 0
     const idRefEcru = await resolveLineRefEcru(typeKind, Number(d.IDreference) || 0)
     // TYPE written uppercase (reserved word). Never name accented line columns.
@@ -1085,7 +1093,14 @@ devisRouter.put('/lignes/:lineId', async (req: Request, res: Response) => {
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
-    if (ecruEnMl(d.type, d.unite)) { res.status(400).json({ error: 'ecru_en_kg', message: MESSAGE_ECRU_EN_ML }); return }
+    // An écru in Ml only when its reference is sold by the metre (LIVA #1355).
+    {
+      const refId = d.IDreference ?? Number((await query<{ IDreference: number }>(
+        `SELECT IDreference FROM ligne_devis_etm WHERE IDligne_devis_etm = ${lineId}`,
+      ))[0]?.IDreference ?? 0)
+      const refus = await refusEcruEnMl(d.type, d.unite, refId)
+      if (refus) { res.status(400).json({ error: 'ecru_en_kg', message: refus }); return }
+    }
 
     const sets: string[] = []
     if (d.type !== undefined) {

@@ -117,6 +117,21 @@ interface UserContextValue {
 
 const UserContext = createContext<UserContextValue | undefined>(undefined)
 
+/** Dev build only: the login screen logs in as `vincent` by itself (LoginScreen), except in a
+ *  tab where someone just logged out — so logging out, or into another account, stays testable.
+ *  Per tab (sessionStorage); any successful login clears it. */
+const CLE_SANS_CONNEXION_AUTO = 'mps:dev:sans-connexion-auto'
+export function connexionDevAutoSuspendue(): boolean {
+  try { return sessionStorage.getItem(CLE_SANS_CONNEXION_AUTO) === '1' } catch { return false }
+}
+function suspendreConnexionDevAuto(oui: boolean) {
+  if (!import.meta.env.DEV) return
+  try {
+    if (oui) sessionStorage.setItem(CLE_SANS_CONNEXION_AUTO, '1')
+    else sessionStorage.removeItem(CLE_SANS_CONNEXION_AUTO)
+  } catch { /* storage blocked: auto login simply stays on */ }
+}
+
 export function UserProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [isLoading, setIsLoading] = useState<boolean>(true)
@@ -140,6 +155,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(async (identifiant: string, motDePasse: string) => {
     await apiFetch('/auth/login', { method: 'POST', body: JSON.stringify({ identifiant, motDePasse }) })
+    suspendreConnexionDevAuto(false)
     await refresh()
   }, [refresh])
 
@@ -150,6 +166,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
 
   const loginDev = useCallback(async () => {
     await apiFetch('/auth/dev-login', { method: 'POST' })
+    suspendreConnexionDevAuto(false)
     await refresh()
   }, [refresh])
 
@@ -165,6 +182,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       // Best-effort — even if the API call fails, drop back to the login screen.
       console.warn('logout failed:', err)
     }
+    suspendreConnexionDevAuto(true)
     setUser(null)
   }, [])
 

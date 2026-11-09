@@ -44,6 +44,7 @@ import {
   Droplets,
   CheckCircle2,
   Circle,
+  Ruler,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -229,6 +230,9 @@ interface RefEcruDetail {
   freinte_tricotage_forcee: number | null
   /** the value every reader uses (API lib/freinte-tricotage.ts) */
   freinte_tricotage?: FreinteTricotage | null
+  /** Sold by the metre to a few historical clients (LIVA #1355), at rendement_metre Ml per kg. */
+  vente_au_metre?: number
+  rendement_metre?: number | null
   vitesse_cible: number | null
   nb_chutes: number | null
   nb_aiguilles: number | null
@@ -486,6 +490,9 @@ interface HeaderDraft {
   poids_m2_tbm: string
   /** forced freinte de tricotage in %, '' = the measured one */
   freinte_tricotage: string
+  /** LIVA #1355: sold by the metre, at `rendement_metre` Ml per kg. */
+  vente_au_metre: boolean
+  rendement_metre: string
   vitesse_cible: string
   nb_chutes: string
   nb_aiguilles: string
@@ -501,7 +508,7 @@ function emptyDraft(): HeaderDraft {
     commentaire: '', observations: '', tombe_metier: '',
     lfa_tour_1: '', lfa_tour_2: '', lfa_tour_3: '', lfa_tour_4: '',
     poulies_1: '', poulies_2: '', poulies_3: '', poulies_4: '',
-    ecarteur: '', laize_tbm: '', poids_m2_tbm: '', freinte_tricotage: '', vitesse_cible: '',
+    ecarteur: '', laize_tbm: '', poids_m2_tbm: '', freinte_tricotage: '', vente_au_metre: false, rendement_metre: '', vitesse_cible: '',
     nb_chutes: '', nb_aiguilles: '', maille_ouverture: false, ouvert_visiteuse: false, sonneter: false,
   }
 }
@@ -528,6 +535,8 @@ function draftFromDetail(d: RefEcruDetail): HeaderDraft {
     laize_tbm: numStr(d.laize_tbm),
     poids_m2_tbm: numStr(d.poids_m2_tbm),
     freinte_tricotage: d.freinte_tricotage_forcee == null ? '' : String(Math.round(d.freinte_tricotage_forcee * 1000) / 10),
+    vente_au_metre: !!d.vente_au_metre,
+    rendement_metre: d.rendement_metre ? numStr(d.rendement_metre) : '',
     vitesse_cible: numStr(d.vitesse_cible),
     nb_chutes: numStr(d.nb_chutes),
     nb_aiguilles: numStr(d.nb_aiguilles),
@@ -560,6 +569,8 @@ function draftToBody(d: HeaderDraft) {
     laize_tbm: num(d.laize_tbm),
     poids_m2_tbm: num(d.poids_m2_tbm),
     freinte_tricotage: d.freinte_tricotage.trim() === '' ? null : Number(d.freinte_tricotage) / 100,
+    vente_au_metre: d.vente_au_metre,
+    rendement_metre: num(d.rendement_metre.replace(',', '.')) ?? 0,
     vitesse_cible: num(d.vitesse_cible),
     nb_chutes: num(d.nb_chutes),
     nb_aiguilles: num(d.nb_aiguilles),
@@ -745,9 +756,13 @@ function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: 
       setIsEditing(false)
       originalDraftRef.current = null
     },
-    onError: (err: Error & { status?: number }) => {
+    onError: (err: Error & { status?: number; body?: { message?: string } }) => {
+      // The server's own French reason first (vente au mètre, LIVA #1355).
+      const message = err.body?.message
       setSaveError(
-        err.status === 409
+        message
+          ? message
+          : err.status === 409
           ? 'Cette référence existe déjà. Choisissez un autre numéro.'
           : err.status === 401
             ? 'Votre session a expiré. Veuillez vous reconnecter, puis réessayer.'
@@ -924,7 +939,7 @@ function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: 
             reportDirty={reportDirty}
           />
         }
-        sidebar={selectedId !== null ? <DetailSidebar detail={detail ?? null} /> : null}
+        sidebar={selectedId !== null ? <DetailSidebar detail={detail ?? null} isEditing={isEditing} draft={draft} onDraftChange={setDraft} /> : null}
         sidebarTitle="Informations"
         hasSelection={selectedId !== null}
         onBack={() => guard.guardAction(() => { setIsEditing(false); setSelectedId(null) })}
@@ -2930,7 +2945,12 @@ function SchemaLiageTab({
 
 type SidebarTab = 'informations' | 'cout'
 
-function DetailSidebar({ detail }: { detail: RefEcruDetail | null }) {
+function DetailSidebar({ detail, isEditing, draft, onDraftChange }: {
+  detail: RefEcruDetail | null
+  isEditing: boolean
+  draft: HeaderDraft
+  onDraftChange: (d: HeaderDraft) => void
+}) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('informations')
   if (!detail) {
     return (
@@ -2964,17 +2984,23 @@ function DetailSidebar({ detail }: { detail: RefEcruDetail | null }) {
         })}
       </div>
       <div className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-transparent">
-        {activeTab === 'informations' && <InformationsTab detail={detail} />}
+        {activeTab === 'informations' && <InformationsTab detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} />}
         {activeTab === 'cout' && <CoutTab key={detail.IDref_ecru} detail={detail} />}
       </div>
     </div>
   )
 }
 
-function InformationsTab({ detail }: { detail: RefEcruDetail }) {
+function InformationsTab({ detail, isEditing, draft, onDraftChange }: {
+  detail: RefEcruDetail
+  isEditing: boolean
+  draft: HeaderDraft
+  onDraftChange: (d: HeaderDraft) => void
+}) {
   return (
     <>
       <StockActuelCard detail={detail} />
+      <VenteAuMetreCard detail={detail} isEditing={isEditing} draft={draft} onDraftChange={onDraftChange} />
       <FinisIssusCard refId={detail.IDref_ecru} />
       <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
         <p className="text-xs font-semibold text-muted-foreground">Statistiques</p>
@@ -3021,6 +3047,64 @@ function InformationsTab({ detail }: { detail: RefEcruDetail }) {
         )}
       </div>
     </>
+  )
+}
+
+/** « Vente au mètre » (LIVA #1355): a tombé de métier is sold by the kilo; a few
+ *  historical clients still buy some by the metre. The switch opens Ml on the
+ *  client's designation, and the rendement converts: price per Ml = price per kg
+ *  ÷ rendement, BL and invoice = kg × rendement. Shown only when on (view mode). */
+function VenteAuMetreCard({ detail, isEditing, draft, onDraftChange }: {
+  detail: RefEcruDetail
+  isEditing: boolean
+  draft: HeaderDraft
+  onDraftChange: (d: HeaderDraft) => void
+}) {
+  const rendementManquant = isEditing && draft.vente_au_metre && !(Number(draft.rendement_metre.replace(',', '.')) > 0)
+  if (!isEditing) {
+    if (!detail.vente_au_metre) return null
+    return (
+      <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
+        <div className="flex items-center gap-1.5">
+          <Ruler className="h-3.5 w-3.5 text-muted-foreground" />
+          <p className="text-xs font-semibold text-muted-foreground">Vente au mètre</p>
+        </div>
+        <KV label="Rendement" value={<span className="tabular-nums">{fmtNum(Number(detail.rendement_metre) || 0, 2)} Ml / kg</span>} />
+        <p className="text-[11px] text-muted-foreground">
+          Les clients dont la désignation est en Ml achètent au mètre : prix au kilo ÷ rendement, facturé poids × rendement.
+        </p>
+      </div>
+    )
+  }
+  return (
+    <div className={cn('p-3 rounded-lg border bg-card shadow-sm space-y-2', editSectionClass)}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 text-xs font-semibold">
+            <Ruler className="h-3.5 w-3.5 text-accent" />
+            <span>Permettre la vente au mètre</span>
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-0.5">
+            {draft.vente_au_metre ? 'Pour les clients dont la désignation est en Ml' : 'Vendu au kilo uniquement'}
+          </p>
+        </div>
+        <Pill value={draft.vente_au_metre} onChange={(v) => onDraftChange({ ...draft, vente_au_metre: v })} />
+      </div>
+      {draft.vente_au_metre && (
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-muted-foreground">
+            Rendement <span className="text-muted-foreground/60">(mètres linéaires par kilo)</span>
+          </label>
+          <input
+            type="number" step="0.01" min="0" inputMode="decimal"
+            value={draft.rendement_metre}
+            onChange={(e) => onDraftChange({ ...draft, rendement_metre: e.target.value })}
+            className={cn(inputClass, rendementManquant && 'border-destructive focus:ring-destructive/40')}
+          />
+          {rendementManquant && <p className="text-[11px] text-destructive">Indiquez le rendement pour vendre au mètre.</p>}
+        </div>
+      )}
+    </div>
   )
 }
 

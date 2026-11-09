@@ -35,6 +35,7 @@ import {
   registerContactAdresseRoutes,
 } from '../lib/clients-common.js'
 import { calcTarifRefFini, calcTarifRefEcru } from '../lib/pricing-fini-tarif.js'
+import { loadRendementVenteEcru, loadRendementsVenteEcru } from '../lib/unite-ecru.js'
 import {
   NB_RLX_TO_TRANCHE_IDX, DEFAULT_TRANCHE_IDX, parseLstTrancheIdx, fetchTarifModes, prixUnitOf,
 } from '../lib/tarif-client.js'
@@ -868,6 +869,8 @@ clientsRouter.get('/:id/references', async (req: Request, res: Response) => {
       colorisByDesig.set(did, arr)
     }
 
+    // Écrus sold by the metre (LIVA #1355): their Ml designations price in Ml.
+    const rendementsEcru = await loadRendementsVenteEcru(desigs.map((r) => numOf(r.IDref_fini) > 0 ? 0 : numOf(r.IDref_ecru)))
     const out = desigs.map((r) => {
       const idFini = numOf(r.IDref_fini)
       const idEcru = numOf(r.IDref_ecru)
@@ -883,6 +886,8 @@ clientsRouter.get('/:id/references', async (req: Request, res: Response) => {
         avec_teinture: rf?.avec_teinture ?? 0,
         soumettre: numOf(r.soumettre),
         unite: numOf(r.unite),
+        /** Ml per kg when this écru is sold by the metre (#1355), 0 otherwise. */
+        rendement_vente_ecru: idFini > 0 ? 0 : (rendementsEcru.get(idEcru) ?? 0),
         // Inverted legacy storage: yarns NOT invoiced to the client (CSV of IDref_fil).
         fil_non_facture: String(pick(r, 'fil_non_facturé', 'fil_non_factur') ?? '')
           .split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isInteger(n) && n > 0),
@@ -1196,7 +1201,10 @@ clientsRouter.put('/:id/references/:did', async (req: Request, res: Response) =>
 
     // A contract's prices are typed in the reference's selling unit: flipping
     // Ml ↔ Kg under one would silently re-read 12 €/Ml as 12 €/Kg (#1253).
-    if (prixUnitOf(original) !== prixUnitOf(b) && await designationHasContrat(did)) {
+    const auMetre = async (refEcru: number) => refEcru > 0 && await loadRendementVenteEcru(refEcru) > 0
+    const uniteAvant = prixUnitOf({ ...original, ecruAuMetre: await auMetre(numOf(original.IDref_ecru)) })
+    const uniteApres = prixUnitOf({ ...b, ecruAuMetre: await auMetre(numOf(b.IDref_ecru)) })
+    if (uniteAvant !== uniteApres && await designationHasContrat(did)) {
       res.status(409).json({
         error: 'unite_contrat',
         message: 'Cette référence a des contrats tarifaires négociés dans son unité actuelle : l’unité de vente ne peut pas changer.',
@@ -1715,7 +1723,8 @@ clientsRouter.get('/:id/coloris/:rccId/tarif', async (req: Request, res: Respons
       tranches: tarif.tranches.map((t, i) => ({ ...t, prixContrat: contratPrixByIdx.get(i) ?? null })),
       tranche_idx: parseLstTrancheIdx(rcc.lst_tranche),
       // Unit of every price on this breakdown, contract ones included.
-      prix_unit: prixUnitOf(rcc),
+      // An écru's tariff carries a rendement only when it is sold by the metre (#1355).
+      prix_unit: prixUnitOf({ ...rcc, ecruAuMetre: rcc.IDref_fini === 0 && tarif.rendement > 0 }),
       tarif_mode: mode.tarif_mode,
       coefficient: mode.coefficient,
       contrats: mode.contrats,

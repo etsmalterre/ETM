@@ -80,6 +80,7 @@ import { MANUAL_MARK_PREFIX, buildManualMarkNotes, parseManualMarkNotes } from '
 import { normalizePays } from '../lib/pays.js'
 import { loadMentionTva } from '../lib/tva.js'
 import { mentionNonFactures, quantiteFacturee } from '../lib/ml-non-factures.js'
+import { loadRendementVenteEcru, metrageEcruVendu } from '../lib/unite-ecru.js'
 
 // ── Société scope ────────────────────────────────────────
 //
@@ -1366,6 +1367,12 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
         ? await query<any>(`SELECT numero, poids, metrage, ml_non_factures, ml_non_factures_motif FROM stock_fini WHERE IDligne_expedition = ${leId} ORDER BY numero`)
         : await query<any>(`SELECT poids, metrage FROM stock_ecru WHERE ${scope.ecruShipmentFk} = ${leId}`)
       if (rollRows.length === 0) return null
+      // An écru roll has no measured length: an écru sold by the metre bills its
+      // weight × the reference's rendement (LIVA #1355, lib/unite-ecru.ts).
+      if (kind === 'ecru' && dim === 'metrage') {
+        const rdt = await loadRendementVenteEcru(refId)
+        for (const r of rollRows) r.metrage = metrageEcruVendu(r.poids, rdt)
+      }
       const qty = quantiteFacturee(rollRows, dim)
       const nonFactures = kind === 'fini' ? mentionNonFactures(rollRows, dim) : []
 

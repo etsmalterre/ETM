@@ -25,6 +25,7 @@
 
 import { query } from './hfsql-auto.js'
 import { numOf, strOf, pick, todayDigits } from './clients-common.js'
+import { loadRendementVenteEcru } from './unite-ecru.js'
 
 /** nb_rouleaux (0 = métrage "<1") → tranche index in the 9-tranche array. */
 export const NB_RLX_TO_TRANCHE_IDX: Record<number, number> = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 10: 6, 15: 7, 30: 8 }
@@ -133,12 +134,16 @@ export async function fetchTarifModes(rccs: { id: number; contrat: number }[]): 
 }
 
 /** Unit every price of a client reference is negotiated and shown in. A tombé
- *  de métier is always sold by the Kg (#1144); a fini by the Ml, unless its
- *  designation is marked sold by the Kg (`designation_client.unite = 1` —
- *  Sigvaris, LIVA #1253). Its contract prices are in that unit too. */
+ *  de métier is sold by the Kg (#1144) — by the Ml only when its designation says
+ *  Ml (`unite = 3`) AND the reference is sold by the metre (`ecruAuMetre`: its
+ *  « Vente au mètre » switch with a rendement, LIVA #1355, lib/unite-ecru.ts); a
+ *  fini by the Ml, unless its designation is marked sold by the Kg
+ *  (`designation_client.unite = 1` — Sigvaris, LIVA #1253). Its contract prices
+ *  are in that unit too. */
 export type PrixUnit = 'Kg' | 'Ml'
-export function prixUnitOf(d: { IDref_fini: number; unite: number }): PrixUnit {
-  return d.IDref_fini > 0 && d.unite !== 1 ? 'Ml' : 'Kg'
+export function prixUnitOf(d: { IDref_fini: number; unite: number; ecruAuMetre?: boolean }): PrixUnit {
+  if (d.IDref_fini > 0) return d.unite !== 1 ? 'Ml' : 'Kg'
+  return d.unite === 3 && d.ecruAuMetre ? 'Ml' : 'Kg'
 }
 
 // ── Order-line resolution (client × line reference × coloris → tarif mode) ──
@@ -213,7 +218,11 @@ export async function resolveLigneTarifMode(p: {
   return {
     ...mode,
     IDref_client_colori: rccId,
-    prix_unit: prixUnitOf({ IDref_fini: numOf(desig?.IDref_fini), unite: numOf(desig?.unite) }),
+    prix_unit: prixUnitOf({
+      IDref_fini: numOf(desig?.IDref_fini),
+      unite: numOf(desig?.unite),
+      ecruAuMetre: p.type === 1 && await loadRendementVenteEcru(p.IDreference) > 0,
+    }),
     // contrats is sorted newest-first by fetchTarifModes.
     dernier_contrat: mode.contrats[0] ?? null,
   }

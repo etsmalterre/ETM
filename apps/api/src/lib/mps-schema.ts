@@ -1742,6 +1742,18 @@ UPDATE suivilot SET stabh_tirelle = NULL, stabl_tirelle = NULL
 WHERE COALESCE(stabh_tirelle, 0) = 0 AND COALESCE(stabl_tirelle, 0) = 0 AND (stabh_tirelle IS NOT NULL OR stabl_tirelle IS NOT NULL);
 `,
   },
+  {
+    // Écru sold by the metre (LIVA #1355, Vincent 2026-11-09): a few historical
+    // clients still buy some tombé de métier in Ml. The fiche opens it with
+    // « Vente au mètre » and its own Ml-per-kg conversion — never the retired
+    // ref_ecru.rendement, which still holds stale values (lib/unite-ecru.ts).
+    // 0066 is taken by feat/flux-ennoblisseur (0066_observation_flux).
+    name: '0067_ref_ecru_vente_au_metre',
+    sql: `
+ALTER TABLE ref_ecru ADD COLUMN vente_au_metre smallint NOT NULL DEFAULT 0;
+ALTER TABLE ref_ecru ADD COLUMN rendement_metre double precision NOT NULL DEFAULT 0;
+`,
+  },
 ]
 
 export interface MigrationStatus {

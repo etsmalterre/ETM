@@ -75,6 +75,7 @@ import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable, refsExpediee
 import { mentionRouleauNonFacture, paragraphePointsASignaler, pointsASignaler, type RouleauASignaler } from '../lib/bl-points-a-signaler.js'
 import { rechercherExpeditionsDivers, rechercherExpeditionsFormelles, type RechercheEtat } from '../lib/expeditions-recherche.js'
 import { valeurStab } from '../lib/stabilites.js'
+import { loadRendementVenteEcru, loadRendementsVenteEcru, metrageEcruVendu } from '../lib/unite-ecru.js'
 
 export const expeditionsRouter: RouterType = Router()
 
@@ -753,13 +754,19 @@ expeditionsRouter.get('/:kind/:id', async (req: Request, res: Response) => {
         .map((l) => ({ lcc: Number(l.IDligne_commande_client) || 0, kind: lineStockKind(Number(l.type_kind) || 0) }))
         .filter((l) => l.lcc > 0)
       const { leByLcc, expAgg, dispoCount } = await formelleLineRollInfo(id, typedLines)
+      // Écru sold by the metre (LIVA #1355): its Ml = weight × rendement, as the BL and invoice.
+      const rdtVenteEcru = await loadRendementsVenteEcru((lignesRaw as any[])
+        .filter((l) => Number(l.type_kind) === 1 && Number(l.unite) === 3)
+        .map((l) => Number(l.IDreference) || 0))
 
       const lignes = (lignesRaw as any[]).map((l) => {
         const lcc = Number(l.IDligne_commande_client)
         const typeKind = Number(l.type_kind) || 0
         const refId = Number(l.IDreference) || 0
         const colId = Number(l.IDcolori) || 0
-        const agg = expAgg.get(lcc) ?? { nb: 0, poids: 0, metrage: 0 }
+        const agg0 = expAgg.get(lcc) ?? { nb: 0, poids: 0, metrage: 0 }
+        const rdtEcru = typeKind === 1 && Number(l.unite) === 3 ? (rdtVenteEcru.get(refId) ?? 0) : 0
+        const agg = rdtEcru > 0 ? { ...agg0, metrage: metrageEcruVendu(agg0.poids, rdtEcru) } : agg0
         return {
           IDligne_commande_client: lcc,
           IDligne_expedition: leByLcc.get(lcc) ?? 0,
@@ -1872,7 +1879,7 @@ export async function buildBlPdfData(id: number): Promise<BonLivraisonPdfData | 
     const lccId = Number(le.IDligne_commande_client) || 0
     if (leId === 0 || lccId === 0) continue
     const lccRows = await query<any>(
-      `SELECT IDligne_commande_client, IDdesignation_client, TYPE AS type_kind, IDreference, IDcolori ` +
+      `SELECT IDligne_commande_client, IDdesignation_client, TYPE AS type_kind, IDreference, IDcolori, unite ` +
         `FROM ligne_commande_client WHERE IDligne_commande_client = ${lccId}`,
     )
     if (lccRows.length === 0) continue
@@ -1941,6 +1948,12 @@ export async function buildBlPdfData(id: number): Promise<BonLivraisonPdfData | 
         `SELECT IDstock_ecru, numero, lot, poids, metrage, observations FROM stock_ecru WHERE IDligne_expedition_ETM = ${leId} ORDER BY lot, numero`,
       )
       piecesRaw = await fixEncoding(rollRows, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
+      // An écru sold by the metre (LIVA #1355): each roll's Ml = its weight × the
+      // reference's rendement — the figure the invoice bills (lib/unite-ecru.ts).
+      if (Number(lcc.unite) === 3) {
+        const rdt = await loadRendementVenteEcru(refId)
+        for (const p of piecesRaw) p.metrage = metrageEcruVendu(p.poids, rdt)
+      }
     }
 
     const lots = groupByLot(piecesRaw)

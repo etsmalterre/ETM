@@ -127,7 +127,7 @@ interface DevisDetail {
 interface ClientLite { IDclient: number; nom: string }
 interface ModePaiement { IDmode_paiement: number; libelle: string }
 interface Echeance { IDecheance: number; libelle: string }
-interface RefEcru { IDref_ecru: number; reference: string }
+interface RefEcru { IDref_ecru: number; reference: string; /** Ml per kg when sold by the metre (#1355), 0 otherwise */ rendement_vente?: number }
 interface RefFini { IDref_fini: number; reference: string; designation: string; avec_teinture: number }
 interface RefDivers { IDref_divers: number; designation: string; unite: number }
 interface ColoriOption { id: number; reference: string }
@@ -1071,11 +1071,13 @@ function LineFormDialog({
     return () => clearTimeout(t)
   }, [form.quantite])
 
-  // A tombé de métier is sold by the kg: no Ml on an écru line (API lib/unite-ecru.ts).
-  useEffect(() => {
-    if (form.type === 1 && form.unite === 3) setForm((f) => ({ ...f, unite: 1 }))
-  }, [form.type, form.unite])
   const { data: refsEcru } = useQuery<RefEcru[]>({ queryKey: ['devis-refs-ecru'], queryFn: () => apiFetch('/devis/lookups/refs-ecru'), enabled: open && form.type === 1 })
+  // A tombé de métier is sold by the kg: no Ml on an écru line (API lib/unite-ecru.ts), unless
+  // the reference is sold by the metre (« Vente au mètre » on its fiche, LIVA #1355).
+  const ecruAuMetre = form.type === 1 && (refsEcru?.find((r) => r.IDref_ecru === form.IDreference)?.rendement_vente ?? 0) > 0
+  useEffect(() => {
+    if (form.type === 1 && form.unite === 3 && refsEcru && !ecruAuMetre) setForm((f) => ({ ...f, unite: 1 }))
+  }, [form.type, form.unite, refsEcru, ecruAuMetre])
   const { data: refsFini } = useQuery<RefFini[]>({ queryKey: ['devis-refs-fini'], queryFn: () => apiFetch('/devis/lookups/refs-fini'), enabled: open && form.type === 2 })
   const { data: refsDivers } = useQuery<RefDivers[]>({ queryKey: ['devis-refs-divers'], queryFn: () => apiFetch('/devis/lookups/refs-divers'), enabled: open && form.type === 3 })
 
@@ -1205,7 +1207,7 @@ function LineFormDialog({
             <div className="col-span-1 space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Unité</label>
               <PopoverSelect
-                options={[{ id: 1, primary: 'Kg' }, ...(form.type === 1 ? [] : [{ id: 3, primary: 'Ml' }]), { id: 4, primary: 'U' }, { id: 5, primary: 'm²' }]}
+                options={[{ id: 1, primary: 'Kg' }, ...(form.type === 1 && !ecruAuMetre ? [] : [{ id: 3, primary: 'Ml' }]), { id: 4, primary: 'U' }, { id: 5, primary: 'm²' }]}
                 value={form.unite}
                 onChange={(id) => setForm({ ...form, unite: id })}
                 hideEmpty

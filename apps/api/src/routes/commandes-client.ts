@@ -38,7 +38,7 @@ import { freinteTricotage, freintesTricotage, origineFreinte, filPourEcru, ecruP
 import { avancementCommande, commandeIncomplete, etatAffiche, modeLivraisonDe, relanceAppelDe, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
-import { ecruEnMl, MESSAGE_ECRU_EN_ML } from '../lib/unite-ecru.js'
+import { refusEcruEnMl, rendementVenteEcru, loadRendementsVenteEcru, loadRendementVenteEcru } from '../lib/unite-ecru.js'
 import multer from 'multer'
 import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
@@ -578,16 +578,33 @@ commandesClientRouter.get('/lookups/refs-ecru', async (req: Request, res: Respon
   try {
     const cid = parseInt(String(req.query.client ?? ''), 10)
     let idFilter = ''
+    // Écrus this client's designation says Ml (LIVA #1355): sold by the metre to
+    // it when the reference allows it (prixUnitOf), by the Kg otherwise.
+    const enMl = new Set<number>()
     if (!isNaN(cid) && cid > 0) {
       const ids = await assignedRefIds(cid, 'IDref_ecru')
       if (ids.length === 0) { res.json([]); return }
       idFilter = `WHERE IDref_ecru IN (${ids.join(',')})`
+      const unites = await query<{ IDref_ecru: number; unite: number | null }>(
+        `SELECT IDref_ecru, unite FROM designation_client
+          WHERE IDclient = ${cid} AND IDref_ecru IN (${ids.join(',')}) AND (IDref_fini IS NULL OR IDref_fini = 0)`,
+      )
+      for (const u of unites) if (Number(u.unite) === 3) enMl.add(Number(u.IDref_ecru))
     }
-    const rows = await query<{ IDref_ecru: number; reference: string | null; designation: string | null }>(
-      `SELECT IDref_ecru, reference, designation FROM ref_ecru ${idFilter} ORDER BY reference`,
+    const rows = await query<{
+      IDref_ecru: number; reference: string | null; designation: string | null
+      vente_au_metre: number | null; rendement_metre: number | null
+    }>(
+      `SELECT IDref_ecru, reference, designation, vente_au_metre, rendement_metre FROM ref_ecru ${idFilter} ORDER BY reference`,
     )
     const fixed = await fixEncoding(rows, 'ref_ecru', 'IDref_ecru', ['reference', 'designation'])
-    res.json(fixed.map((r) => ({ IDref_ecru: Number(r.IDref_ecru), reference: r.reference ?? '', designation: r.designation ?? '' })))
+    res.json(fixed.map((r) => ({
+      IDref_ecru: Number(r.IDref_ecru), reference: r.reference ?? '', designation: r.designation ?? '',
+      // Ml per kg when the écru is sold by the metre (LIVA #1355), 0 = by the kg only.
+      rendement_vente: rendementVenteEcru(r),
+      // The client's selling unit (1 Kg, 3 Ml) — the line form shows it, never a picker.
+      unite_vente: prixUnitOf({ IDref_fini: 0, unite: enMl.has(Number(r.IDref_ecru)) ? 3 : 1, ecruAuMetre: rendementVenteEcru(r) > 0 }) === 'Ml' ? 3 : 1,
+    })))
   } catch (err) {
     console.error('Error fetching refs-ecru lookup:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -1200,7 +1217,7 @@ interface ResolvedMaps {
 // quantite directly; Ml fini lines (unite=3) convert via ref_fini.rendement
 // (kg = ml / rendement). Fini lines (type=2) trace to ref_fini.IDref_ecru;
 // écru lines (type=1) use the ref directly and are in kg (an old Ml écru line
-// counts 0). Divers lines (type=3) are excluded.
+// counts 0, unless the écru is sold by the metre — LIVA #1355). Divers lines (type=3) are excluded.
 // Input coloris per line: dyed finis (avec_teinture 1/2) consume the natural
 // "ecru" base; wash-only finis (avec_teinture 0) and écru lines carry a
 // colori_ecru id on the line itself — the écru consumed is knitted in that
@@ -1250,6 +1267,8 @@ async function computeTombeMetier(
   }
   const coloriEcruLabels = coloriEcruIds.size > 0 ? await resolveEcruColoris([...coloriEcruIds]) : new Map<number, string>()
 
+  // An écru line in Ml converts by the reference's « Vente au mètre » rendement (LIVA #1355).
+  const rdtVenteEcru = await loadRendementsVenteEcru([...ecruLineIds])
   const agg = new Map<string, { IDref_ecru: number; ref_label: string; coloris_label: string; kg: number }>()
   for (const l of lignes) {
     const t = Number(l.type_kind) || 0
@@ -1269,6 +1288,7 @@ async function computeTombeMetier(
       coloris = f.avecTeinture === 0 ? (coloriEcruLabels.get(colId) ?? '').trim() : 'ecru'
     } else if (t === 1) {
       ecruRef = ref
+      rdt = rdtVenteEcru.get(ref) ?? 0
       coloris = (coloriEcruLabels.get(colId) ?? '').trim()
     } else continue
     if (ecruRef <= 0) continue
@@ -1431,11 +1451,13 @@ export async function lineReservationAggregates(
     )
     for (const row of r) rdtByFini.set(Number(row.IDref_fini), Number(row.rendement) || 0)
   }
+  // An écru line is in kg — its pieces count by weight — unless its reference is
+  // sold by the metre (LIVA #1355): then a piece is poids × its rendement Ml.
+  const rdtByEcru = await loadRendementsVenteEcru(metas.filter((l) => lineStockKind(l.typeKind) === 'ecru').map((l) => l.refId))
   const rdtByLine = new Map<number, number>()
   for (const l of metas) {
     const kind = lineStockKind(l.typeKind)
-    // An écru line is in kg: its pieces count by weight, never through a rendement.
-    rdtByLine.set(l.id, kind === 'fini' ? (rdtByFini.get(l.refId) ?? 0) : 0)
+    rdtByLine.set(l.id, kind === 'fini' ? (rdtByFini.get(l.refId) ?? 0) : (rdtByEcru.get(l.refId) ?? 0))
   }
 
   const [ecruRaw, fini, trico, mergedComponents] = await Promise.all([
@@ -2440,7 +2462,11 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
-    if (ecruEnMl(d.type, d.unite)) { res.status(400).json({ error: 'ecru_en_kg', message: MESSAGE_ECRU_EN_ML }); return }
+    // An écru in Ml only when its reference is sold by the metre (LIVA #1355).
+    {
+      const refus = await refusEcruEnMl(d.type, d.unite, d.IDreference)
+      if (refus) { res.status(400).json({ error: 'ecru_en_kg', message: refus }); return }
+    }
     const typeKind = Number(d.type) || 0
     const mode = d.mode_livraison ?? 'des_que_prete'
     if (await refuseIfContratExpire(res, id, {
@@ -2495,7 +2521,14 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
-    if (ecruEnMl(d.type, d.unite)) { res.status(400).json({ error: 'ecru_en_kg', message: MESSAGE_ECRU_EN_ML }); return }
+    // An écru in Ml only when its reference is sold by the metre (LIVA #1355).
+    {
+      const refId = d.IDreference ?? Number((await query<{ IDreference: number }>(
+        `SELECT IDreference FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
+      ))[0]?.IDreference ?? 0)
+      const refus = await refusEcruEnMl(d.type, d.unite, refId)
+      if (refus) { res.status(400).json({ error: 'ecru_en_kg', message: refus }); return }
+    }
     let curDelai = { delai: '', initial: '', mode: modeLivraisonDe(0) }
     let curEtude = 0
     let nextType = 0
@@ -3287,7 +3320,9 @@ async function fetchSupplyPayload(ctx: ClientLineContext): Promise<SupplyPayload
     if (ecruRefId > 0) ecruColoris = await ennoInputColoriIds(ecruRefId, avecTeinture, ctx.coloriId)
   } else {
     ecruRefId = ctx.refId
-    // A tombé de métier is knitted and sold by the kg: no rendement (ref_ecru.rendement retired 2026-10-26).
+    // A tombé de métier is knitted and sold by the kg: no rendement (ref_ecru.rendement retired
+    // 2026-10-26) — except one sold by the metre (LIVA #1355), whose Ml line converts by its own.
+    rendement = await loadRendementVenteEcru(ecruRefId)
     if (ctx.coloriId > 0) ecruColoris = [ctx.coloriId]
   }
   // Use the raw rendement (NOT rounded) — the écru→fini métrage must match the
@@ -4380,7 +4415,9 @@ async function fetchTricoStockFil(ctx: ClientLineContext) {
     if (ecruRefId > 0) ecruColoris = await ennoInputColoriIds(ecruRefId, avecTeinture, ctx.coloriId)
   } else {
     ecruRefId = ctx.refId
-    // A tombé de métier is knitted and sold by the kg: no rendement (ref_ecru.rendement retired 2026-10-26).
+    // A tombé de métier is knitted and sold by the kg: no rendement (ref_ecru.rendement retired
+    // 2026-10-26) — except one sold by the metre (LIVA #1355), whose Ml line converts by its own.
+    rendement = await loadRendementVenteEcru(ecruRefId)
     if (ctx.coloriId > 0) ecruColoris = [ctx.coloriId]
   }
   base.rendement = rendement
@@ -4536,7 +4573,9 @@ async function resolveTricoEcru(ctx: ClientLineContext): Promise<{ ecruRefId: nu
     if (ecruRefId > 0) ecruColoris = await ennoInputColoriIds(ecruRefId, avecTeinture, ctx.coloriId)
   } else if (ctx.kind === 'ecru') {
     ecruRefId = ctx.refId
-    // A tombé de métier is knitted and sold by the kg: no rendement (ref_ecru.rendement retired 2026-10-26).
+    // A tombé de métier is knitted and sold by the kg: no rendement (ref_ecru.rendement retired
+    // 2026-10-26) — except one sold by the metre (LIVA #1355), whose Ml line converts by its own.
+    rendement = await loadRendementVenteEcru(ecruRefId)
     if (ctx.coloriId > 0) ecruColoris = [ctx.coloriId]
   }
   return { ecruRefId, rendement, ecruColoris }

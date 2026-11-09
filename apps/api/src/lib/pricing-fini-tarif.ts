@@ -22,6 +22,7 @@ import { query, fixEncoding } from './hfsql-auto.js'
 import { multiplicateurMatel } from './pricing-sst.js'
 import { prixTranche } from './tranche-poids.js'
 import { achatDepuisPrixBase } from './fil-frais-gestion.js'
+import { rendementVenteEcru } from './unite-ecru.js'
 
 /** Per-tranche margin — legacy `CoefficientV2(i)`. Index = tranche i (0..8).
  *  Small quantities carry a higher margin; bulk a lower one. Exported so the
@@ -574,7 +575,8 @@ function fmtPct(v: number): string {
  * dye), then ÷ margin ÷ port, on the same nine tranches. A tombé de métier is
  * always sold by the Kg (Vincent, 2026-09-10 — LIVA #1144), so `moPrixDeVenteAuKg`
  * is the figure that matters; the Ml figures stay 0 (ref_ecru.rendement is
- * retired, 2026-10-26). Shares `TarifResult` with the
+ * retired, 2026-10-26) unless the reference is sold by the metre (LIVA #1355:
+ * « Vente au mètre » + rendement_metre on the fiche, lib/unite-ecru.ts). Shares `TarifResult` with the
  * fini engine so the client fiche's tariff dialog, the tarif-mode editor and
  * the line pricer render both kinds from one shape.
  *
@@ -599,8 +601,11 @@ export async function calcTarifRefEcru(
   }
   if (!(IDref_ecru > 0)) return empty
 
-  const ecruRows = await query<{ IDref_ecru: number; reference: string | null; poids: number | null; prix: number | null }>(
-    `SELECT IDref_ecru, reference, poids, prix FROM ref_ecru WHERE IDref_ecru = ${IDref_ecru}`,
+  const ecruRows = await query<{
+    IDref_ecru: number; reference: string | null; poids: number | null; prix: number | null
+    vente_au_metre: number | null; rendement_metre: number | null
+  }>(
+    `SELECT IDref_ecru, reference, poids, prix, vente_au_metre, rendement_metre FROM ref_ecru WHERE IDref_ecru = ${IDref_ecru}`,
   )
   if (ecruRows.length === 0) return empty
   const ecruFixed = await fixEncoding(ecruRows as any[], 'ref_ecru', 'IDref_ecru', ['reference'])
@@ -609,6 +614,7 @@ export async function calcTarifRefEcru(
     reference: (ecruFixed[0]?.reference ?? null) as string | null,
     poids: Number(ecruRows[0].poids) || 0,
     prix: Number(ecruRows[0].prix) || 0,
+    rendement_vente: rendementVenteEcru(ecruRows[0]),
   }
   const detailFil = ref_ecru.poids > 0 ? await computePrixFil(IDref_ecru, IDcolori_ecru) : []
   return assembleTarifEcru({ IDcolori_ecru, ref_ecru, detailFil, coefficient: opts?.coefficient })
@@ -616,7 +622,11 @@ export async function calcTarifRefEcru(
 
 export interface TarifEcruInputs {
   IDcolori_ecru: number
-  ref_ecru: { IDref_ecru: number; reference: string | null; poids: number; prix: number }
+  ref_ecru: {
+    IDref_ecru: number; reference: string | null; poids: number; prix: number
+    /** Ml per kg when the reference is sold by the metre (LIVA #1355, lib/unite-ecru.ts), else 0/absent. */
+    rendement_vente?: number
+  }
   /** The écru's yarn cost lines (`computePrixFil` / `prixFilLines`). */
   detailFil: TarifDetailLine[]
   coefficient?: number
@@ -630,8 +640,9 @@ export function assembleTarifEcru(inputs: TarifEcruInputs): TarifResult {
   const ecruReference = ref_ecru.reference
   const poidsUnRlx = ref_ecru.poids
   const prixTricotage = ref_ecru.prix
-  // Sold by the Kg only: ref_ecru.rendement is retired (2026-10-26), so no €/Ml figure.
-  const rendement = 0
+  // Sold by the Kg; the €/Ml figures exist only for a reference sold by the metre
+  // (LIVA #1355) — its own rendement_metre, never the retired ref_ecru.rendement.
+  const rendement = ref_ecru.rendement_vente ?? 0
   const result: TarifResult = {
     kind: 'ecru',
     IDref_fini: 0,

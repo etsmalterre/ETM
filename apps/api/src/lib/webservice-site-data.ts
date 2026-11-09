@@ -23,6 +23,7 @@ import { pickVal } from './accented-keys.js'
 import { parseDtMs } from './production-trm.js'
 import { repairMatiereLibelle, type CompositionRow } from './composition-matieres.js'
 import type { BandRow } from './pricing-fini-tarif.js'
+import { rendementVenteEcru } from './unite-ecru.js'
 
 const num = (v: unknown): number => {
   const n = Number(v)
@@ -59,6 +60,8 @@ export interface RefEcruRow {
   /** Tombé de métier laize (cm) and weight (g/m²), as knitted. */
   laize: number
   poidsM2: number
+  /** Ml per kg when sold by the metre (LIVA #1355, lib/unite-ecru.ts), else 0. */
+  rendementVente?: number
   archive: boolean
   prix: number
   IDcontexture: number
@@ -208,6 +211,7 @@ export async function loadCatalog(): Promise<Catalog> {
       poids: num(r.poids),
       laize: num(r.laize_tbm),
       poidsM2: num(r.poids_m2_tbm),
+      rendementVente: rendementVenteEcru(r),
       archive: flag(pickVal(r, /^archiv/i)),
       prix: num(r.prix),
       IDcontexture: num(r.IDcontexture),

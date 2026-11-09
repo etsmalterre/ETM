@@ -32,6 +32,7 @@ import { readCol } from '../lib/accented-keys.js'
 import { mpsPg } from '../lib/mps-pg.js'
 import { numeroEchantillon } from '../lib/echantillons.js'
 import { freinteTricotage, detailFreinteTricotage, origineFreinte } from '../lib/freinte-tricotage.js'
+import { loadRendementVenteEcru, rendementVenteEcru, clientsContratEcruEnMl } from '../lib/unite-ecru.js'
 import React from 'react'
 import { renderToBuffer, type DocumentProps } from '@react-pdf/renderer'
 import { FicheTechniqueEcruPdf, ficheTechniqueEcruData, type RefEcruDetailForFiche } from '../lib/pdf/FicheTechniqueEcruPdf.js'
@@ -127,6 +128,9 @@ function normalizeRefEcru(row: Record<string, unknown>) {
     poids_m2_tbm: toNumOrNull(row.poids_m2_tbm),
     // NULL = not forced (lib/freinte-tricotage.ts); ref_ecru.rendement is no longer read.
     freinte_tricotage_forcee: row.freinte_tricotage == null ? null : Number(row.freinte_tricotage),
+    // Sold by the metre to a few historical clients (LIVA #1355, lib/unite-ecru.ts).
+    vente_au_metre: Number(row.vente_au_metre) ? 1 : 0,
+    rendement_metre: toNumOrNull(row.rendement_metre),
     vitesse_cible: toNumOrNull(row.vitesse_cible),
     nb_chutes: toNumOrNull(row.nb_chutes),
     nb_aiguilles: toNumOrNull(row.nb_aiguilles),
@@ -787,6 +791,9 @@ const refEcruBody = z.object({
   poids_m2_tbm: z.number().optional().nullable(),
   /** 0..1; null = back to the measured value. Absent = left as is. */
   freinte_tricotage: z.number().min(0).max(0.49).optional().nullable(),
+  /** LIVA #1355: sold by the metre, at `rendement_metre` Ml per kg. Absent = left as is. */
+  vente_au_metre: z.boolean().optional(),
+  rendement_metre: z.number().min(0).max(100).optional().nullable(),
   vitesse_cible: z.number().optional().nullable(),
   nb_chutes: z.number().optional().nullable(),
   nb_aiguilles: z.number().optional().nullable(),
@@ -830,6 +837,8 @@ function buildRefEcruSets(b: RefEcruBody): string[] {
   if (b.freinte_tricotage !== undefined) {
     sets.push(`freinte_tricotage = ${b.freinte_tricotage == null ? 'NULL' : Math.round(b.freinte_tricotage * 10000) / 10000}`)
   }
+  if (b.vente_au_metre !== undefined) sets.push(`vente_au_metre = ${b.vente_au_metre ? 1 : 0}`)
+  if (b.rendement_metre !== undefined) sets.push(`rendement_metre = ${Math.round((toNumOrNull(b.rendement_metre) ?? 0) * 10000) / 10000}`)
   sets.push(`vitesse_cible = ${toNumOrNull(b.vitesse_cible) ?? 0}`)
   sets.push(`nb_chutes = ${toNumOrNull(b.nb_chutes) ?? 0}`)
   sets.push(`nb_aiguilles = ${toNumOrNull(b.nb_aiguilles) ?? 0}`)
@@ -924,6 +933,31 @@ referencesEcruRouter.put('/:id', async (req: Request, res: Response) => {
         parsed.data.recycle = !!cur.recycle
       }
     }
+    // Vente au mètre (LIVA #1355): switched on needs its Ml-per-kg conversion.
+    if (parsed.data.vente_au_metre && !(Number(parsed.data.rendement_metre) > 0)) {
+      res.status(400).json({
+        error: 'rendement_requis',
+        message: 'La vente au mètre demande un rendement (mètres linéaires par kilo).',
+      })
+      return
+    }
+    if (parsed.data.vente_au_metre !== undefined) {
+      const avant = await loadRendementVenteEcru(id) > 0
+      const apres = rendementVenteEcru(parsed.data) > 0
+      if (avant !== apres) {
+        // A client designation in Ml switches unit with the reference: its contract
+        // prices (negotiated in one unit) would silently be read in the other.
+        const clients = await clientsContratEcruEnMl(id)
+        if (clients.length > 0) {
+          res.status(409).json({
+            error: 'unite_contrat',
+            message: `Un contrat est négocié sur cette référence en mètres ou en kilos (${clients.join(', ')}) : `
+              + 'ses prix changeraient d’unité. Clôturez ou refaites le contrat d’abord.',
+          })
+          return
+        }
+      }
+    }
     const sets = buildRefEcruSets(parsed.data)
     await query(`UPDATE ref_ecru SET ${sets.join(', ')} WHERE IDref_ecru = ${id}`)
     res.json({ ok: true, _linux_accented_skipped: !canNameAccented() })
@@ -942,6 +976,7 @@ const REF_ECRU_PHYSICAL_COLS = [
   'ecarteur', 'laize_tbm', 'poids_m2_tbm', 'rendement', 'tombe_metier', 'observations',
   'archive', 'IDcontexture', 'Jauge', 'diametre', 'bio', 'recycle', 'sonneter',
   'nb_chutes', 'nb_aiguilles', 'vitesse_cible', 'freinte_tricotage',
+  'vente_au_metre', 'rendement_metre',
 ] as const
 const TEXT_COL_IDX = new Set([2, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 24, 25]) // text/memo/date columns
 
@@ -1046,6 +1081,7 @@ referencesEcruRouter.post('/:id/duplicate', async (req: Request, res: Response) 
       lfa_tour_1: src.lfa_tour_1, lfa_tour_2: src.lfa_tour_2, lfa_tour_3: src.lfa_tour_3, lfa_tour_4: src.lfa_tour_4,
       poulies_1: src.poulies_1, poulies_2: src.poulies_2, poulies_3: src.poulies_3, poulies_4: src.poulies_4,
       ecarteur: src.ecarteur, laize_tbm: src.laize_tbm, poids_m2_tbm: src.poids_m2_tbm, freinte_tricotage: src.freinte_tricotage_forcee,
+      vente_au_metre: !!src.vente_au_metre, rendement_metre: src.rendement_metre,
       vitesse_cible: src.vitesse_cible, nb_chutes: src.nb_chutes, nb_aiguilles: src.nb_aiguilles,
       maille_ouverture: !!src.maille_ouverture, ouvert_visiteuse: !!src.ouvert_visiteuse, sonneter: !!src.sonneter,
     }

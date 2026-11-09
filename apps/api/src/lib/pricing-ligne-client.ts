@@ -280,13 +280,16 @@ export async function calcLignePriceClient(p: {
     if (!tarif.ref_ecru || tarif.tranches.length === 0) return base
     const poids = tarif.ref_ecru.poids
     const rendement = Math.round(tarif.rendement * 100) / 100
-    // One roll = poids kg = poids × rendement Ml. Ml lines need a rendement.
+    // One roll = poids kg = poids × rendement Ml. Ml lines need a rendement: the
+    // reference's « Vente au mètre » one (LIVA #1355), 0 otherwise.
     const rollSize = p.unite === 3 ? (rendement > 0 ? poids * rendement : 0) : poids
     if (!(rollSize > 0)) return base
     const { nRolls, cleanQty, exact } = geom(p.quantite, rollSize)
     const idx = pickTrancheIndex(nRolls)
     const standardAt = (j: number) => (p.unite === 3 ? tarif.tranches[j].moPrixDeVenteAuMl : tarif.tranches[j].moPrixDeVenteAuKg)
-    const contratAt = contrat ? contratPriceFn(contrat, p.unite, rendement, 'Kg') : null
+    // A contract is in the designation's unit: Kg, or Ml for a reference sold by
+    // the metre (LIVA #1355) — the rendement converts a line in the other unit.
+    const contratAt = contrat ? contratPriceFn(contrat, p.unite, rendement, mode?.prix_unit ?? 'Kg') : null
     if (contrat && !contratAt) return { ...base, rollSize, nRolls, cleanQty, exact }
     const priceAt = contratAt ?? standardAt
     const prix = priceAt(idx)

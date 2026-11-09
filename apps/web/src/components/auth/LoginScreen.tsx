@@ -2,17 +2,19 @@
 // the form: enrolling this PC as a station (« Poste », a one-time code from
 // Paramètres › Utilisateurs) and, only while the server's AUTH_PICKER
 // transition flag is on, the old name picker. On a developer's machine only,
-// « dev · Se connecter comme Vincent » (dev build + API lib/dev-login.ts).
+// « dev · Se connecter comme Vincent » (dev build + API lib/dev-login.ts) — and the
+// dev build presses it by itself (Vincent 2026-11-09: never the login screen in dev),
+// except in a tab that just logged out (connexionDevAutoSuspendue).
 //
 // No « mot de passe oublié » on purpose (2026-09-30): an administrator resets
 // passwords from Paramètres › Utilisateurs.
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, Code2, KeyRound, Loader2, LogIn, MonitorSmartphone, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
-import { messageErreur, useAppCode, useUser } from '@/contexts/UserContext'
+import { connexionDevAutoSuspendue, messageErreur, useAppCode, useUser } from '@/contexts/UserContext'
 import { AuthCard, AuthLayout, authInputClass } from './AuthLayout'
 import { UserPicker } from './UserPicker'
 
@@ -23,12 +25,33 @@ export function LoginScreen({ postes = true }: { postes?: boolean } = {}) {
   const [mode, setMode] = useState<Mode>('login')
   const { loginDev } = useUser()
   const [devErreur, setDevErreur] = useState<string | null>(null)
-  const { data: config } = useQuery<{ picker: boolean; devLogin?: boolean }>({
+  const { data: config, isPending: configEnCours } = useQuery<{ picker: boolean; devLogin?: boolean }>({
     queryKey: ['auth', 'config'],
     queryFn: () => apiFetch('/auth/config'),
     staleTime: 60_000,
     retry: 1,
   })
+
+  // Dev build: log in as Vincent without showing the form (once per mount; a failure shows the form + why).
+  const autoDev = import.meta.env.DEV && !!config?.devLogin && !connexionDevAutoSuspendue()
+  const [autoDevEchec, setAutoDevEchec] = useState(false)
+  const autoDevLance = useRef(false)
+  useEffect(() => {
+    if (!autoDev || autoDevLance.current) return
+    autoDevLance.current = true
+    loginDev().catch((e) => { setAutoDevEchec(true); setDevErreur(messageErreur(e, 'Connexion dev refusée.')) })
+  }, [autoDev, loginDev])
+
+  // While /auth/config loads, or the dev login runs. An API that does not answer ends the
+  // query in error: the form then shows (never an endless spinner).
+  if (import.meta.env.DEV && !autoDevEchec && (autoDev || (configEnCours && !connexionDevAutoSuspendue()))) {
+    return (
+      <div className="h-screen flex items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin text-accent" />
+        Connexion dev…
+      </div>
+    )
+  }
 
   if (mode === 'picker' && config?.picker) return <UserPicker onBack={() => setMode('login')} />
 
@@ -77,6 +100,13 @@ export function LoginScreen({ postes = true }: { postes?: boolean } = {}) {
           </button>
         )}
         {devErreur && <p className="text-xs text-destructive">{devErreur}</p>}
+        {/* Dev only: why there is no automatic login — the worktree's API does not answer. */}
+        {import.meta.env.DEV && !configEnCours && !config && (
+          <p className="text-xs text-destructive text-center max-w-xs">
+            dev · l’API ne répond pas, pas de connexion automatique. Vérifiez-la avec
+            <code className="mx-1">node scripts/worktree/status.mjs</code>.
+          </p>
+        )}
       </div>
     </AuthLayout>
   )

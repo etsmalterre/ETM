@@ -227,7 +227,7 @@ function priceTranchesEcru(cat: Catalog, memo: PriceMemo, IDref_ecru: number, ID
     if (comp.length === 0) comp = all.filter((c) => c.IDcolori_ecru === 0)
     tranches = assembleTarifEcru({
       IDcolori_ecru,
-      ref_ecru: { IDref_ecru, reference: ecru.reference || null, poids: ecru.poids, prix: ecru.prix },
+      ref_ecru: { IDref_ecru, reference: ecru.reference || null, poids: ecru.poids, prix: ecru.prix, rendement_vente: ecru.rendementVente },
       detailFil: prixFilLines(comp, cat.refFil, cat.coloriFil, opts.filExclu),
       coefficient: opts.coefficient,
     }).tranches
@@ -402,7 +402,7 @@ export function clientTranches(
   if (grid.length === 0) return null
   // The designation's selling unit, as on the client fiche and the order line:
   // a tombé de métier and a fini sold by the Kg (#1253) price per Kg.
-  const parKg = prixUnitOf(d) === 'Kg'
+  const parKg = uniteDe(cat, d) === 'Kg'
   let priceAt: (i: number) => number = (i) => (parKg ? grid[i].moPrixDeVenteAuKg : grid[i].moPrixDeVenteAuMl)
   if (m.mode === 'contrat') {
     // Same rule as the ERP order line: the largest negotiated band at or below
@@ -429,6 +429,11 @@ export function clientTranches(
 export function shopSafeTrancheIdx(idxs: readonly number[]): number[] {
   if (idxs.length !== 1 || idxs[0] === 0) return [...idxs]
   return [idxs[0] === 1 ? 0 : 1, idxs[0]]
+}
+
+/** `prixUnitOf` of a designation; an écru in Ml only when sold by the metre (LIVA #1355). */
+function uniteDe(cat: Catalog, d: DesignationRow) {
+  return prixUnitOf({ ...d, ecruAuMetre: d.IDref_fini > 0 ? false : (cat.refEcru.get(d.IDref_ecru)?.rendementVente ?? 0) > 0 })
 }
 
 function colorisName(cat: Catalog, d: DesignationRow, rcc: RccRow): string {
@@ -460,7 +465,7 @@ export function buildRefProduit(
       reference: h.reference,
       ref_client: d.designation,
       type_ref: ref ? 'fini' : 'tombe_metier',
-      unite: prixUnitOf(d),
+      unite: uniteDe(cat, d),
       contexture: h.contexture,
       poids: h.poids,
       CategoriePoids: h.CategoriePoids,
