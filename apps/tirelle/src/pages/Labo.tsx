@@ -12,7 +12,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle, Archive, ArrowLeft, Check, CheckCircle2, CircleDashed, ClipboardList, Droplets, Loader2,
-  Palette, Pencil, RefreshCw, Ruler, Scissors, Trash2, X,
+  Building2, MessageSquare, Palette, Pencil, RefreshCw, Ruler, Scissors, Trash2, X,
 } from 'lucide-react'
 import {
   enregistrerAvantLavage, fetchLots, marquerJete, terminerApresLavage,
@@ -188,6 +188,24 @@ function Section({ etape, n, children }: { etape: EtapeLabo; n: number; children
   )
 }
 
+/** Who the lot is for: a teal pill, the one colour of the tablet that means
+ *  nothing else (navy = brand, gold = selection, red / amber = to do, green =
+ *  in tolerance), so the client stands out without reading as a status. */
+function PillClient({ nom, titre, grande }: { nom: string; titre?: string; grande?: boolean }) {
+  return (
+    <span
+      title={titre ?? nom}
+      className={cn(
+        'inline-flex min-w-0 items-center gap-1 rounded-full border border-teal/30 bg-teal-light font-semibold text-teal-dark',
+        grande ? 'px-3 py-1 text-sm' : 'px-2 py-0.5 text-xs',
+      )}
+    >
+      <Building2 className={cn('flex-shrink-0', grande ? 'h-4 w-4' : 'h-3 w-3')} />
+      <span className="truncate">{nom}</span>
+    </span>
+  )
+}
+
 function CarteLot({ lot, actif, onClick, droite }: { lot: LotLabo; actif: boolean; onClick: () => void; droite?: ReactNode }) {
   const rouge = lot.etape === 'a_jeter'
   const hors = Object.values(lot.hors).some((h) => h === true)
@@ -207,6 +225,14 @@ function CarteLot({ lot, actif, onClick, droite }: { lot: LotLabo; actif: boolea
         <div className="flex items-baseline gap-2">
           <span className="text-xl font-bold tabular-nums">{lot.lot}</span>
           {hors && <AlertTriangle className="h-4 w-4 text-destructive self-center" aria-label="Mesure hors tolérance" />}
+          {lot.clients.length > 0 && (
+            <span className="ml-auto min-w-0 flex self-center">
+              <PillClient
+                nom={lot.clients.length > 1 ? 'Plusieurs clients' : lot.clients[0]}
+                titre={lot.clients.join(', ')}
+              />
+            </span>
+          )}
         </div>
         <p className="text-sm truncate">{article(lot) || '—'}</p>
         {/* Dyer and reception date are on the open lot's title, not on the card. */}
@@ -241,6 +267,11 @@ function DetailLot({ lot, onFermer, onFait }: {
           <div className="flex items-baseline gap-3">
             <h2 className="flex-shrink-0 text-3xl leading-9 font-heading font-bold tracking-tight tabular-nums">{lot.lot}</h2>
             <p className="min-w-0 truncate text-base">{article(lot) || '—'}</p>
+            {lot.clients.length > 0 && (
+              <div className="min-w-0 flex flex-shrink items-center gap-1.5 self-center overflow-hidden">
+                {lot.clients.map((c) => <PillClient key={c} nom={c} grande />)}
+              </div>
+            )}
           </div>
           <p className="truncate text-sm text-muted-foreground">
             {[lot.sous_traitant, lot.reception && `reçu le ${jour(lot.reception)}`].filter(Boolean).join(' · ') || '—'}
@@ -321,6 +352,23 @@ function Bloc({ titre, icone: Icone, children }: { titre: string; icone: typeof 
   )
 }
 
+/** The lot's observations, in both steps: the very field of Qualité › Suivi
+ *  lots in ETM, shown as it stands and saved whole with the step. */
+function ChampObservations({ valeur, onChange, ecart }: { valeur: string; onChange: (v: string) => void; ecart?: boolean }) {
+  return (
+    <Bloc titre="Observations" icone={MessageSquare}>
+      <textarea
+        value={valeur}
+        onChange={(e) => onChange(e.target.value)}
+        rows={3}
+        maxLength={2000}
+        placeholder={ecart ? "Décrivez l'écart de coloris…" : 'Une remarque sur le lot (facultatif)'}
+        className="w-full rounded-xl border-2 border-border bg-background px-3 py-2 text-lg focus:outline-none focus:ring-4 focus:ring-gold/40 resize-none"
+      />
+    </Bloc>
+  )
+}
+
 // Once the round is done: one line recalling what was measured, with the way
 // back to correct it.
 function RecapAvantLavage({ lot, onCorriger }: { lot: LotLabo; onCorriger: () => void }) {
@@ -397,11 +445,11 @@ function BlocAvantLavage({ lot, correction = false, onAnnuler, onFait }: {
   const [laize, setLaize] = useState(fmt(lot.mesures.laize || null))
   const [poids, setPoids] = useState(fmt(lot.mesures.poids || null))
   const [coloris, setColoris] = useState<VerdictColoris | null>(lot.mesures.coloris)
-  const [note, setNote] = useState('')
+  const [observations, setObservations] = useState(lot.observations)
   const aides = aidesTolerance(lot.tolerances)
   const demande = (m: string) => lot.demandes.rond.includes(m)
   const mut = useMutation({
-    mutationFn: () => enregistrerAvantLavage(lot.idsuivilot, { laize, poids, coloris, note: coloris === 'ecart' ? note : undefined }),
+    mutationFn: () => enregistrerAvantLavage(lot.idsuivilot, { laize, poids, coloris, observations }),
     onSuccess: onFait,
   })
   const complet = (!demande('laize') || lireNombre(laize)) && (!demande('poids') || lireNombre(poids)) && (!demande('coloris') || coloris)
@@ -469,17 +517,9 @@ function BlocAvantLavage({ lot, correction = false, onAnnuler, onFait }: {
               </button>
             ))}
           </div>
-          {coloris === 'ecart' && (
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              rows={2}
-              placeholder="L'écart en quelques mots (ajouté aux observations du lot)"
-              className="w-full rounded-xl border-2 border-border bg-background px-3 py-2 text-lg focus:outline-none focus:ring-4 focus:ring-gold/40"
-            />
-          )}
         </Bloc>
       )}
+      <ChampObservations valeur={observations} onChange={setObservations} ecart={coloris === 'ecart'} />
     </Etape>
   )
 }
@@ -530,6 +570,7 @@ function BlocApresLavage({ lot, onFait }: { lot: LotLabo; onFait: () => void }) 
   const [sl, setSl] = useState<'-' | '+'>(signeDe(lot.mesures.stabl))
   const [vrillage, setVrillage] = useState(fmt(lot.mesures.vrillage))
   const [casier, setCasier] = useState(() => dernierCasier())
+  const [observations, setObservations] = useState(lot.observations)
   const aides = aidesTolerance(lot.tolerances)
   const demande = (m: string) => lot.demandes.carre.includes(m)
   const signe = (s: '-' | '+', v: string) => {
@@ -544,6 +585,7 @@ function BlocApresLavage({ lot, onFait }: { lot: LotLabo; onFait: () => void }) 
       stabl: vl == null ? '' : String(vl),
       vrillage,
       casier,
+      observations,
     }),
     onSuccess: () => {
       try {
@@ -605,6 +647,7 @@ function BlocApresLavage({ lot, onFait }: { lot: LotLabo; onFait: () => void }) 
             </div>
           </div>
       </Bloc>
+      <ChampObservations valeur={observations} onChange={setObservations} />
     </Etape>
   )
 }

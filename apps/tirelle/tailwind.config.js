@@ -79,6 +79,7 @@ export default {
         teal: {
           DEFAULT: "hsl(var(--teal))",
           light: "hsl(var(--teal-light))",
+          dark: "hsl(var(--teal-dark))",
           foreground: "hsl(var(--teal-foreground))",
         },
         terracotta: {

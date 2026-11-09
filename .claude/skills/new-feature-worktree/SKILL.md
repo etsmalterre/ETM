@@ -45,13 +45,16 @@ bookkeeping) is done by `scripts/worktree/up.mjs`. The registry lives at
 
 2. **Run the spin-up script** from the ETM main checkout:
    ```bash
-   node scripts/worktree/up.mjs <feature-name> [ng|trm] --terminal [--app atelier|trs|pointage] [--api <port>]
+   node scripts/worktree/up.mjs <feature-name> [ng|trm] --terminal [--app atelier|trs|pointage|tirelle] [--api <port>]
    ```
    This fetches origin (in the target repo — TRM is resolved as the sibling checkout
    for `trm`), allocates a free slot, creates the worktree off `origin/master`, installs
    deps, and:
    - **ng**: writes a CORS-correct `apps/api/.env.development`, copies `secrets/`, starts
-     the API (`dev:808N`) and web (`dev:300N`) detached.
+     the API (`dev:808N`) and web (`dev:300N`) detached. `--app tirelle` serves the lab
+     tablet PWA (`apps/tirelle`) on `300N` instead of the ERP, against the slot's API; no
+     enrolment in dev (the API plays the tablet on a dev database). Switch an existing slot
+     with `up.mjs <feature> ng --restart --app tirelle` (`--app web` to go back).
    - **trm**: writes `.env.development.local` for the three apps (`VITE_API_URL` → the chosen
      ETM API, plus the tab label), starts ONE web server on `517N` detached — the ERP by
      default, or the PWA named by `--app atelier` / `--app trs`. The TRM skill infers the app

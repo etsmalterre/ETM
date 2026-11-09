@@ -64,14 +64,14 @@ const terminalIdx = argv.indexOf('--terminal')
 const wantTerminal = terminalIdx !== -1
 if (wantTerminal) argv.splice(terminalIdx, 1)
 // --app: which app of a multi-app project the slot's port serves (TRM: web = the
-// ERP, atelier, trs). The skill infers it from the session's cwd — a session
+// ERP, atelier, trs, pointage; ETM: web = the ERP, tirelle). The skill infers it from the session's cwd — a session
 // opened in apps/atelier is atelier work and wants the PWA's link back, not the
 // ERP's (2026-09-15). On --restart it defaults to the app the slot already serves.
 const appIdx = argv.indexOf('--app')
 let appKey = null
 if (appIdx !== -1) {
   appKey = argv[appIdx + 1]
-  if (!appKey || appKey.startsWith('--')) { console.error('--app needs one of: web, atelier, trs'); process.exit(1) }
+  if (!appKey || appKey.startsWith('--')) { console.error('--app needs one of: web, atelier, trs, pointage (TRM) / web, tirelle (ETM)'); process.exit(1) }
   argv.splice(appIdx, 2)
 }
 const apiIdx = argv.indexOf('--api')
@@ -87,7 +87,7 @@ if (apiIdx !== -1) {
 const feature = (argv[0] || '').trim()
 const projectKey = (argv[1] || detectDefaultProject()).trim().toLowerCase()
 if (!/^[a-z0-9][a-z0-9-]*$/.test(feature)) {
-  console.error('Usage: node scripts/worktree/up.mjs <feature-name> [ng|trm|admin] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs]  (feature kebab-case)')
+  console.error('Usage: node scripts/worktree/up.mjs <feature-name> [ng|trm|admin] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs|pointage|tirelle]  (feature kebab-case)')
   process.exit(1)
 }
 if (!['ng', 'trm', 'admin'].includes(projectKey)) {

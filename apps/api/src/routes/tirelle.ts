@@ -8,8 +8,8 @@
 //     POST /appareil/enroler                { code } → sets the `mps_tirelle` cookie
 //   The lab (enrolled tablet; reads also open to an admin session):
 //     GET  /lots                            every lot with something to do, by status
-//     POST /lots/:id/avant-lavage           { laize, poids, coloris, note? }
-//     POST /lots/:id/apres-lavage           { stabh, stabl, vrillage, casier } — done
+//     POST /lots/:id/avant-lavage           { laize, poids, coloris, observations?, note? }
+//     POST /lots/:id/apres-lavage           { stabh, stabl, vrillage, casier, observations? } — done
 //     POST /lots/:id/jete                   after a reprise: round, square, tirelle thrown
 //
 // ⚠️ Its own cookie, `mps_tirelle` (like `mps_pointeuse`): browsers share
@@ -33,6 +33,7 @@ import {
 } from '../lib/appareils-atelier.js'
 import {
   LIBELLE_ETAPE,
+  OBSERVATIONS_MAX,
   ORDRE_ETAPES,
   RefusLabo,
   enregistrerAvantLavage,
@@ -179,6 +180,7 @@ const avantBody = z
     poids: z.union([z.number(), z.string()]).nullable().optional(),
     coloris: z.enum(['conforme', 'ecart']).nullable().optional(),
     note: z.string().max(500).optional(),
+    observations: z.string().max(OBSERVATIONS_MAX).optional(),
   })
   .strict()
 
@@ -204,6 +206,7 @@ const apresBody = z
     stabl: z.union([z.number(), z.string()]).nullable().optional(),
     vrillage: z.union([z.number(), z.string()]).nullable().optional(),
     casier: z.string().max(100).optional(),
+    observations: z.string().max(OBSERVATIONS_MAX).optional(),
   })
   .strict()
 

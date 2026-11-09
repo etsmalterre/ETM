@@ -47,6 +47,19 @@ export const PROJECTS = {
     webPort: (n) => 3000 + n,
     apiScript: (n) => `dev:${8080 + n}`,
     webScript: (n) => `dev:${3000 + n}`,
+    // Like TRM: the slot's web port serves ONE app — the ERP by default, or the
+    // lab tablet PWA (`--app tirelle`, 2026-11-09) against the slot's own API.
+    // Its `dev` script bakes API 8080, so call vite through cross-env here.
+    // No enrolment needed in dev: the API plays the tablet on a dev database
+    // (routes/tirelle.ts enrolementTirelleContourne).
+    apps: {
+      web: { pkg: '@mps/web', script: (n) => `dev:${3000 + n}`, label: 'ERP' },
+      tirelle: {
+        pkg: '@mps/tirelle',
+        script: (n) => `exec cross-env VITE_API_URL=http://localhost:${8080 + n}/api vite --port ${3000 + n}`,
+        label: 'Tirelle',
+      },
+    },
   },
   trm: {
     key: 'trm',

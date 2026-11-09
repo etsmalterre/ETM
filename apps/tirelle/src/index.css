@@ -45,6 +45,7 @@
     /* Extended Palette - Teal */
     --teal: 175 42% 45%;
     --teal-light: 175 35% 92%;
+    --teal-dark: 175 50% 24%;
     --teal-foreground: 0 0% 100%;
 
     /* Extended Palette - Terracotta */
@@ -120,6 +121,7 @@
     /* Extended Palette - Dark mode */
     --teal: 175 42% 55%;
     --teal-light: 175 30% 18%;
+    --teal-dark: 175 40% 80%;
     --teal-foreground: 0 0% 100%;
 
     --terracotta: 18 55% 55%;

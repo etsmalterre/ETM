@@ -150,6 +150,10 @@ export interface LotLabo {
   /** The binder's reference round: null when the lot is not a dyed fini. */
   rond0: { lot: string; date: string | null; estCeLot: boolean } | null
   emplacement: string
+  /** The lot's free observations — the very field of Qualité › Suivi lots. */
+  observations: string
+  /** Who the lot is for, by name (sorted; empty = stock). */
+  clients: string[]
   a_jeter: { depuis: string; motif: string; casier: string } | null
 }
 
@@ -168,6 +172,9 @@ interface LotBrut {
   vrillage_tirelle: string | null
   coloris_tirelle: string | null
   emplacement: string | null
+  observations: string | null
+  ligne_sst: string | null
+  cmd_sst: string | null
   stabh_demandee: string | null
   stabl_demandee: string | null
   sst: string | null
@@ -198,7 +205,8 @@ export async function lireLotsLabo(opts: { ids?: number[] } = {}, sql: Sql = mps
            COALESCE(NULLIF(s.idref_fini, 0), l.idreference, 0) AS ref,
            COALESCE(s.idref_fini_colori, 0) AS coloris_id, COALESCE(s.idcoloris, 0) AS idcoloris,
            s.laize_tirelle, s.poids_tirelle, s.stabh_tirelle, s.stabl_tirelle, s.vrillage_tirelle, s.coloris_tirelle,
-           trim(s.emplacement_tirelle::text) AS emplacement,
+           trim(s.emplacement_tirelle::text) AS emplacement, s.observations::text AS observations,
+           COALESCE(s.idligne_commande_sous_traitant, 0) AS ligne_sst, COALESCE(l.idcommande_sous_traitant, 0) AS cmd_sst,
            s.stabh_demandee, s.stabl_demandee, st.nom::text AS sst,
            t.idsuivilot AS labo_id, t.termine_le, t.a_jeter_depuis, t.a_jeter_motif, t.a_jeter_casier
     FROM suivilot s
@@ -234,6 +242,10 @@ export async function lireLotsLabo(opts: { ids?: number[] } = {}, sql: Sql = mps
   ])
   const nomFini = new Map(nomsFini.map((r) => [Number(r.id), r.nom ?? '']))
   const nomEcru = new Map(nomsEcru.map((r) => [Number(r.id), r.nom ?? '']))
+
+  const clients = await clientsDesLotsLabo(rows.map((r) => ({
+    id: Number(r.idsuivilot), ligne: num(r.ligne_sst), lot: r.lot ?? '', commande: num(r.cmd_sst),
+  })), sql)
 
   const rond0 = await rondsZero(rows.map((r) => ({ ref: num(r.ref), coloris: num(r.coloris_id) })))
 
@@ -300,10 +312,66 @@ export async function lireLotsLabo(opts: { ids?: number[] } = {}, sql: Sql = mps
       hors: horsTolerance(mesures, tolerances),
       rond0: avecTeinture > 0 && r0 ? { lot: r0.lot, date: r0.date, estCeLot: r0.idsuivilot === id } : null,
       emplacement: (r.emplacement ?? '').trim(),
+      observations: (r.observations ?? '').trim(),
+      clients: clients.get(id) ?? [],
       a_jeter: labo?.a_jeter_depuis
         ? { depuis: labo.a_jeter_depuis, motif: labo.a_jeter_motif ?? '', casier: labo.a_jeter_casier ?? '' }
         : null,
     })
+  }
+  return out
+}
+
+/** The clients each lot is for — Qualité › Suivi lots' rule (#1249), batched:
+ *  the lot's fini rolls reserved to client lines; before any reception, the
+ *  écru on the dyer line reserved to client lines; the sst order's header
+ *  (`commande_sous_traitant.idcommande_client`, set only when the order was
+ *  launched from a client line) as the last resort. */
+export async function clientsDesLotsLabo(
+  lots: Array<{ id: number; ligne: number; lot: string; commande: number }>,
+  sql: Sql = mpsPg(),
+): Promise<Map<number, string[]>> {
+  const out = new Map<number, string[]>()
+  const lignes = [...new Set(lots.map((l) => l.ligne).filter((x) => x > 0))]
+  const commandes = [...new Set(lots.map((l) => l.commande).filter((x) => x > 0))]
+  if (lignes.length === 0 && commandes.length === 0) return out
+  const [finis, ecrus, entetes] = await Promise.all([
+    lignes.length ? sql<{ ligne: number; lot: string; nom: string | null }[]>`
+      SELECT DISTINCT sf.idref_commande_source AS ligne, trim(sf.lot::text) AS lot, trim(c.nom::text) AS nom
+      FROM stock_fini sf
+      JOIN ligne_commande_client lcc ON lcc.idligne_commande_client = sf.idligne_commande_client
+      JOIN commande_client cc ON cc.idcommande_client = lcc.idcommande_client
+      JOIN client c ON c.idclient = cc.idclient
+      WHERE sf.idref_commande_source = ANY(${lignes}) AND sf.idligne_commande_client > 0` : [],
+    lignes.length ? sql<{ ligne: number; nom: string | null }[]>`
+      SELECT DISTINCT se.idref_commande_affectation AS ligne, trim(c.nom::text) AS nom
+      FROM stock_ecru se
+      JOIN ligne_commande_client lcc ON lcc.idligne_commande_client = se.idligne_commande_client
+      JOIN commande_client cc ON cc.idcommande_client = lcc.idcommande_client
+      JOIN client c ON c.idclient = cc.idclient
+      WHERE se.idref_commande_affectation = ANY(${lignes}) AND se.idligne_commande_client > 0` : [],
+    commandes.length ? sql<{ commande: number; nom: string | null }[]>`
+      SELECT cst.idcommande_sous_traitant AS commande, trim(c.nom::text) AS nom
+      FROM commande_sous_traitant cst
+      JOIN commande_client cc ON cc.idcommande_client = cst.idcommande_client
+      JOIN client c ON c.idclient = cc.idclient
+      WHERE cst.idcommande_sous_traitant = ANY(${commandes}) AND COALESCE(cst.idcommande_client, 0) > 0` : [],
+  ])
+  const ajouter = (m: Map<string, Set<string>>, cle: string, nom: string | null) => {
+    if (!nom) return
+    const s = m.get(cle) ?? new Set<string>()
+    s.add(nom)
+    m.set(cle, s)
+  }
+  const parLot = new Map<string, Set<string>>()
+  for (const f of finis) ajouter(parLot, `${Number(f.ligne)}|${f.lot}`, f.nom)
+  const parLigne = new Map<string, Set<string>>()
+  for (const e of ecrus) ajouter(parLigne, String(Number(e.ligne)), e.nom)
+  const parCommande = new Map<string, Set<string>>()
+  for (const e of entetes) ajouter(parCommande, String(Number(e.commande)), e.nom)
+  for (const l of lots) {
+    const noms = parLot.get(`${l.ligne}|${l.lot.trim()}`) ?? parLigne.get(String(l.ligne)) ?? parCommande.get(String(l.commande))
+    if (noms?.size) out.set(l.id, [...noms].sort((a, b) => a.localeCompare(b, 'fr')))
   }
   return out
 }
@@ -330,6 +398,14 @@ function lireNombre(v: unknown): number | null {
   return x
 }
 
+export const OBSERVATIONS_MAX = 2000
+
+/** The lot's observations as typed on the tablet: a string replaces the field
+ *  (same field and same gesture as Qualité › Suivi lots), absent leaves it. */
+function lireObservations(v: unknown): string | undefined {
+  return typeof v === 'string' ? v.trim().slice(0, OBSERVATIONS_MAX) : undefined
+}
+
 function borner(x: number | null, min: number, max: number, libelle: string): number | null {
   if (x === null) return null
   if (x < min || x > max) throw new RefusLabo('valeur_hors_limites', `${libelle} : ${x} est hors des limites (${min} à ${max}).`, 400)
@@ -343,8 +419,9 @@ async function toucherLabo(sql: Sql, id: number): Promise<void> {
 /** Before the wash (on the round): laize, poids, coloris vs the rond 0. Every
  *  measure the reference asks here is required; a later call corrects them.
  *  Once given, the lot moves to « après lavage » on its own. An écart of
- *  coloris carries its why into the lot's observations, like on Suivi lots. */
-export async function enregistrerAvantLavage(id: number, b: { laize?: unknown; poids?: unknown; coloris?: unknown; note?: unknown }): Promise<LotLabo | null> {
+ *  coloris carries its why into the lot's observations, like on Suivi lots
+ *  (`note`, sent by builds older than the observations field). */
+export async function enregistrerAvantLavage(id: number, b: { laize?: unknown; poids?: unknown; coloris?: unknown; note?: unknown; observations?: unknown }): Promise<LotLabo | null> {
   const l = await lotOuRefus(id)
   if (l.etape === 'a_jeter') throw new RefusLabo('lot_a_jeter', 'Ce lot est parti en reprise : jetez d’abord son rond, son carré et sa tirelle.')
   const laize = borner(lireNombre(b.laize), 10, 400, 'Laize')
@@ -357,6 +434,7 @@ export async function enregistrerAvantLavage(id: number, b: { laize?: unknown; p
   if (l.demandes.rond.includes('coloris') && !coloris) manque.push('le coloris')
   if (manque.length) throw new RefusLabo('mesure_manquante', `Il manque ${manque.join(', ')}.`, 400)
   const note = typeof b.note === 'string' ? b.note.trim().slice(0, 500) : ''
+  const observations = lireObservations(b.observations)
 
   await mpsPg().begin(async (t) => {
     const tx = t as unknown as Sql
@@ -364,6 +442,7 @@ export async function enregistrerAvantLavage(id: number, b: { laize?: unknown; p
         laize_tirelle = ${laize ?? l.mesures.laize}, poids_tirelle = ${poids ?? l.mesures.poids},
         coloris_tirelle = ${coloris ?? l.mesures.coloris}
       WHERE idsuivilot = ${id}`
+    if (observations !== undefined) await tx`UPDATE suivilot SET observations = ${observations} WHERE idsuivilot = ${id}`
     if (coloris === 'ecart' && note) {
       await tx`UPDATE suivilot SET observations = trim(both E'\n' from COALESCE(observations::text, '') || E'\n' || ${`Écart coloris (tirelle) : ${note}`})
         WHERE idsuivilot = ${id}`
@@ -378,7 +457,7 @@ export const CASIER_MAX = 40
 /** After the wash (on the square): stab H, stab L, vrillage, and the casier
  *  where square and tirelle are stored. One gesture: the lab is done with the
  *  lot. Values already on the lot (typed on a PC) may be left as they are. */
-export async function terminerApresLavage(id: number, b: { stabh?: unknown; stabl?: unknown; vrillage?: unknown; casier?: unknown }): Promise<void> {
+export async function terminerApresLavage(id: number, b: { stabh?: unknown; stabl?: unknown; vrillage?: unknown; casier?: unknown; observations?: unknown }): Promise<void> {
   const l = await lotOuRefus(id)
   if (l.etape !== 'apres_lavage') {
     throw new RefusLabo('avant_lavage_incomplet', l.etape === 'a_jeter'
@@ -402,6 +481,7 @@ export async function terminerApresLavage(id: number, b: { stabh?: unknown; stab
     throw e
   }
   const casier = typeof b.casier === 'string' ? b.casier.trim().slice(0, CASIER_MAX) : ''
+  const observations = lireObservations(b.observations)
   const manque: string[] = []
   // 0 / 0 is an ultra-stable matter, a real measure (#1358). A value already on
   // the lot (typed on a PC) stands for the one left empty.
@@ -418,6 +498,7 @@ export async function terminerApresLavage(id: number, b: { stabh?: unknown; stab
         stabh_tirelle = ${stabh ?? l.mesures.stabh}, stabl_tirelle = ${stabl ?? l.mesures.stabl},
         vrillage_tirelle = ${vrillage ?? l.mesures.vrillage}, emplacement_tirelle = ${casier}
       WHERE idsuivilot = ${id}`
+    if (observations !== undefined) await tx`UPDATE suivilot SET observations = ${observations} WHERE idsuivilot = ${id}`
     await toucherLabo(tx, id)
     await tx`UPDATE tirelle_labo SET termine_le = now(), maj_le = now() WHERE idsuivilot = ${id}`
   })

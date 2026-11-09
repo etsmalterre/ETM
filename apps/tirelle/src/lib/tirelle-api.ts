@@ -43,6 +43,10 @@ export interface LotLabo {
   hors: Record<'laize' | 'poids' | 'stabh' | 'stabl' | 'vrillage' | 'coloris', boolean | null>
   rond0: { lot: string; date: string | null; estCeLot: boolean } | null
   emplacement: string
+  /** The lot's observations — the same field as Qualité › Suivi lots in ETM. */
+  observations: string
+  /** Who the lot is for, by name (empty = stock). */
+  clients: string[]
   a_jeter: { depuis: string; motif: string; casier: string } | null
 }
 
@@ -71,8 +75,8 @@ export const fetchLots = () => apiFetch<LotsLabo>('/tirelle/lots')
 const post = <T = { ok: true }>(path: string, body?: unknown) =>
   apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body ?? {}) })
 
-export const enregistrerAvantLavage = (id: number, b: { laize: string; poids: string; coloris: VerdictColoris | null; note?: string }) =>
+export const enregistrerAvantLavage = (id: number, b: { laize: string; poids: string; coloris: VerdictColoris | null; observations: string }) =>
   post<{ lot: LotLabo | null }>(`/tirelle/lots/${id}/avant-lavage`, b)
-export const terminerApresLavage = (id: number, b: { stabh: string; stabl: string; vrillage: string; casier: string }) =>
+export const terminerApresLavage = (id: number, b: { stabh: string; stabl: string; vrillage: string; casier: string; observations: string }) =>
   post(`/tirelle/lots/${id}/apres-lavage`, b)
 export const marquerJete = (id: number) => post(`/tirelle/lots/${id}/jete`)
