@@ -670,7 +670,6 @@ function AvantLavage({ lot, correction = false, onAnnuler, onFait }: {
         )}
         {demande('coloris') && (
               <Tache n={++n} titre="Comparer le coloris au rond 0" fait={!!coloris}>
-                <InfoRond0 lot={lot} />
                 {/* The two buttons grow to the measures' height: big targets. */}
                 <div className="flex-1 grid grid-cols-2 gap-3">
                   {([['conforme', 'Conforme', CheckCircle2], ['ecart', 'Écart', AlertTriangle]] as const).map(([v, libelle, Icone]) => (
