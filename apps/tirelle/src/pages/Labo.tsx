@@ -773,23 +773,24 @@ function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: ()
       )}
     >
       <RecapRond lot={lot} onCorriger={onCorriger} />
-      {/* The square's measures side by side (up to three: the step must fit the
-          tablet's 600 px), then the casier beside the observations. */}
+      {/* The square's measures one per line with their gauges (a little lower
+          than the round's: up to three must fit the tablet's 600 px), then the
+          casier beside the observations. */}
         {aMesurer && (
           <Tache n={++n} titre="Mesurer le carré lavé et séché" fait={stabsFaites && vrillageFait}>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="flex flex-col gap-2">
             {demande('stabilités') && (
               <>
-                <ChampNombre grand label="Stab H" unite="%" valeur={stabh} onChange={setStabh} signe={sh} onSigne={setSh}
+                <ChampNombre label="Stab H" unite="%" valeur={stabh} onChange={setStabh} signe={sh} onSigne={setSh}
                   jauge={lot.tolerances.stabh != null ? { min: lot.tolerances.stabh, max: null } : null}
                   aide={aides.stabh} hors={horsRetrait(vh, lot.tolerances.stabh)} />
-                <ChampNombre grand label="Stab L" unite="%" valeur={stabl} onChange={setStabl} signe={sl} onSigne={setSl}
+                <ChampNombre label="Stab L" unite="%" valeur={stabl} onChange={setStabl} signe={sl} onSigne={setSl}
                   jauge={lot.tolerances.stabl != null ? { min: lot.tolerances.stabl, max: null } : null}
                   aide={aides.stabl} hors={horsRetrait(vl, lot.tolerances.stabl)} />
               </>
             )}
             {demande('vrillage') && (
-              <ChampNombre grand label="Vrillage" unite="%" valeur={vrillage} onChange={setVrillage}
+              <ChampNombre label="Vrillage" unite="%" valeur={vrillage} onChange={setVrillage} placeSigne={demande('stabilités')}
                 jauge={{ min: 0, max: lot.tolerances.vrillageMax }}
                 aide={aides.vrillage}
                 hors={lireNombre(vrillage) == null ? null : lireNombre(vrillage)! > lot.tolerances.vrillageMax} />

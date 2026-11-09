@@ -51,6 +51,7 @@ export function ChampNombre({
   autoFocus,
   grand,
   jauge,
+  placeSigne,
 }: {
   label: string
   unite: string
@@ -66,66 +67,89 @@ export function ChampNombre({
   autoFocus?: boolean
   /** Bench size: a taller field and bigger digits (the lab screen's two columns). */
   grand?: boolean
-  /** Suivi lots' tolerance gauge on the label's line, in place of the tolerance text. */
+  /** Suivi lots' tolerance gauge: given (even null), the measure is one line —
+   *  label, a narrow field, the gauge (or the tolerance text) on the rest. */
   jauge?: BornesJauge | null
+  /** No sign of its own but lined up under measures that have one (vrillage under the stabs). */
+  placeSigne?: boolean
 }) {
   const x = lireNombre(valeur)
   const signee = x == null ? null : signe === '-' ? -x : x
   const avecJauge = !!jauge && (jauge.min != null || jauge.max != null)
+  const texteAide = (aide || hors === true) && (
+    <span className={cn('min-w-0 truncate text-sm', hors === true ? 'text-destructive font-semibold' : 'text-muted-foreground')}>
+      {hors === true ? `Hors tolérance${aide ? ` (${aide})` : ''}` : aide}
+    </span>
+  )
+  const boutonsSigne = signe && onSigne && (
+    <div className="flex rounded-xl border border-border overflow-hidden flex-shrink-0">
+      {(['-', '+'] as const).map((s) => (
+        <button
+          key={s}
+          type="button"
+          disabled={disabled}
+          onClick={() => onSigne(s)}
+          className={cn(
+            grand ? 'w-16 text-3xl' : 'w-12 text-2xl',
+            'font-bold transition-colors',
+            signe === s ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground active:bg-muted',
+          )}
+          aria-pressed={signe === s}
+          title={s === '-' ? 'Retrait (négatif)' : 'Allongement (positif)'}
+        >
+          {s === '-' ? '−' : '+'}
+        </button>
+      ))}
+    </div>
+  )
+  const champ = (largeur: string) => (
+    <div className={cn('relative min-w-0', largeur)}>
+      <input
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        autoFocus={autoFocus}
+        disabled={disabled}
+        value={valeur}
+        aria-label={label}
+        onChange={(e) => onChange(e.target.value.replace(/[^0-9.,]/g, ''))}
+        className={cn(
+          'w-full min-w-0 rounded-xl border-2 bg-background pl-4 pr-16 font-bold tabular-nums',
+          grand ? 'h-[72px] text-4xl' : 'h-14 text-3xl',
+          'focus:outline-none focus:ring-4 focus:ring-gold/40 disabled:opacity-60',
+          hors === true ? 'border-destructive text-destructive' : hors === false ? 'border-success' : 'border-border',
+        )}
+      />
+      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-lg text-muted-foreground pointer-events-none">{unite}</span>
+    </div>
+  )
+
+  // With a gauge (even an empty one): one line — label, a field sized to its
+  // figure, then the gauge on the rest of the width (Vincent 2026-11-09).
+  if (jauge !== undefined) {
+    return (
+      <div className="flex items-center gap-3 min-w-0">
+        <label className="w-20 flex-shrink-0 text-sm font-semibold text-muted-foreground uppercase tracking-wide">{label}</label>
+        {boutonsSigne || (placeSigne && <div className={cn('flex-shrink-0', grand ? 'w-[130px]' : 'w-[98px]')} />)}
+        {champ('w-48 flex-shrink-0')}
+        <div className="flex-1 min-w-0 pl-3">
+          {avecJauge ? <Jauge valeur={signee} bornes={jauge!} hors={hors} /> : texteAide}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-1 min-w-0">
       {/* The tolerance on the label's line, not under the field: the whole step
           fits the tablet in landscape without scrolling. */}
-      <div className={cn('flex justify-between gap-2', avecJauge ? 'items-start' : 'items-baseline')}>
+      <div className="flex items-baseline justify-between gap-2">
         <label className="text-sm font-semibold text-muted-foreground uppercase tracking-wide flex-shrink-0">{label}</label>
-        {avecJauge ? (
-          <Jauge valeur={signee} bornes={jauge!} hors={hors} className="ml-6 mt-1 max-w-[70%]" />
-        ) : (aide || hors === true) && (
-          <span className={cn('min-w-0 truncate text-sm', hors === true ? 'text-destructive font-semibold' : 'text-muted-foreground')}>
-            {hors === true ? `Hors tolérance${aide ? ` (${aide})` : ''}` : aide}
-          </span>
-        )}
+        {texteAide}
       </div>
       <div className="flex items-stretch gap-2">
-        {signe && onSigne && (
-          <div className="flex rounded-xl border border-border overflow-hidden flex-shrink-0">
-            {(['-', '+'] as const).map((s) => (
-              <button
-                key={s}
-                type="button"
-                disabled={disabled}
-                onClick={() => onSigne(s)}
-                className={cn(
-                  grand ? 'w-16 text-3xl' : 'w-12 text-2xl',
-                  'font-bold transition-colors',
-                  signe === s ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground active:bg-muted',
-                )}
-                aria-pressed={signe === s}
-                title={s === '-' ? 'Retrait (négatif)' : 'Allongement (positif)'}
-              >
-                {s === '-' ? '−' : '+'}
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="relative flex-1 min-w-0">
-          <input
-            type="text"
-            inputMode="decimal"
-            autoComplete="off"
-            autoFocus={autoFocus}
-            disabled={disabled}
-            value={valeur}
-            onChange={(e) => onChange(e.target.value.replace(/[^0-9.,]/g, ''))}
-            className={cn(
-              'w-full min-w-0 rounded-xl border-2 bg-background pl-4 pr-16 font-bold tabular-nums',
-              grand ? 'h-[72px] text-4xl' : 'h-14 text-3xl',
-              'focus:outline-none focus:ring-4 focus:ring-gold/40 disabled:opacity-60',
-              hors === true ? 'border-destructive text-destructive' : hors === false ? 'border-success' : 'border-border',
-            )}
-          />
-          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-lg text-muted-foreground pointer-events-none">{unite}</span>
-        </div>
+        {boutonsSigne}
+        {champ('flex-1')}
       </div>
     </div>
   )
