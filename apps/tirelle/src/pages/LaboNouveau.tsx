@@ -304,12 +304,9 @@ function Carte({ lot, onClick }: { lot: LotLabo; onClick: () => void }) {
         {lot.etape === 'a_jeter' ? (
           <span className="truncate text-xs text-muted-foreground">Repris : {lot.a_jeter?.motif || 'reprise'}</span>
         ) : lot.delai ? (
-          <>
-            <PillDelai delai={lot.delai} />
-            <span className={cn('truncate text-xs', lot.delai.rouge ? 'text-destructive font-semibold' : 'text-muted-foreground')}>
-              {texteEcheance(lot.delai)}
-            </span>
-          </>
+          // The pill alone on the card (Vincent 2026-11-09); the échéance in
+          // words stays on the open lot's band.
+          <PillDelai delai={lot.delai} />
         ) : (
           <span className="truncate text-xs text-muted-foreground">{lot.sous_traitant}</span>
         )}
