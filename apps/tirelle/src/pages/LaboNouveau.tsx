@@ -64,20 +64,6 @@ function age(n: number): string {
   return `reçu il y a ${n} j`
 }
 
-const JOURS = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.']
-/** « jeu. 12/11 ». */
-function jourCourt(iso: string): string {
-  const d = new Date(`${iso.slice(0, 10)}T00:00:00`)
-  return `${JOURS[d.getDay()]} ${iso.slice(8, 10)}/${iso.slice(5, 7)}`
-}
-
-/** The lab's window, in words: what the colour asks. */
-function texteEcheance(d: DelaiControle): string {
-  if (d.restants > 0) return `à contrôler d’ici ${jourCourt(d.echeance)}`
-  if (d.restants === 0) return 'à contrôler aujourd’hui'
-  return `en retard depuis ${jourCourt(d.echeance)}`
-}
-
 const article = (l: LotLabo) => [l.reference, l.coloris].filter(Boolean).join(' - ')
 
 /** The measures of the lot's current phase: [done, asked]. */
@@ -304,8 +290,7 @@ function Carte({ lot, onClick }: { lot: LotLabo; onClick: () => void }) {
         {lot.etape === 'a_jeter' ? (
           <span className="truncate text-xs text-muted-foreground">Repris : {lot.a_jeter?.motif || 'reprise'}</span>
         ) : lot.delai ? (
-          // The pill alone on the card (Vincent 2026-11-09); the échéance in
-          // words stays on the open lot's band.
+          // The pill alone, here and on the lot's band (Vincent 2026-11-09).
           <PillDelai delai={lot.delai} />
         ) : (
           <span className="truncate text-xs text-muted-foreground">{lot.sous_traitant}</span>
@@ -411,14 +396,7 @@ function Bandeau({ lot, onFermer }: { lot: LotLabo; onFermer: () => void }) {
               {lot.clients.map((c) => <PillClient key={c} nom={c} sombre />)}
             </div>
           )}
-          {lot.delai && (
-            <span className="flex-shrink-0 flex items-center gap-2">
-              <PillDelai delai={lot.delai} grande />
-              <span className={cn('hidden lg:inline text-sm', lot.delai.rouge ? 'font-semibold text-red-200' : 'text-white/70')}>
-                {texteEcheance(lot.delai)}
-              </span>
-            </span>
-          )}
+          {lot.delai && <PillDelai delai={lot.delai} grande />}
         </div>
         <p className="flex items-center gap-1.5 min-w-0 text-base text-white/90">
           <FiniRollIcon className="h-4 w-4 flex-shrink-0 text-white/80" />
