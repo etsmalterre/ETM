@@ -37,6 +37,8 @@ import { colorisAControler, rondsZero, rondZeroDe, lireVerdictColoris, type Verd
 import { horsBornes, horsRetrait } from './analyse-qualite.js'
 import { VRILLAGE_MAX, lireSaisieVrillage, VrillageInvalide } from './vrillage.js'
 import { lireSaisieStab, StabInvalide, valeurStab } from './stabilites.js'
+import { RELANCE_J, plusJoursOuvres } from './cycle-ennoblissement.js'
+import { joursOuvresEntre } from './jours-ouvres.js'
 
 // ── The steps (pure) ─────────────────────────────────────
 
@@ -130,6 +132,36 @@ export function horsTolerance(m: MesuresTirelle, t: Tolerances): HorsTolerance {
   }
 }
 
+// ── The lab's deadline (pure) ───────────────────────────
+
+/** Where a lot stands against the lab's window: the tirelle reaches us ~3 days
+ *  after the BL, +2 to wash and dry it — RELANCE_J.controle (5 working days,
+ *  public holidays excluded) from the reception, the very échéance Qualité ›
+ *  Suivi lots turns red on. Red from that day on (to do now), blue before. */
+export interface DelaiControle {
+  /** ISO date the controls are due. */
+  echeance: string
+  /** Calendar days since the reception (« reçu il y a N j »). */
+  joursDepuis: number
+  /** Working days left before the échéance; 0 = today, negative = late. */
+  restants: number
+  rouge: boolean
+}
+
+export function delaiControle(reception: string | null, today: string): DelaiControle | null {
+  if (!reception) return null
+  const r = reception.slice(0, 10)
+  const echeance = plusJoursOuvres(r, RELANCE_J.controle)
+  const joursDepuis = Math.max(0, Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${r}T00:00:00Z`)) / 86_400_000))
+  const restants = joursOuvresEntre(today.replace(/-/g, ''), echeance.replace(/-/g, ''))
+  return { echeance, joursDepuis, restants, rouge: echeance <= today }
+}
+
+/** Today in Europe/Paris, ISO. */
+function aujourdhui(): string {
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Paris' }).format(new Date())
+}
+
 // ── Reads ────────────────────────────────────────────────
 
 export interface LotLabo {
@@ -154,6 +186,8 @@ export interface LotLabo {
   observations: string
   /** Who the lot is for, by name (sorted; empty = stock). */
   clients: string[]
+  /** The lab's window from the reception (null before it, or for a bin run). */
+  delai: DelaiControle | null
   a_jeter: { depuis: string; motif: string; casier: string } | null
 }
 
@@ -247,6 +281,7 @@ export async function lireLotsLabo(opts: { ids?: number[] } = {}, sql: Sql = mps
     id: Number(r.idsuivilot), ligne: num(r.ligne_sst), lot: r.lot ?? '', commande: num(r.cmd_sst),
   })), sql)
 
+  const today = aujourdhui()
   const rond0 = await rondsZero(rows.map((r) => ({ ref: num(r.ref), coloris: num(r.coloris_id) })))
 
   const out: LotLabo[] = []
@@ -314,6 +349,7 @@ export async function lireLotsLabo(opts: { ids?: number[] } = {}, sql: Sql = mps
       emplacement: (r.emplacement ?? '').trim(),
       observations: (r.observations ?? '').trim(),
       clients: clients.get(id) ?? [],
+      delai: etape === 'a_jeter' ? null : delaiControle(r.reception, today),
       a_jeter: labo?.a_jeter_depuis
         ? { depuis: labo.a_jeter_depuis, motif: labo.a_jeter_motif ?? '', casier: labo.a_jeter_casier ?? '' }
         : null,

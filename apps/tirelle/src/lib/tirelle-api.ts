@@ -28,6 +28,14 @@ export interface Tolerances {
   vrillageMax: number
 }
 
+/** The lab's window: 5 working days from the reception (API delaiControle). */
+export interface DelaiControle {
+  echeance: string
+  joursDepuis: number
+  restants: number
+  rouge: boolean
+}
+
 export interface LotLabo {
   idsuivilot: number
   lot: string
@@ -47,6 +55,8 @@ export interface LotLabo {
   observations: string
   /** Who the lot is for, by name (empty = stock). */
   clients: string[]
+  /** The lab's window (null before the reception, or for a bin run). */
+  delai: DelaiControle | null
   a_jeter: { depuis: string; motif: string; casier: string } | null
 }
 

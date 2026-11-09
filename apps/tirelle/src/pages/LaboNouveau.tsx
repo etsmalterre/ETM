@@ -17,12 +17,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  AlertTriangle, Archive, ArrowLeft, Building2, Check, CheckCircle2, ChevronRight, CircleDashed, Droplets,
+  AlertTriangle, Archive, ArrowLeft, Building2, Clock, Check, CheckCircle2, ChevronRight, CircleDashed, Droplets,
   Loader2, Palette, Pencil, RefreshCw, Ruler, Scissors, Trash2, X,
 } from 'lucide-react'
 import {
   enregistrerAvantLavage, fetchLots, marquerJete, terminerApresLavage,
-  type EtapeLabo, type LotLabo, type VerdictColoris,
+  type DelaiControle, type EtapeLabo, type LotLabo, type VerdictColoris,
 } from '@/lib/tirelle-api'
 import type { ApiError } from '@/lib/api'
 import { messagePourErreur } from '@/lib/erreurs'
@@ -58,15 +58,24 @@ function jour(d: string | null): string {
 }
 
 /** « reçu aujourd'hui / hier / il y a 12 j ». */
-function age(d: string | null): string {
-  if (!d) return ''
-  const t = new Date(`${d.slice(0, 10)}T00:00:00`)
-  const auj = new Date()
-  auj.setHours(0, 0, 0, 0)
-  const n = Math.round((auj.getTime() - t.getTime()) / 86_400_000)
+function age(n: number): string {
   if (n <= 0) return 'reçu aujourd’hui'
   if (n === 1) return 'reçu hier'
   return `reçu il y a ${n} j`
+}
+
+const JOURS = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.']
+/** « jeu. 12/11 ». */
+function jourCourt(iso: string): string {
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00`)
+  return `${JOURS[d.getDay()]} ${iso.slice(8, 10)}/${iso.slice(5, 7)}`
+}
+
+/** The lab's window, in words: what the colour asks. */
+function texteEcheance(d: DelaiControle): string {
+  if (d.restants > 0) return `à contrôler d’ici ${jourCourt(d.echeance)}`
+  if (d.restants === 0) return 'à contrôler aujourd’hui'
+  return `en retard depuis ${jourCourt(d.echeance)}`
 }
 
 const article = (l: LotLabo) => [l.reference, l.coloris].filter(Boolean).join(' - ')
@@ -230,7 +239,7 @@ function File({ lots, onChoisir }: { lots: LotLabo[]; onChoisir: (id: number) =>
           const ls = de(e)
           return (
             <section key={e} className="min-h-0 flex flex-col rounded-xl bg-zinc-200/60 p-2">
-              <TeteColonne etape={e} n={ls.length} />
+              <TeteColonne etape={e} n={ls.length} retard={ls.filter((l) => l.delai?.rouge).length} />
               <div className="flex-1 min-h-0 md:overflow-y-auto scrollbar-transparent space-y-2 pt-2 px-0.5 pb-0.5">
                 {ls.length === 0 ? (
                   <p className="py-8 text-center text-base text-muted-foreground italic">Aucun lot</p>
@@ -244,7 +253,7 @@ function File({ lots, onChoisir }: { lots: LotLabo[]; onChoisir: (id: number) =>
   )
 }
 
-function TeteColonne({ etape, n }: { etape: EtapeLabo; n: number }) {
+function TeteColonne({ etape, n, retard = 0 }: { etape: EtapeLabo; n: number; retard?: number }) {
   const E = ETAPES[etape]
   return (
     <div className={cn(
@@ -253,7 +262,12 @@ function TeteColonne({ etape, n }: { etape: EtapeLabo; n: number }) {
     )}>
       <E.icone className="h-4 w-4" />
       <h2 className="text-sm font-bold uppercase tracking-wide">{E.libelle}</h2>
-      <span className="ml-auto rounded-full bg-white/20 px-2 text-sm font-bold tabular-nums">{n}</span>
+      {retard > 0 && (
+        <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-destructive px-2 py-0.5 text-xs font-bold text-white ring-1 ring-white/40">
+          <Clock className="h-3.5 w-3.5" />{retard} à faire maintenant
+        </span>
+      )}
+      <span className={cn('rounded-full bg-white/20 px-2 text-sm font-bold tabular-nums', retard === 0 && 'ml-auto')}>{n}</span>
     </div>
   )
 }
@@ -286,11 +300,40 @@ function Carte({ lot, onClick }: { lot: LotLabo; onClick: () => void }) {
         <FiniRollIcon className="h-4 w-4 flex-shrink-0 text-primary/70" />
         <span className="truncate">{article(lot) || '—'}</span>
       </p>
-      <div className="flex items-center gap-2 mt-1.5 text-xs text-muted-foreground">
-        <span className="truncate">{lot.etape === 'a_jeter' ? `Repris : ${lot.a_jeter?.motif || 'reprise'}` : [lot.sous_traitant, age(lot.reception)].filter(Boolean).join(' · ')}</span>
+      <div className="flex items-center gap-2 mt-2 min-w-0">
+        {lot.etape === 'a_jeter' ? (
+          <span className="truncate text-xs text-muted-foreground">Repris : {lot.a_jeter?.motif || 'reprise'}</span>
+        ) : lot.delai ? (
+          <>
+            <PillDelai delai={lot.delai} />
+            <span className={cn('truncate text-xs', lot.delai.rouge ? 'text-destructive font-semibold' : 'text-muted-foreground')}>
+              {texteEcheance(lot.delai)}
+            </span>
+          </>
+        ) : (
+          <span className="truncate text-xs text-muted-foreground">{lot.sous_traitant}</span>
+        )}
         {total > 0 && <Points fait={fait} total={total} />}
       </div>
     </div>
+  )
+}
+
+/** How long ago the BL came, coloured by the lab's window (5 working days,
+ *  the échéance of Qualité › Suivi lots): blue = in time, red = due today or
+ *  late, i.e. to do now (§41). */
+function PillDelai({ delai, grande }: { delai: DelaiControle; grande?: boolean }) {
+  return (
+    <span className={cn(
+      'inline-flex flex-shrink-0 items-center gap-1 rounded-full font-semibold tabular-nums',
+      grande ? 'px-3 py-1 text-sm' : 'px-2 py-0.5 text-xs',
+      delai.rouge ? 'bg-destructive text-white shadow-sm'
+        // On the navy band (grande) a pale tint would vanish: solid blue there.
+        : grande ? 'bg-accent-blue-vif text-white' : 'bg-accent-blue-vif/10 text-primary ring-1 ring-accent-blue-vif/30',
+    )}>
+      <Clock className={grande ? 'h-4 w-4' : 'h-3.5 w-3.5'} />
+      {age(delai.joursDepuis)}
+    </span>
   )
 }
 
@@ -370,6 +413,14 @@ function Bandeau({ lot, onFermer }: { lot: LotLabo; onFermer: () => void }) {
             <div className="min-w-0 flex items-center gap-1.5 overflow-hidden">
               {lot.clients.map((c) => <PillClient key={c} nom={c} sombre />)}
             </div>
+          )}
+          {lot.delai && (
+            <span className="flex-shrink-0 flex items-center gap-2">
+              <PillDelai delai={lot.delai} grande />
+              <span className={cn('hidden lg:inline text-sm', lot.delai.rouge ? 'font-semibold text-red-200' : 'text-white/70')}>
+                {texteEcheance(lot.delai)}
+              </span>
+            </span>
           )}
         </div>
         <p className="flex items-center gap-1.5 min-w-0 text-base text-white/90">

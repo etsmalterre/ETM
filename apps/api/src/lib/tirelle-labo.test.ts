@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { demandesParPhase, etapeLabo, horsTolerance, type LaboRow } from './tirelle-labo.js'
+import { delaiControle, demandesParPhase, etapeLabo, horsTolerance, type LaboRow } from './tirelle-labo.js'
 
 const TOUT = { laize: true, poids: true, stabilites: true, vrillage: true }
 const labo = (p: Partial<LaboRow> = {}): LaboRow => ({
@@ -56,5 +56,26 @@ describe('horsTolerance', () => {
   it('0 / 0 is an ultra-stable matter, within tolerance (#1358)', () => {
     const h = horsTolerance({ laize: 155, poids: 210, stabh: 0, stabl: 0, vrillage: 0, coloris: null }, t)
     expect(h).toMatchObject({ stabh: false, stabl: false, vrillage: false })
+  })
+})
+
+describe('delaiControle', () => {
+  // Mon 2026-11-02 + 5 working days = Mon 2026-11-09 (Wed 11/11 is a holiday, not in the window).
+  it('is due 5 working days after the reception, blue before', () => {
+    expect(delaiControle('2026-11-02', '2026-11-04')).toEqual({ echeance: '2026-11-09', joursDepuis: 2, restants: 3, rouge: false })
+  })
+  it('turns red on the due day itself', () => {
+    expect(delaiControle('2026-11-02', '2026-11-09')).toMatchObject({ restants: 0, rouge: true })
+  })
+  it('counts the working days late, holidays excluded', () => {
+    // Due Mon 09/11; Thu 12/11 is 2 working days later (11/11 is a holiday).
+    expect(delaiControle('2026-11-02', '2026-11-12')).toMatchObject({ joursDepuis: 10, restants: -2, rouge: true })
+  })
+  it('skips weekends', () => {
+    // Fri 2026-11-06 + 5 working days = Fri 13/11 (holiday 11/11 skipped → Mon 16/11).
+    expect(delaiControle('2026-11-06', '2026-11-06')?.echeance).toBe('2026-11-16')
+  })
+  it('has nothing without a reception', () => {
+    expect(delaiControle(null, '2026-11-09')).toBeNull()
   })
 })
