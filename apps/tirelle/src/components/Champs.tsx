@@ -4,6 +4,7 @@
 // horsTolerance → Qualité › Analyse's horsBornes / horsRetrait).
 import { cn } from '@/lib/utils'
 import type { Tolerances } from '@/lib/tirelle-api'
+import { Jauge, type BornesJauge } from '@/components/Jauge'
 
 /** « 155,5 » → 155.5; empty or junk → null. */
 export function lireNombre(s: string): number | null {
@@ -49,6 +50,7 @@ export function ChampNombre({
   disabled,
   autoFocus,
   grand,
+  jauge,
 }: {
   label: string
   unite: string
@@ -64,14 +66,21 @@ export function ChampNombre({
   autoFocus?: boolean
   /** Bench size: a taller field and bigger digits (the lab screen's two columns). */
   grand?: boolean
+  /** Suivi lots' tolerance gauge on the label's line, in place of the tolerance text. */
+  jauge?: BornesJauge | null
 }) {
+  const x = lireNombre(valeur)
+  const signee = x == null ? null : signe === '-' ? -x : x
+  const avecJauge = !!jauge && (jauge.min != null || jauge.max != null)
   return (
     <div className="space-y-1 min-w-0">
       {/* The tolerance on the label's line, not under the field: the whole step
           fits the tablet in landscape without scrolling. */}
-      <div className="flex items-baseline justify-between gap-2">
-        <label className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{label}</label>
-        {(aide || hors === true) && (
+      <div className={cn('flex justify-between gap-2', avecJauge ? 'items-start' : 'items-baseline')}>
+        <label className="text-sm font-semibold text-muted-foreground uppercase tracking-wide flex-shrink-0">{label}</label>
+        {avecJauge ? (
+          <Jauge valeur={signee} bornes={jauge!} hors={hors} className="ml-6 mt-1 max-w-[70%]" />
+        ) : (aide || hors === true) && (
           <span className={cn('min-w-0 truncate text-sm', hors === true ? 'text-destructive font-semibold' : 'text-muted-foreground')}>
             {hors === true ? `Hors tolérance${aide ? ` (${aide})` : ''}` : aide}
           </span>

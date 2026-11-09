@@ -68,6 +68,9 @@ function age(n: number): string {
   return `reçu il y a ${n} j`
 }
 
+/** A fiche's [min, max] as gauge bounds: a 0 bound is « not set ». */
+const bornes = (b: { min: number; max: number }) => ({ min: b.min > 0 ? b.min : null, max: b.max > 0 ? b.max : null })
+
 const article = (l: LotLabo) => [l.reference, l.coloris].filter(Boolean).join(' - ')
 
 /** The measures of the lot's current phase: [done, asked]. */
@@ -664,11 +667,11 @@ function AvantLavage({ lot, correction = false, onAnnuler, onFait }: {
               </>
             )}>
             {demande('laize') && (
-              <ChampNombre grand label="Laize" unite="cm" valeur={laize} onChange={setLaize}
+              <ChampNombre grand label="Laize" unite="cm" valeur={laize} onChange={setLaize} jauge={bornes(lot.tolerances.laize)}
                 aide={aides.laize} hors={horsBornes(lireNombre(laize), lot.tolerances.laize)} />
             )}
             {demande('poids') && (
-              <ChampNombre grand label="Poids" unite="g/m²" valeur={poids} onChange={setPoids}
+              <ChampNombre grand label="Poids" unite="g/m²" valeur={poids} onChange={setPoids} jauge={bornes(lot.tolerances.poids)}
                 aide={aides.poids} hors={horsBornes(lireNombre(poids), lot.tolerances.poids)} />
             )}
           </Tache>
@@ -778,13 +781,16 @@ function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: ()
             {demande('stabilités') && (
               <>
                 <ChampNombre grand label="Stab H" unite="%" valeur={stabh} onChange={setStabh} signe={sh} onSigne={setSh}
+                  jauge={lot.tolerances.stabh != null ? { min: lot.tolerances.stabh, max: null } : null}
                   aide={aides.stabh} hors={horsRetrait(vh, lot.tolerances.stabh)} />
                 <ChampNombre grand label="Stab L" unite="%" valeur={stabl} onChange={setStabl} signe={sl} onSigne={setSl}
+                  jauge={lot.tolerances.stabl != null ? { min: lot.tolerances.stabl, max: null } : null}
                   aide={aides.stabl} hors={horsRetrait(vl, lot.tolerances.stabl)} />
               </>
             )}
             {demande('vrillage') && (
               <ChampNombre grand label="Vrillage" unite="%" valeur={vrillage} onChange={setVrillage}
+                jauge={{ min: 0, max: lot.tolerances.vrillageMax }}
                 aide={aides.vrillage}
                 hors={lireNombre(vrillage) == null ? null : lireNombre(vrillage)! > lot.tolerances.vrillageMax} />
             )}
