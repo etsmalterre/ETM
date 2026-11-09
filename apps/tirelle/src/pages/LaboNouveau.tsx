@@ -2,12 +2,17 @@
 // (pages/Labo.tsx) through the header switch (lib/design.tsx) while Vincent
 // compares them. Same data, same API calls, same rules as Labo.tsx — only the
 // presentation changes:
+//   • two screens: the queue, full width, one column per step; touching a
+//     card opens the lot full width (Vincent 2026-11-09: at 1005 px the lot
+//     beside a list got ~610 px). A validated step returns to the queue with
+//     a message saying where the lot went;
 //   • the open lot is a navy band (§43 of mps_designer) carrying its identity,
-//     its client(s) and a 3-step track: avant lavage › après lavage › rangé;
+//     its client(s) and a 2-step track: avant lavage › après lavage;
 //   • each step is a short checklist of numbered tasks that tick green as they
 //     are filled, so what is left reads at a glance;
 //   • the bottom button names what is missing instead of greying out;
-//   • queue cards carry a step stripe, the measures done and the lot's age.
+//   • queue cards carry a step stripe, the measures done and the lot's age;
+//   • the article reads after ETM's fini-roll icon.
 // Fits a Galaxy Tab A9 in landscape (1005 × 600), like the old design.
 import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -23,6 +28,7 @@ import type { ApiError } from '@/lib/api'
 import { messagePourErreur } from '@/lib/erreurs'
 import { ChampNombre, aidesTolerance, fmt, horsBornes, horsRetrait, lireNombre } from '@/components/Champs'
 import { ChoixDesign } from '@/lib/design'
+import { FiniRollIcon } from '@/components/FiniRollIcon'
 import { cn } from '@/lib/utils'
 
 const LOTS_KEY = ['tirelle', 'lots'] as const
@@ -77,12 +83,18 @@ export function LaboNouveau() {
   const qc = useQueryClient()
   const lots = useQuery({ queryKey: LOTS_KEY, queryFn: fetchLots })
   const [selection, setSelection] = useState<number | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
 
   const liste = lots.data?.lots ?? []
   const choisi = liste.find((l) => l.idsuivilot === selection) ?? null
   useEffect(() => {
     if (selection !== null && lots.data && !choisi) setSelection(null)
   }, [selection, lots.data, choisi])
+  useEffect(() => {
+    if (!message) return
+    const t = setTimeout(() => setMessage(null), 4000)
+    return () => clearTimeout(t)
+  }, [message])
 
   const rafraichir = () => qc.invalidateQueries({ queryKey: LOTS_KEY })
 
@@ -102,27 +114,40 @@ export function LaboNouveau() {
           <Loader2 className="h-10 w-10 animate-spin text-gold" />
         </div>
       ) : (
-        <div className="flex-1 min-h-0 flex gap-3 p-3">
-          <div className={cn('min-h-0 flex-col w-full min-[900px]:w-[360px] min-[900px]:flex-shrink-0', choisi ? 'hidden min-[900px]:flex' : 'flex')}>
-            <File lots={liste} selection={selection} onChoisir={setSelection} />
+        <div className="relative flex-1 min-h-0 flex p-3">
+          {/* The queue stays mounted under the open lot: back to it keeps its scroll. */}
+          <div className={cn('flex-1 min-w-0 min-h-0', choisi ? 'hidden' : 'flex')}>
+            <File lots={liste} onChoisir={(id) => { setMessage(null); setSelection(id) }} />
           </div>
-          <div className={cn('flex-1 min-w-0 min-h-0', choisi ? 'flex' : 'hidden min-[900px]:flex')}>
-            {choisi ? (
-              <Lot
-                key={`${choisi.idsuivilot}:${choisi.etape}`}
-                lot={choisi}
-                onFermer={() => setSelection(null)}
-                onFait={(garder) => {
-                  rafraichir()
-                  if (!garder) setSelection(null)
-                }}
-              />
-            ) : (
-              <AucunLot vide={liste.length === 0} />
-            )}
-          </div>
+          {choisi && (
+            <Lot
+              key={`${choisi.idsuivilot}:${choisi.etape}`}
+              lot={choisi}
+              onFermer={() => setSelection(null)}
+              onRafraichir={rafraichir}
+              onFait={(texte) => {
+                rafraichir()
+                setSelection(null)
+                setMessage(texte)
+              }}
+            />
+          )}
+          {message && <Message texte={message} onFermer={() => setMessage(null)} />}
         </div>
       )}
+    </div>
+  )
+}
+
+/** What the last validation did, over the queue for a few seconds. */
+function Message({ texte, onFermer }: { texte: string; onFermer: () => void }) {
+  return (
+    <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 rounded-full bg-success text-white pl-4 pr-2 py-2 shadow-lg" role="status">
+      <CheckCircle2 className="h-5 w-5 flex-shrink-0" />
+      <span className="text-base font-semibold whitespace-nowrap">{texte}</span>
+      <button type="button" onClick={onFermer} className="h-8 w-8 rounded-full flex items-center justify-center active:bg-white/20" title="Fermer">
+        <X className="h-4 w-4" />
+      </button>
     </div>
   )
 }
@@ -171,59 +196,69 @@ function Compteur({ icone: Icone, n, libelle, rouge }: { icone: typeof Scissors;
   )
 }
 
-function AucunLot({ vide }: { vide: boolean }) {
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-4 rounded-2xl bg-white/60 border border-border/60 text-muted-foreground">
-      <div className={cn('h-20 w-20 rounded-full flex items-center justify-center', vide ? 'bg-success/10' : 'bg-gold/15')}>
-        {vide ? <CheckCircle2 className="h-10 w-10 text-success" /> : <CircleDashed className="h-10 w-10 text-gold-foreground/70" />}
-      </div>
-      <p className="text-xl font-semibold text-foreground">{vide ? 'Rien à contrôler' : 'Choisissez un lot'}</p>
-      <p className="text-base -mt-2">{vide ? 'Les nouveaux lots arrivent tout seuls.' : 'Touchez un lot dans la liste pour commencer.'}</p>
-    </div>
-  )
-}
-
 // ── The queue ───────────────────────────────────────────
 
-function File({ lots, selection, onChoisir }: { lots: LotLabo[]; selection: number | null; onChoisir: (id: number) => void }) {
+function File({ lots, onChoisir }: { lots: LotLabo[]; onChoisir: (id: number) => void }) {
   if (lots.length === 0) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
-        <CheckCircle2 className="h-14 w-14 text-success/60" />
-        <p className="text-lg">Rien à contrôler pour le moment.</p>
+      <div className="flex-1 flex flex-col items-center justify-center gap-4 rounded-2xl bg-white/60 border border-border/60 text-muted-foreground">
+        <div className="h-20 w-20 rounded-full flex items-center justify-center bg-success/10">
+          <CheckCircle2 className="h-10 w-10 text-success" />
+        </div>
+        <p className="text-xl font-semibold text-foreground">Rien à contrôler</p>
+        <p className="text-base -mt-2">Les nouveaux lots arrivent tout seuls.</p>
       </div>
     )
   }
+  const de = (e: EtapeLabo) => lots.filter((l) => l.etape === e)
+  const aJeter = de('a_jeter')
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent pb-4 px-1">
-      {(['a_jeter', 'avant_lavage', 'apres_lavage'] as const).map((e) => {
-        const ls = lots.filter((l) => l.etape === e)
-        if (ls.length === 0) return null
-        const E = ETAPES[e]
-        return (
-          <section key={e} className="mb-3">
-            {/* Sticky so the step stays named while its cards scroll. */}
-            <div className="sticky top-0 z-10 -mx-1 px-1 py-1.5 bg-zinc-100/95 backdrop-blur-sm">
-              <div className={cn(
-                'flex items-center gap-2 rounded-lg px-3 py-1.5',
-                e === 'a_jeter' ? 'bg-destructive text-white' : e === 'avant_lavage' ? 'bg-primary text-primary-foreground' : 'bg-accent-blue-vif text-white',
-              )}>
-                <E.icone className="h-4 w-4" />
-                <h2 className="text-sm font-bold uppercase tracking-wide">{E.libelle}</h2>
-                <span className="ml-auto rounded-full bg-white/20 px-2 text-sm font-bold tabular-nums">{ls.length}</span>
+    <div className="flex-1 min-w-0 min-h-0 flex flex-col gap-3">
+      {/* After a reprise: to do before anything else, across the top. */}
+      {aJeter.length > 0 && (
+        <section className="flex-shrink-0 rounded-xl border-2 border-destructive/40 bg-destructive/5 p-2">
+          <TeteColonne etape="a_jeter" n={aJeter.length} />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 pt-2">
+            {aJeter.map((l) => <Carte key={l.idsuivilot} lot={l} onClick={() => onChoisir(l.idsuivilot)} />)}
+          </div>
+        </section>
+      )}
+      {/* One column per step: what goes to the wash, what came back from it.
+          Upright (< md) the two stack and the page scrolls instead. */}
+      <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-2 gap-3 overflow-y-auto md:overflow-hidden scrollbar-transparent">
+        {(['avant_lavage', 'apres_lavage'] as const).map((e) => {
+          const ls = de(e)
+          return (
+            <section key={e} className="min-h-0 flex flex-col rounded-xl bg-zinc-200/60 p-2">
+              <TeteColonne etape={e} n={ls.length} />
+              <div className="flex-1 min-h-0 md:overflow-y-auto scrollbar-transparent space-y-2 pt-2 px-0.5 pb-0.5">
+                {ls.length === 0 ? (
+                  <p className="py-8 text-center text-base text-muted-foreground italic">Aucun lot</p>
+                ) : ls.map((l) => <Carte key={l.idsuivilot} lot={l} onClick={() => onChoisir(l.idsuivilot)} />)}
               </div>
-            </div>
-            <div className="space-y-2 pt-1">
-              {ls.map((l) => <Carte key={l.idsuivilot} lot={l} actif={selection === l.idsuivilot} onClick={() => onChoisir(l.idsuivilot)} />)}
-            </div>
-          </section>
-        )
-      })}
+            </section>
+          )
+        })}
+      </div>
     </div>
   )
 }
 
-function Carte({ lot, actif, onClick }: { lot: LotLabo; actif: boolean; onClick: () => void }) {
+function TeteColonne({ etape, n }: { etape: EtapeLabo; n: number }) {
+  const E = ETAPES[etape]
+  return (
+    <div className={cn(
+      'flex-shrink-0 flex items-center gap-2 rounded-lg px-3 py-2',
+      etape === 'a_jeter' ? 'bg-destructive text-white' : etape === 'avant_lavage' ? 'bg-primary text-primary-foreground' : 'bg-accent-blue-vif text-white',
+    )}>
+      <E.icone className="h-4 w-4" />
+      <h2 className="text-sm font-bold uppercase tracking-wide">{E.libelle}</h2>
+      <span className="ml-auto rounded-full bg-white/20 px-2 text-sm font-bold tabular-nums">{n}</span>
+    </div>
+  )
+}
+
+function Carte({ lot, onClick }: { lot: LotLabo; onClick: () => void }) {
   const hors = Object.values(lot.hors).some((h) => h === true)
   const [fait, total] = avancement(lot)
   return (
@@ -234,7 +269,7 @@ function Carte({ lot, actif, onClick }: { lot: LotLabo; actif: boolean; onClick:
       onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onClick()}
       className={cn(
         'relative overflow-hidden rounded-xl border bg-white pl-4 pr-3 py-2.5 cursor-pointer select-none transition-all',
-        actif ? 'border-gold ring-2 ring-gold bg-gold/[0.06] shadow-md' : 'border-border/60 shadow-sm active:bg-zinc-50',
+        'border-border/60 shadow-sm active:bg-gold/[0.06] active:border-gold',
       )}
     >
       <span className={cn('absolute inset-y-0 left-0 w-1.5', RAYURE[lot.etape])} />
@@ -247,7 +282,10 @@ function Carte({ lot, actif, onClick }: { lot: LotLabo; actif: boolean; onClick:
           </span>
         )}
       </div>
-      <p className="text-sm truncate mt-0.5">{article(lot) || '—'}</p>
+      <p className="flex items-center gap-1.5 text-sm mt-0.5 min-w-0">
+        <FiniRollIcon className="h-4 w-4 flex-shrink-0 text-primary/70" />
+        <span className="truncate">{article(lot) || '—'}</span>
+      </p>
       <div className="flex items-center gap-2 mt-1.5 text-xs text-muted-foreground">
         <span className="truncate">{lot.etape === 'a_jeter' ? `Repris : ${lot.a_jeter?.motif || 'reprise'}` : [lot.sous_traitant, age(lot.reception)].filter(Boolean).join(' · ')}</span>
         {total > 0 && <Points fait={fait} total={total} />}
@@ -284,15 +322,22 @@ function PillClient({ nom, titre, sombre }: { nom: string; titre?: string; sombr
 
 // ── The open lot ────────────────────────────────────────
 
-function Lot({ lot, onFermer, onFait }: { lot: LotLabo; onFermer: () => void; onFait: (garder: boolean) => void }) {
+function Lot({ lot, onFermer, onFait, onRafraichir }: {
+  lot: LotLabo
+  onFermer: () => void
+  /** A step validated: back to the queue, with this message. */
+  onFait: (message: string) => void
+  /** A correction of the round: stay on the lot, re-read it. */
+  onRafraichir: () => void
+}) {
   const [corriger, setCorriger] = useState(false)
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col rounded-2xl border border-border/60 bg-zinc-50 shadow-sm overflow-hidden">
       <Bandeau lot={lot} onFermer={onFermer} />
       {lot.etape === 'a_jeter' ? (
-        <Jeter lot={lot} onFait={() => onFait(false)} />
+        <Jeter lot={lot} onFait={() => onFait(`${lot.lot} : rond, carré et tirelle jetés`)} />
       ) : lot.etape === 'avant_lavage' ? (
-        <AvantLavage lot={lot} onFait={() => onFait(true)} />
+        <AvantLavage lot={lot} onFait={() => onFait(`${lot.lot} passe en après lavage`)} />
       ) : corriger ? (
         <AvantLavage
           lot={lot}
@@ -300,11 +345,11 @@ function Lot({ lot, onFermer, onFait }: { lot: LotLabo; onFermer: () => void; on
           onAnnuler={() => setCorriger(false)}
           onFait={() => {
             setCorriger(false)
-            onFait(true)
+            onRafraichir()
           }}
         />
       ) : (
-        <ApresLavage lot={lot} onCorriger={() => setCorriger(true)} onFait={() => onFait(false)} />
+        <ApresLavage lot={lot} onCorriger={() => setCorriger(true)} onFait={(casier) => onFait(`${lot.lot} terminé, rangé au casier ${casier}`)} />
       )}
     </div>
   )
@@ -315,8 +360,8 @@ function Bandeau({ lot, onFermer }: { lot: LotLabo; onFermer: () => void }) {
   const rouge = lot.etape === 'a_jeter'
   return (
     <div className={cn('flex-shrink-0 flex items-center gap-3 px-4 py-2.5 border-b-2', rouge ? 'bg-destructive border-red-300' : 'bg-primary border-gold')}>
-      <button type="button" onClick={onFermer} className="h-11 w-11 -ml-1 rounded-xl flex items-center justify-center text-white active:bg-white/15 min-[900px]:hidden" title="Retour à la liste">
-        <ArrowLeft className="h-6 w-6" />
+      <button type="button" onClick={onFermer} className="h-12 -ml-1 pl-2 pr-3 rounded-xl flex items-center gap-1.5 text-white font-semibold ring-1 ring-white/25 active:bg-white/15 flex-shrink-0" title="Retour aux lots">
+        <ArrowLeft className="h-6 w-6" />Lots
       </button>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-3 min-w-0">
@@ -327,9 +372,12 @@ function Bandeau({ lot, onFermer }: { lot: LotLabo; onFermer: () => void }) {
             </div>
           )}
         </div>
-        <p className="truncate text-base text-white/90">
+        <p className="flex items-center gap-1.5 min-w-0 text-base text-white/90">
+          <FiniRollIcon className="h-4 w-4 flex-shrink-0 text-white/80" />
+          <span className="truncate">
           {article(lot) || '—'}
           <span className="text-white/60">{[lot.sous_traitant, lot.reception && `reçu le ${jour(lot.reception)}`].filter(Boolean).map((t) => ` · ${t}`).join('')}</span>
+          </span>
         </p>
       </div>
       {!rouge && <Piste etape={lot.etape} />}
@@ -337,16 +385,15 @@ function Bandeau({ lot, onFermer }: { lot: LotLabo; onFermer: () => void }) {
   )
 }
 
-/** avant lavage › après lavage › rangé: done green, current gold, next faded. */
+/** avant lavage › après lavage: done green, current gold, next faded. */
 function Piste({ etape }: { etape: EtapeLabo }) {
   const pas = [
     { cle: 'avant_lavage', libelle: 'Avant lavage' },
     { cle: 'apres_lavage', libelle: 'Après lavage' },
-    { cle: 'range', libelle: 'Rangé' },
   ] as const
   const courant = pas.findIndex((p) => p.cle === etape)
   return (
-    <ol className="hidden lg:flex items-center gap-1 flex-shrink-0">
+    <ol className="hidden md:flex items-center gap-1 flex-shrink-0">
       {pas.map((p, i) => (
         <li key={p.cle} className="flex items-center gap-1">
           {i > 0 && <ChevronRight className="h-4 w-4 text-white/40" />}
@@ -596,7 +643,7 @@ function dernierCasier(): string {
   }
 }
 
-function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: () => void; onFait: () => void }) {
+function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: () => void; onFait: (casier: string) => void }) {
   const signeDe = (v: number) => (v > 0 ? '+' : '-') as '-' | '+'
   const [stabh, setStabh] = useState(fmt(lot.mesures.stabh ? Math.abs(lot.mesures.stabh) : null))
   const [stabl, setStabl] = useState(fmt(lot.mesures.stabl ? Math.abs(lot.mesures.stabl) : null))
@@ -627,7 +674,7 @@ function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: ()
       } catch {
         /* storage disabled */
       }
-      onFait()
+      onFait(casier.trim())
     },
   })
   const stabsFaites = !demande('stabilités') || (vh != null && vl != null)
