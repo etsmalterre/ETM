@@ -6,8 +6,11 @@
 //     card opens the lot full width (Vincent 2026-11-09: at 1005 px the lot
 //     beside a list got ~610 px). A validated step returns to the queue with
 //     a message saying where the lot went;
-//   • the open lot is a navy band (§43 of mps_designer) carrying its identity,
-//     its client(s) and a 2-step track: avant lavage › après lavage;
+//   • ONE navy band (§43 of mps_designer): on the queue the app's title and
+//     counters; on an open lot it becomes the lot's band — back, identity,
+//     client(s) and age, then the 2-step track avant lavage › après lavage —
+//     spread over the width (Vincent 2026-11-09: two stacked navy bands took
+//     ~140 of the tablet's 600 px);
 //   • each step is a short checklist of numbered tasks that tick green as they
 //     are filled, so what is left reads at a glance;
 //   • the bottom button names what is missing instead of greying out;
@@ -95,7 +98,7 @@ export function LaboNouveau() {
 
   return (
     <div className="h-full flex flex-col bg-zinc-100">
-      <Entete lots={liste} chargement={lots.isFetching} onRafraichir={rafraichir} />
+      <Entete lots={liste} lot={choisi} chargement={lots.isFetching} onRafraichir={rafraichir} onFermer={() => setSelection(null)} />
       {lots.isError && !lots.data ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-destructive">
           <AlertTriangle className="h-10 w-10" />
@@ -109,7 +112,7 @@ export function LaboNouveau() {
           <Loader2 className="h-10 w-10 animate-spin text-gold" />
         </div>
       ) : (
-        <div className="relative flex-1 min-h-0 flex p-3">
+        <div className={cn('relative flex-1 min-h-0 flex', !choisi && 'p-3')}>
           {/* The queue stays mounted under the open lot: back to it keeps its scroll. */}
           <div className={cn('flex-1 min-w-0 min-h-0', choisi ? 'hidden' : 'flex')}>
             <File lots={liste} onChoisir={(id) => { setMessage(null); setSelection(id) }} />
@@ -118,7 +121,6 @@ export function LaboNouveau() {
             <Lot
               key={`${choisi.idsuivilot}:${choisi.etape}`}
               lot={choisi}
-              onFermer={() => setSelection(null)}
               onRafraichir={rafraichir}
               onFait={(texte) => {
                 rafraichir()
@@ -147,8 +149,16 @@ function Message({ texte, onFermer }: { texte: string; onFermer: () => void }) {
   )
 }
 
-function Entete({ lots, chargement, onRafraichir }: { lots: LotLabo[]; chargement: boolean; onRafraichir: () => void }) {
+function Entete({ lots, lot, chargement, onRafraichir, onFermer }: {
+  lots: LotLabo[]
+  /** The open lot: the band becomes its band. */
+  lot: LotLabo | null
+  chargement: boolean
+  onRafraichir: () => void
+  onFermer: () => void
+}) {
   const n = (e: EtapeLabo) => lots.filter((l) => l.etape === e).length
+  if (lot) return <BandeauLot lot={lot} chargement={chargement} onRafraichir={onRafraichir} onFermer={onFermer} />
   return (
     <>
       <div className="safe-top bg-primary" />
@@ -164,17 +174,23 @@ function Entete({ lots, chargement, onRafraichir }: { lots: LotLabo[]; chargemen
         <div className="ml-auto flex items-center gap-2">
           <ChoixDesign />
           <span className="text-xs text-white/40 tabular-nums hidden md:inline">v{__APP_VERSION__}</span>
-          <button
-            type="button"
-            onClick={onRafraichir}
-            className="h-11 w-11 rounded-xl flex items-center justify-center text-white/80 active:bg-white/15"
-            title="Actualiser"
-          >
-            <RefreshCw className={cn('h-5 w-5', chargement && 'animate-spin')} />
-          </button>
+          <Actualiser chargement={chargement} onClick={onRafraichir} />
         </div>
       </header>
     </>
+  )
+}
+
+function Actualiser({ chargement, onClick }: { chargement: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="h-11 w-11 rounded-xl flex items-center justify-center text-white/80 active:bg-white/15 flex-shrink-0"
+      title="Actualiser"
+    >
+      <RefreshCw className={cn('h-5 w-5', chargement && 'animate-spin')} />
+    </button>
   )
 }
 
@@ -347,9 +363,8 @@ function PillClient({ nom, titre, sombre }: { nom: string; titre?: string; sombr
 
 // ── The open lot ────────────────────────────────────────
 
-function Lot({ lot, onFermer, onFait, onRafraichir }: {
+function Lot({ lot, onFait, onRafraichir }: {
   lot: LotLabo
-  onFermer: () => void
   /** A step validated: back to the queue, with this message. */
   onFait: (message: string) => void
   /** A correction of the round: stay on the lot, re-read it. */
@@ -357,8 +372,7 @@ function Lot({ lot, onFermer, onFait, onRafraichir }: {
 }) {
   const [corriger, setCorriger] = useState(false)
   return (
-    <div className="flex-1 min-w-0 min-h-0 flex flex-col rounded-2xl border border-border/60 bg-zinc-50 shadow-sm overflow-hidden">
-      <Bandeau lot={lot} onFermer={onFermer} />
+    <div className="flex-1 min-w-0 min-h-0 flex flex-col">
       {lot.etape === 'a_jeter' ? (
         <Jeter lot={lot} onFait={() => onFait(`${lot.lot} : rond, carré et tirelle jetés`)} />
       ) : lot.etape === 'avant_lavage' ? (
@@ -380,34 +394,44 @@ function Lot({ lot, onFermer, onFait, onRafraichir }: {
   )
 }
 
-/** The lot's identity (navy band, gold rule) and where it stands in the lab. */
-function Bandeau({ lot, onFermer }: { lot: LotLabo; onFermer: () => void }) {
+/** The app's band while a lot is open: back + the lot (left), who it is for
+ *  and how long ago it came (centre), where it stands in the lab (right). */
+function BandeauLot({ lot, chargement, onRafraichir, onFermer }: {
+  lot: LotLabo
+  chargement: boolean
+  onRafraichir: () => void
+  onFermer: () => void
+}) {
   const rouge = lot.etape === 'a_jeter'
   return (
-    <div className={cn('flex-shrink-0 flex items-center gap-3 px-4 py-2.5 border-b-2', rouge ? 'bg-destructive border-red-300' : 'bg-primary border-gold')}>
-      <button type="button" onClick={onFermer} className="h-12 -ml-1 pl-2 pr-3 rounded-xl flex items-center gap-1.5 text-white font-semibold ring-1 ring-white/25 active:bg-white/15 flex-shrink-0" title="Retour aux lots">
-        <ArrowLeft className="h-6 w-6" />Lots
-      </button>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-3 min-w-0">
-          <h2 className="flex-shrink-0 text-3xl leading-9 font-heading font-bold tracking-tight tabular-nums text-white">{lot.lot}</h2>
-          {lot.clients.length > 0 && (
-            <div className="min-w-0 flex items-center gap-1.5 overflow-hidden">
-              {lot.clients.map((c) => <PillClient key={c} nom={c} sombre />)}
-            </div>
-          )}
+    <>
+      <div className={cn('safe-top', rouge ? 'bg-destructive' : 'bg-primary')} />
+      <header className={cn('flex-shrink-0 flex items-center gap-4 px-3 py-2 border-b-2', rouge ? 'bg-destructive border-red-300' : 'bg-primary border-gold')}>
+        <div className="flex-1 min-w-0 flex items-center gap-3">
+          <button type="button" onClick={onFermer} className="h-12 pl-2 pr-3 rounded-xl flex items-center gap-1.5 text-white font-semibold ring-1 ring-white/25 active:bg-white/15 flex-shrink-0" title="Retour aux lots">
+            <ArrowLeft className="h-6 w-6" />Lots
+          </button>
+          <div className="min-w-0">
+            <h2 className="text-3xl leading-9 font-heading font-bold tracking-tight tabular-nums text-white">{lot.lot}</h2>
+            <p className="flex items-center gap-1.5 min-w-0 text-base text-white/90">
+              <FiniRollIcon className="h-4 w-4 flex-shrink-0 text-white/80" />
+              <span className="truncate">
+                {article(lot) || '—'}
+                {lot.sous_traitant && <span className="text-white/60"> · {lot.sous_traitant}</span>}
+              </span>
+            </p>
+          </div>
+        </div>
+        <div className="flex-shrink-0 flex items-center gap-2" title={lot.reception ? `Reçu le ${jour(lot.reception)}` : undefined}>
+          {lot.clients.map((c) => <PillClient key={c} nom={c} sombre />)}
           {lot.delai && <PillDelai delai={lot.delai} grande />}
         </div>
-        <p className="flex items-center gap-1.5 min-w-0 text-base text-white/90">
-          <FiniRollIcon className="h-4 w-4 flex-shrink-0 text-white/80" />
-          <span className="truncate">
-          {article(lot) || '—'}
-          <span className="text-white/60">{[lot.sous_traitant, lot.reception && `reçu le ${jour(lot.reception)}`].filter(Boolean).map((t) => ` · ${t}`).join('')}</span>
-          </span>
-        </p>
-      </div>
-      {!rouge && <Piste etape={lot.etape} />}
-    </div>
+        <div className="flex-1 min-w-0 flex items-center justify-end gap-2">
+          {!rouge && <Piste etape={lot.etape} />}
+          <Actualiser chargement={chargement} onClick={onRafraichir} />
+        </div>
+      </header>
+    </>
   )
 }
 
