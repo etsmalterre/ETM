@@ -7,6 +7,8 @@ import { installerPleinEcran } from './lib/plein-ecran'
 import { AppareilProvider, useAppareil } from './contexts/AppareilContext'
 import { NonEnrolee } from './pages/NonEnrolee'
 import { Labo } from './pages/Labo'
+import { LaboNouveau } from './pages/LaboNouveau'
+import { useDesign } from './lib/design'
 import './index.css'
 
 // Dev-only: a feature worktree writes VITE_WORKTREE_LABEL to
@@ -45,6 +47,12 @@ function Gate({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+/** The lab in the design chosen on the header switch (lib/design.tsx). */
+function EcranLabo() {
+  const [design] = useDesign()
+  return design === 'nouveau' ? <LaboNouveau /> : <Labo />
+}
+
 function Attente() {
   return (
     <div className="h-full bg-gradient-brand flex items-center justify-center">
@@ -58,7 +66,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
       <AppareilProvider>
         <Gate>
-          <Labo />
+          <EcranLabo />
         </Gate>
       </AppareilProvider>
     </QueryClientProvider>

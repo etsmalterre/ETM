@@ -21,6 +21,7 @@ import {
 import type { ApiError } from '@/lib/api'
 import { messagePourErreur } from '@/lib/erreurs'
 import { ChampNombre, aidesTolerance, fmt, horsBornes, horsRetrait, lireNombre } from '@/components/Champs'
+import { ChoixDesign } from '@/lib/design'
 import { cn } from '@/lib/utils'
 
 const LOTS_KEY = ['tirelle', 'lots'] as const
@@ -114,6 +115,7 @@ function Entete({ lots, chargement, onRafraichir }: { lots: LotLabo[]; chargemen
           {aJeter > 0 && <span className="ml-2 font-semibold text-red-200">· {aJeter} à jeter</span>}
         </p>
       </div>
+      <ChoixDesign />
       <span className="text-xs text-white/40 tabular-nums hidden sm:inline">v{__APP_VERSION__}</span>
       <button
         type="button"

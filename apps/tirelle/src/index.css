@@ -40,6 +40,8 @@
 
     /* Accent Blue for alternative highlights */
     --accent-blue: 211 68% 35%;
+    /* The charter's Accent Blue #3B7DC9 itself (the token above is darker). */
+    --accent-blue-vif: 212 56% 51%;
     --accent-blue-foreground: 0 0% 100%;
 
     /* Extended Palette - Teal */
@@ -116,6 +118,7 @@
     --gold-light: 44 60% 18%;
 
     --accent-blue: 211 68% 50%;
+    --accent-blue-vif: 212 56% 60%;
     --accent-blue-foreground: 0 0% 100%;
 
     /* Extended Palette - Dark mode */

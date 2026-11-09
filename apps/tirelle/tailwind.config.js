@@ -65,6 +65,7 @@ export default {
         },
         "accent-blue": {
           DEFAULT: "hsl(var(--accent-blue))",
+          vif: "hsl(var(--accent-blue-vif))",
           foreground: "hsl(var(--accent-blue-foreground))",
         },
         success: {
