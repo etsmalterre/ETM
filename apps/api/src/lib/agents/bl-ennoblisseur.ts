@@ -404,6 +404,8 @@ export async function traiterMessage(
   const state = await lireEtat(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE)
   const sst = sousTraitantExpediteur(m.de, await contacts())
   const runs: AgentRun[] = []
+  // Skills in observation that put this mail on hold (observation-attente.ts).
+  let enAttente: string[] = []
 
   // Délais / Contrôles: the body of a reply to our Point (no PDF needed).
   const modeDe = (cle: string, defaut: ModeCompetence) => effectif(mode, etatCompetence(state, cle, defaut).mode)
@@ -413,13 +415,15 @@ export async function traiterMessage(
     try {
       const complet = (await lireFil(BL_ENNOBLISSEUR_BOITE, m.threadId)).find((x) => x.id === m.id)
       if (complet) {
-        runs.push(...(await traiterReponsePoint(complet, {
+        const r = await traiterReponsePoint(complet, {
           delais, controles, source, lancePar, slug: BL_ENNOBLISSEUR_SLUG, idsousTraitant: sst,
           promptDelais: versionCompetenceActive(promptsCompetence(state, 'delais', DELAIS_VERSIONS_LIVREES)),
           promptControles: versionCompetenceActive(promptsCompetence(state, 'controles', CONTROLES_VERSIONS_LIVREES)),
           tirerSeul: () => tirerCompetence(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE, 'delais', 'essai'),
           tirerSeulControles: () => tirerCompetence(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE, 'controles', 'essai'),
-        })))
+        })
+        runs.push(...r.runs)
+        enAttente = r.enAttente
       }
     } catch (err) {
       console.error(`[agents] ${BL_ENNOBLISSEUR_SLUG}: délais of ${m.id} failed:`, err)
@@ -434,7 +438,12 @@ export async function traiterMessage(
     const run: AgentRun = {
       id: nouvelIdRun(), slug: BL_ENNOBLISSEUR_SLUG, createdAt: new Date().toISOString(), source, mode,
       lancePar, message, fichiers: [], version: version.version, model: version.model, statut: 'ignore',
-      resultat: {}, resume: `Aucun PDF à lire dans « ${m.sujet} »`, coutUsd: 0, dureeMs: 0,
+      resultat: {},
+      // Observation: the mail waits for a person's reaction, read then (hourly pass).
+      resume: enAttente.length
+        ? `${enAttente.map((c) => (c === 'delais' ? 'Délais' : 'Contrôles')).join(' et ')} en observation : lu une fois qu’une personne aura réagi`
+        : `Aucun PDF à lire dans « ${m.sujet} »`,
+      coutUsd: 0, dureeMs: 0,
     }
     await ajouterRun(run)
     return [run]

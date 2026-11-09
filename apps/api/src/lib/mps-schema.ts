@@ -1743,6 +1743,64 @@ WHERE COALESCE(stabh_tirelle, 0) = 0 AND COALESCE(stabl_tirelle, 0) = 0 AND (sta
 `,
   },
   {
+    // Observation driven by people (Vincent 2026-11-09): a skill in observation
+    // no longer reads a mail when it arrives. The mail waits (observation_mail);
+    // what a person types on a line or a lot of that dyer is kept
+    // (observation_saisie); once an hour, every waiting mail a person reacted
+    // to is read as it was on arrival and compared with what was typed. A
+    // saisie no mail explains is « hors de portée » (phone, another mailbox).
+    name: '0066_observation_flux',
+    sql: `
+CREATE TABLE observation_mail (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  agent text NOT NULL,
+  competence text NOT NULL,
+  message_id text NOT NULL,
+  thread_id text,
+  idsous_traitant bigint NOT NULL DEFAULT 0,
+  idpoint_sst bigint NOT NULL DEFAULT 0,
+  jour_point date,
+  date_mail timestamptz NOT NULL,
+  recu_le timestamptz NOT NULL DEFAULT now(),
+  statut text NOT NULL DEFAULT 'attente' CHECK (statut IN ('attente', 'lu', 'expire')),
+  lu_le timestamptz,
+  run_id text,
+  -- Once read: the lines (délais) or lots (contrôles) the mail was about. A
+  -- value typed on one later, that the reading missed, is an omission.
+  cibles bigint[] NOT NULL DEFAULT '{}',
+  essais integer NOT NULL DEFAULT 0,
+  erreur text,
+  UNIQUE (agent, competence, message_id)
+);
+CREATE INDEX observation_mail_attente ON observation_mail (agent, competence, idsous_traitant) WHERE statut = 'attente';
+${grantApi('SELECT, INSERT, UPDATE', 'observation_mail')}
+${grantApi('USAGE, SELECT', 'SEQUENCE observation_mail_id_seq')}
+
+CREATE TABLE observation_saisie (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  agent text NOT NULL,
+  competence text NOT NULL,
+  idsous_traitant bigint NOT NULL DEFAULT 0,
+  idcommande_sous_traitant bigint NOT NULL DEFAULT 0,
+  idligne_commande_sous_traitant bigint NOT NULL DEFAULT 0,
+  idsuivilot bigint NOT NULL DEFAULT 0,
+  -- 'YYYY-MM-DD' (délai) or texteMesures() (contrôles): what saisie_agent compares.
+  valeur text NOT NULL,
+  -- The line or the lot before the person typed: the mail is read against it.
+  avant jsonb,
+  le timestamptz NOT NULL DEFAULT now(),
+  par_id bigint NOT NULL DEFAULT 0,
+  par text,
+  statut text NOT NULL DEFAULT 'libre' CHECK (statut IN ('libre', 'rattachee', 'hors_portee')),
+  idobservation_mail bigint
+);
+CREATE INDEX observation_saisie_libre ON observation_saisie (agent, competence, idsous_traitant) WHERE statut = 'libre';
+CREATE INDEX observation_saisie_competence ON observation_saisie (agent, competence, le);
+${grantApi('SELECT, INSERT, UPDATE', 'observation_saisie')}
+${grantApi('USAGE, SELECT', 'SEQUENCE observation_saisie_id_seq')}
+`,
+  },
+  {
     // Écru sold by the metre (LIVA #1355, Vincent 2026-11-09): a few historical
     // clients still buy some tombé de métier in Ml. The fiche opens it with
     // « Vente au mètre » and its own Ml-per-kg conversion — never the retired

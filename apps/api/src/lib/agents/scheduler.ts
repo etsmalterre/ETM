@@ -17,6 +17,10 @@
 //     mid-run; after a restart later the same day it catches up the latest);
 //   - `ecran`: never — a person starts it from a screen (Planning atelier).
 //
+// Plus, once an hour, the observation pass (flux-ennoblisseur/observation.ts,
+// 2026-11-09): the mails a skill in observation waited on are read once a
+// person has reacted to them, and compared with what was typed.
+//
 // One lock per agent shared by the tick, the manual run and the Triage's
 // hand-off (verrous.ts): two runs of the same agent never overlap (they would
 // process the same mail twice).
@@ -243,4 +247,18 @@ export function demarrerAgents(): void {
   console.log('[agents] scheduler on')
   setTimeout(() => void tick(), 45_000)
   setInterval(() => void tick(), TICK_MS).unref()
+  setTimeout(() => void passeObservation(), 120_000)
+  setInterval(() => void passeObservation(), OBSERVATION_MS).unref()
 }
+
+/** Loaded on use: the pass pulls the whole Flux Ennoblisseur agent in. Never throws. */
+async function passeObservation(): Promise<void> {
+  try {
+    await (await import('./flux-ennoblisseur/observation.js')).passeObservation()
+  } catch (e) {
+    console.error('[agents] observation pass failed:', e)
+  }
+}
+
+/** The observation pass runs once an hour (Vincent 2026-11-09). */
+const OBSERVATION_MS = 3_600_000

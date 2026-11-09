@@ -91,6 +91,7 @@ import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { journaliserEnvoiRc } from '../lib/rapport-controle-lot.js'
 import { adressesDuClient, clientEnCopie, nomFichierRc, PHRASE_RC_SOUMISSION, PIECE_RC, rcPourSoumission, renderRapportControle } from '../lib/rc-soumission.js'
 import { compteursParCommande, ligneModifiee } from '../lib/agents/flux-ennoblisseur/saisies.js'
+import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
@@ -5086,7 +5087,19 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     // A délai Tricobot wrote on this line and nobody judged yet: the hand-typed
     // value judges it (same = validée, another = corrigée — claude_doc/agents_autonomie.md §4).
     if (d.date_livraison !== undefined) {
-      await ligneModifiee(lineId, delaiApres ?? '', req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
+      const par = req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null
+      const juges = await ligneModifiee(lineId, delaiApres ?? '', par)
+      // Flux Ennoblisseur › Délais in observation: the délai a person typed is
+      // what the dyer's mail will be compared with (observation.ts, hourly).
+      const chiffres = (v: unknown) => (typeof v === 'string' ? v.replace(/\D/g, '').slice(0, 8) : '')
+      const apres = chiffres(delaiApres)
+      if (/^\d{8}$/.test(apres) && apres !== chiffres(cur.date_livraison)) {
+        await noterSaisieHumaine({
+          competence: 'delais', idligne: lineId, par, juges,
+          valeur: `${apres.slice(0, 4)}-${apres.slice(4, 6)}-${apres.slice(6, 8)}`,
+          avant: { idcommande: commandeId, dateLivraison: chiffres(cur.date_livraison), dateDelai: chiffres(cur.date_delai), sstatut: (cur.sstatut ?? '').trim() },
+        })
+      }
     }
 
     // Auto-close on "all lines done" was removed when we moved to the

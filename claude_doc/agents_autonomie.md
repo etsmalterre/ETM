@@ -52,9 +52,38 @@ Reste du travail de développeur : une nouvelle compétence, un nouveau champ à
 | Mode | Ce qu'il fait |
 |---|---|
 | `off` | Rien. |
-| `essai`, affiché **« Observation »** | L'agent existe mais est **transparent** pour tout le monde (Vincent, 2026-11-05) : il lit et décide, n'écrit RIEN et ne montre rien dans ETM. Chaque point est enregistré (`saisie_agent`, mode et statut `observation`), puis jugé **par comparaison** avec la valeur qu'une personne saisit ensuite : le délai tapé sur la ligne (`ligneModifiee`), les mesures tapées dans Suivi lots (`lotModifie`), les rouleaux reçus pour un BL (`bl-observation.ts`). Même valeur = validée, une autre = corrigée ; une aide est tranchée par cette valeur et son discernement est **estimé** (utile si sa proposition était fausse). Un point sans saisie dans les 14 jours (30 pour un BL) n'est jamais comparé. On mesure un accord avec la personne, pas la vérité. De la donnée métier sans aucun impact : la compétence arrive en supervisé avec ses mesures. |
+| `essai`, affiché **« Observation »** | L'agent existe mais est **transparent** pour tout le monde (Vincent, 2026-11-05) : il n'écrit RIEN et ne montre rien dans ETM. **Il est jugé sur ce que les personnes font vraiment** (Vincent, 2026-11-09, voir « L'observation pilotée par les personnes » ci-dessous) : une réponse au Point n'est pas lue à son arrivée, elle attend qu'une personne y réagisse ; le passage horaire la lit alors **comme à son arrivée** et compare chaque point à ce que la personne a saisi. Même valeur = accord (validée), une autre = désaccord (corrigée), une valeur saisie que la lecture a manquée = omission ; une aide est tranchée par cette valeur. On mesure un accord avec la personne, pas la vérité. De la donnée métier sans aucun impact : la compétence arrive en supervisé avec ses mesures. |
 | `supervise` | **Propose, n'écrit rien** : chaque exécution attend qu'une personne la valide, et c'est « Valider » qui écrit (révisé 2026-11-05 : rien ne change dans ETM — Point, couleurs, cycle — avant qu'une personne en ait pris la responsabilité). |
 | `autonomie` X % / N exécutions, affiché **« Autonome »** | Sur chaque bloc de N exécutions, X % (arrondi) sont tirées **au hasard** pour être faites seules — **écrites tout de suite** —, les autres sont supervisées (proposées). 10 % / 10 = 1 exécution seule sur 10. |
+
+### L'observation pilotée par les personnes (Vincent, 2026-11-09)
+
+Ce qui vaut d'être regardé en observation : **combien il a tourné, l'accord avec ce que les
+personnes ont saisi, et les écarts**. L'autonomie et le discernement n'y ont pas de sens (personne
+n'est interrogé) : l'onglet Score montre à la place **Exécutions**, **Accord** (le critère pour
+passer en supervisé, 90 % sur 30 comparés) et **Portée**, puis la liste des écarts (ce qu'il a lu
+face à ce qui a été saisi : la matière pour améliorer le prompt).
+
+La donnée n'existe qu'une fois qu'une personne a réagi au mail, ce qui prend du temps. D'où :
+
+1. **À l'arrivée**, une réponse au Point d'une compétence en observation (Délais, Contrôles) n'est
+   pas lue : elle attend (`observation_mail`, migration 0066). Rien n'est dépensé pour un mail
+   auquel personne ne réagit ; sans réaction en 14 jours, il n'est jamais lu (« sans réaction »).
+2. **Quand une personne saisit** un délai sur une ligne, ou les mesures ennoblisseur d'un lot, d'un
+   des ennoblisseurs de l'agent, la valeur est gardée avec la ligne / le lot tels qu'ils étaient
+   juste avant (`observation_saisie`, depuis les routes de la ligne et de Suivi lots).
+3. **Toutes les heures** (planificateur, production), chaque mail en attente auquel une personne a
+   réagi est lu **comme à son arrivée** : la ligne / le lot d'avant la saisie, « aujourd'hui » = le
+   jour du mail. Il ne voit jamais la réponse : sinon « la ligne a déjà un délai » ferait de chaque
+   point une aide. La relecture d'un prompt (« Rejouer ») relit dans ce même contexte.
+4. Une valeur saisie qu'aucun mail lu n'explique est **hors de portée** (téléphone, autre boîte) :
+   ce n'est pas l'erreur de l'agent, c'est la part du travail qu'il ne voit pas (« Portée »).
+   Une valeur saisie plus tard sur une ligne / un lot dont le mail lu parlait, et que sa lecture a
+   manquée, est une **omission**.
+
+Le **BL** reste lu à son arrivée (rien n'est encore réceptionné, donc rien ne fuit) ; sa
+comparaison avec la réception passe dans le même passage horaire. Code :
+`flux-ennoblisseur/observation.ts` (rapprochement pur et testé), `observation-attente.ts`.
 
 - **Un seul interrupteur par compétence** (Vincent, 2026-11-05) : un agent à
   compétences n'a plus de mode à lui. Son mode stocké est déduit des leurs

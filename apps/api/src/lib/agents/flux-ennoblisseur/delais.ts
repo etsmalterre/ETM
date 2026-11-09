@@ -18,11 +18,13 @@
 // `deciderDelais` / `deciderControles` read and decide WITHOUT writing: the run
 // and the replay of a draft prompt (rejeu.ts) share them.
 //
-// A skill in « observation » (mode essai, Vincent 2026-11-05) writes nothing and
-// shows nothing, but records each point in saisie_agent (mode and statut
-// 'observation'): the value a person types afterwards on the line or the lot
-// judges it (saisies.ts comparerObservations), so the skill arrives in
-// supervisé with measures already.
+// A skill in « observation » (mode essai) writes nothing and shows nothing.
+// Since 2026-11-09 (Vincent) it does not even read the mail on arrival: the
+// mail waits (observation-attente.ts) until a person reacts to it on a line or
+// a lot, and the hourly pass (observation.ts) then reads it AS IT WAS on
+// arrival (`ContexteLecture`: the line / lot before the person typed, « today »
+// = the mail's day) and judges each point by what was typed, so the skill
+// arrives in supervisé with measures already.
 
 import type { Sql } from 'postgres'
 import { mpsPg } from '../../mps-pg.js'
@@ -34,6 +36,7 @@ import type { ModeCompetence } from '../competences.js'
 import { estReponsePoint, jourDuPoint, sections, type ControleLu, type QuestionDelai } from './reponse-point.js'
 import { lireControlesIa, lireDelaisIa, messageLecture, verifierControles, verifierDelais } from './lecture.js'
 import { aDesMesures, ecrireDelai, ecrireMesures, enregistrerSaisie, lireEtatLigne, lireMesuresLot, texteMesures, TRICOBOT, type EtatLigne, type MesuresSst } from './saisies.js'
+import { mettreEnAttente } from './observation-attente.js'
 
 /** Beyond this many days, a délai is checked by a person. */
 export const DELAI_MAX_J = 180
@@ -81,6 +84,21 @@ export interface ResultatFlux {
   dateMail?: string
   delais?: PointDelai[]
   controles?: ControleRapproche[]
+  /** Observation (2026-11-09): read after a person reacted, as of the mail's
+   *  arrival. The replay reads it again the same way. */
+  contexte?: ContexteLecture
+}
+
+/** What a mail is read against when it is read late (observation): the lines
+ *  and lots as they were before a person typed, and « today » = the mail's day.
+ *  Absent: the current lines and lots, today. */
+export interface ContexteLecture {
+  /** 'YYYY-MM-DD' (Paris): « déjà passé », « à plus de 6 mois » are read from it. */
+  aujourdhui: string
+  /** Line id → the line before the person typed its délai. */
+  etats: Record<string, EtatLigne>
+  /** Lot id → its dyer measures before the person typed them (null = none). */
+  lots: Record<string, MesuresSst | null>
 }
 
 const jourParis = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris' }).format(new Date())
@@ -158,7 +176,8 @@ export interface EntreeFlux {
 }
 
 /** Délais: read with the skill's prompt, checked, decided. Writes nothing. */
-export async function deciderDelais(e: EntreeFlux, prompt: Pick<AgentVersion, 'model' | 'prompt'>, aujourdhui = jourParis()): Promise<{ points: PointDelai[]; rien: boolean; usd: number }> {
+export async function deciderDelais(e: EntreeFlux, prompt: Pick<AgentVersion, 'model' | 'prompt'>, ctxLecture?: ContexteLecture): Promise<{ points: PointDelai[]; rien: boolean; usd: number }> {
+  const aujourdhui = ctxLecture?.aujourdhui ?? jourParis()
   const questions = e.idpoint ? await questionsDuPoint(e.idpoint) : []
   const { lecture, usd } = await lireDelaisIa(prompt, messageLecture({
     dateMail: e.dateMail, jourPoint: e.jourPoint, quoi: 'délai', texte: e.texte,
@@ -176,7 +195,7 @@ export async function deciderDelais(e: EntreeFlux, prompt: Pick<AgentVersion, 'm
     }
     if (v.doute) { p.decision = 'aide'; p.delai = v.delai; p.explication = v.doute; points.push(p); continue }
     if (!q!.idligne) { p.decision = 'aide'; p.delai = v.delai; p.explication = `Aucune ligne de la commande ${q!.commande} n’attend de délai.`; points.push(p); continue }
-    const etat = await lireEtatLigne(q!.idligne)
+    const etat = ctxLecture?.etats[String(q!.idligne)] ?? await lireEtatLigne(q!.idligne)
     p.delai = v.delai
     const d = doute(v.delai!, etat, aujourdhui)
     if (d) { p.decision = 'aide'; p.explication = d }
@@ -191,7 +210,7 @@ export async function deciderDelais(e: EntreeFlux, prompt: Pick<AgentVersion, 'm
 }
 
 /** Contrôles: read with the skill's prompt, checked, matched to their lot. Writes nothing. */
-export async function deciderControles(e: EntreeFlux, prompt: Pick<AgentVersion, 'model' | 'prompt'>, sql: Sql = mpsPg()): Promise<{ controles: ControleRapproche[]; usd: number }> {
+export async function deciderControles(e: EntreeFlux, prompt: Pick<AgentVersion, 'model' | 'prompt'>, sql: Sql = mpsPg(), ctxLecture?: ContexteLecture): Promise<{ controles: ControleRapproche[]; usd: number }> {
   const { lignes: demandees, demandes } = await demandesControles(e.idpoint, sql)
   const { lots, usd } = await lireControlesIa(prompt, messageLecture({ dateMail: e.dateMail, jourPoint: e.jourPoint, quoi: 'contrôles', texte: e.texte, demandes }))
   const out: ControleRapproche[] = []
@@ -201,7 +220,9 @@ export async function deciderControles(e: EntreeFlux, prompt: Pick<AgentVersion,
       SELECT idsuivilot, lot::text AS lot, COALESCE(idcommande_sous_traitant, 0) AS cmd, COALESCE(idligne_commande_sous_traitant, 0) AS lig,
              COALESCE(idetatlot, 0) AS etat
       FROM suivilot WHERE lot::text ~* ${'(^|[^0-9])' + c.lot + '([^0-9]|$)'} ORDER BY idsuivilot DESC LIMIT 1` : []
-    const actuel = l ? await lireMesuresLot(Number(l.idsuivilot), sql) : null
+    // Read late (observation): the lot as it was before the person typed its measures.
+    const avantLot = !!l && !!ctxLecture && String(l.idsuivilot) in ctxLecture.lots
+    const actuel = l ? (avantLot ? ctxLecture!.lots[String(l.idsuivilot)] : await lireMesuresLot(Number(l.idsuivilot), sql)) : null
     const lu: MesuresSst | null = c.laize != null || c.poids != null || c.stabH != null || c.stabL != null || c.vrillage != null
       ? { laize: c.laize ?? 0, poids: c.poids ?? 0, stabH: c.stabH, stabL: c.stabL, vrillage: c.vrillage }
       : null
@@ -217,7 +238,7 @@ export async function deciderControles(e: EntreeFlux, prompt: Pick<AgentVersion,
       explication: '',
     }
     // A validated (3) or shipped (4) lot is closed: its controls are history, never rewritten.
-    if (l && (Number(l.etat) === 3 || Number(l.etat) === 4)) r.explication = 'Le lot est déjà validé : je n’y touche pas.'
+    if (l && !avantLot && (Number(l.etat) === 3 || Number(l.etat) === 4)) r.explication = 'Le lot est déjà validé : je n’y touche pas.'
     else if (c.doute) { r.decision = 'aide'; r.explication = c.doute }
     else if (!lu) r.explication = 'Pas encore de mesures : annoncées plus tard.'
     else if (!l) { r.decision = 'aide'; r.explication = `Le lot ${c.lot} n’existe pas dans Suivi lots.` }
@@ -257,15 +278,37 @@ export interface ContexteFlux {
 type Base = Omit<AgentRun, 'statut' | 'resultat' | 'resume' | 'coutUsd' | 'dureeMs'>
 
 /** One mail of a dyer: the Délais and Contrôles runs it gives (none when it
- *  is not a reply to a Point, or both skills are off). Runs are stored. */
-export async function traiterReponsePoint(m: MessageComplet, ctx: ContexteFlux): Promise<AgentRun[]> {
-  if (!estReponsePoint(m.sujet) || !ctx.idsousTraitant) return []
+ *  is not a reply to a Point, or both skills are off). Runs are stored. A
+ *  skill in observation does not read it: the mail waits for a person's
+ *  reaction (`enAttente` names those skills). */
+export async function traiterReponsePoint(m: MessageComplet, ctx: ContexteFlux): Promise<{ runs: AgentRun[]; enAttente: string[] }> {
+  if (!estReponsePoint(m.sujet) || !ctx.idsousTraitant) return { runs: [], enAttente: [] }
+  const jour = jourDuPoint(m.sujet, m.date)
+  const idpoint = jour ? await pointDuJour(ctx.idsousTraitant, jour) : null
+  const enAttente: string[] = []
+  for (const competence of ['delais', 'controles'] as const) {
+    if (ctx[competence] !== 'essai') continue
+    await mettreEnAttente({
+      agent: ctx.slug, competence, messageId: m.id, threadId: m.threadId, idsousTraitant: ctx.idsousTraitant,
+      idpoint: idpoint ?? 0, jourPoint: jour, dateMail: m.date,
+    })
+    enAttente.push(competence)
+  }
+  const lire = (mode: ModeCompetence) => mode !== 'off' && mode !== 'essai'
+  if (!lire(ctx.delais) && !lire(ctx.controles)) return { runs: [], enAttente }
+  const actifs: ContexteFlux = { ...ctx, delais: lire(ctx.delais) ? ctx.delais : 'off', controles: lire(ctx.controles) ? ctx.controles : 'off' }
+  return { runs: await lireReponsePoint(m, actifs, jour, idpoint), enAttente }
+}
+
+/** Read a reply to the Point with the skills `ctx` leaves on and store their
+ *  runs. Observation (the hourly pass) reads it late, against `lecture`. */
+export async function lireReponsePoint(
+  m: MessageComplet, ctx: ContexteFlux, jour: string | null, idpoint: number | null, lecture?: ContexteLecture,
+): Promise<AgentRun[]> {
   if (ctx.delais === 'off' && ctx.controles === 'off') return []
   const t0 = Date.now()
   const sql = mpsPg()
   const texte = sansCitation(m.texte)
-  const jour = jourDuPoint(m.sujet, m.date)
-  const idpoint = jour ? await pointDuJour(ctx.idsousTraitant, jour, sql) : null
   const message = { id: m.id, threadId: m.threadId, de: m.de, sujet: m.sujet, date: m.date }
   const base = (competence: string, v: AgentVersion, mode: ModeCompetence): Base => ({
     id: nouvelIdRun(), slug: ctx.slug, createdAt: new Date().toISOString(), source: ctx.source,
@@ -273,7 +316,10 @@ export async function traiterReponsePoint(m: MessageComplet, ctx: ContexteFlux):
     version: v.version, model: v.model, competence,
   })
   const entree: EntreeFlux = { texte, dateMail: m.date, jourPoint: jour, idpoint }
-  const commun: ResultatFlux = { jourPoint: jour, idpoint, texte, dateMail: m.date, sections: Object.fromEntries([...sections(texte)].map(([k, v]) => [String(k), v])) }
+  const commun: ResultatFlux = {
+    jourPoint: jour, idpoint, texte, dateMail: m.date, sections: Object.fromEntries([...sections(texte)].map(([k, v]) => [String(k), v])),
+    ...(lecture ? { contexte: lecture } : {}),
+  }
   const runs: AgentRun[] = []
   const enErreur = (b: Base, quoi: string, e: unknown): AgentRun => ({
     ...b, statut: 'erreur', erreur: e instanceof Error ? e.message : String(e), resultat: { ...commun },
@@ -282,15 +328,16 @@ export async function traiterReponsePoint(m: MessageComplet, ctx: ContexteFlux):
 
   if (ctx.delais !== 'off') {
     const b = base('delais', ctx.promptDelais, ctx.delais)
-    try { runs.push(await delais(m, ctx, await deciderDelais(entree, ctx.promptDelais), commun, b, t0)) }
+    try { runs.push(await delais(m, ctx, await deciderDelais(entree, ctx.promptDelais, lecture), commun, b, t0)) }
     catch (e) { runs.push(enErreur(b, 'Délais', e)) }
   }
   if (ctx.controles !== 'off') {
     const b = base('controles', ctx.promptControles, ctx.controles)
     try {
-      const d = await deciderControles(entree, ctx.promptControles, sql)
-      // No lot in the reply: no run (a reply without controls is the usual case).
-      if (d.controles.length) runs.push(await controles(m, ctx, d, commun, b, t0, sql))
+      const d = await deciderControles(entree, ctx.promptControles, sql, lecture)
+      // No lot in the reply: no run (a reply without controls is the usual
+      // case), except read late in observation, where the mail was waited on.
+      if (d.controles.length || lecture) runs.push(await controles(m, ctx, d, commun, b, t0, sql))
     } catch (e) { runs.push(enErreur(b, 'Contrôles', e)) }
   }
   for (const r of runs) await ajouterRun(r)

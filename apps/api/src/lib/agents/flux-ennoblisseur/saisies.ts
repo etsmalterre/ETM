@@ -417,7 +417,7 @@ export async function omission(id: number, commentaire: string, par: Auteur): Pr
 /** A person changed a line's délai by hand (PUT lignes): every saisie of
  *  Tricobot on it still open (waiting, or written alone) is judged by that
  *  value — the same value validates, another corrects. Never fails the write. */
-export async function ligneModifiee(idligne: number, delaiDigits: string, par: Auteur | null): Promise<void> {
+export async function ligneModifiee(idligne: number, delaiDigits: string, par: Auteur | null): Promise<number> {
   try {
     const sql = mpsPg()
     const ouvertes = (await sql`
@@ -430,32 +430,34 @@ export async function ligneModifiee(idligne: number, delaiDigits: string, par: A
       else await marquer(s.id, 'corrigee', qui, iso, 'Délai modifié depuis la ligne de commande.', sql)
     }
     // Observation: what Tricobot would have done, judged by the délai the person typed.
-    if (iso) await comparerObservations(sql`idligne_commande_sous_traitant = ${idligne} AND champ = 'date_livraison'`, iso, qui, 'la ligne de commande', sql)
+    return iso ? await comparerObservations(sql`idligne_commande_sous_traitant = ${idligne} AND champ = 'date_livraison'`, iso, qui, 'la ligne de commande', sql) : 0
   } catch (e) {
     console.error('[saisies] line edit not reflected on Tricobot’s saisies', idligne, e)
+    return 0
   }
 }
 
 /** A person saved a lot's dyer measures on Suivi lots (PUT): Tricobot's open
  *  saisie on it is judged by them — the same values validate, others correct.
  *  Never fails the write. */
-export async function lotModifie(idsuivilot: number, par: Auteur | null): Promise<void> {
+export async function lotModifie(idsuivilot: number, par: Auteur | null): Promise<number> {
   try {
     const sql = mpsPg()
     const ouvertes = (await sql`
       SELECT * FROM saisie_agent WHERE idsuivilot = ${idsuivilot}
         AND decision = 'saisie' AND champ = 'mesures_sst' AND statut IN ('a_revoir', 'autonome')`).map(versSaisie)
     const m = await lireMesuresLot(idsuivilot, sql)
-    if (!m) return
+    if (!m) return 0
     const t = texteMesures(m)
     const qui = par ?? { id: 0, nom: 'Inconnu' }
     for (const s of ouvertes) {
       if (t === s.proposition) await marquer(s.id, 'validee', qui, t, null, sql)
       else await marquer(s.id, 'corrigee', qui, t, 'Mesures modifiées depuis Suivi lots.', sql)
     }
-    if (aDesMesures(m)) await comparerObservations(sql`idsuivilot = ${idsuivilot} AND champ = 'mesures_sst'`, t, qui, 'Suivi lots', sql)
+    return aDesMesures(m) ? await comparerObservations(sql`idsuivilot = ${idsuivilot} AND champ = 'mesures_sst'`, t, qui, 'Suivi lots', sql) : 0
   } catch (e) {
     console.error('[saisies] lot edit not reflected on Tricobot’s saisies', idsuivilot, e)
+    return 0
   }
 }
 
@@ -465,24 +467,40 @@ export async function lotModifie(idsuivilot: number, par: Auteur | null): Promis
 export const OBSERVATION_FENETRE_J = 14
 
 /** Judge the observation points of a line or a lot by the value a person just
- *  typed (canonical: 'YYYY-MM-DD', texteMesures()). A saisie with the same
- *  value is validated, another is corrected; an aide is settled with that
- *  value, and its doubt is ESTIMATED (nobody was asked): asking was useful
- *  unless its own proposal was already right. Only points of the last
- *  OBSERVATION_FENETRE_J days, once each. */
-async function comparerObservations(ou: PendingQuery<Row[]>, valeur: string, par: Auteur, ou_lu: string, sql: Sql): Promise<void> {
+ *  typed (canonical: 'YYYY-MM-DD', texteMesures()). Only points of the last
+ *  OBSERVATION_FENETRE_J days, once each. Returns how many were judged. */
+async function comparerObservations(ou: PendingQuery<Row[]>, valeur: string, par: Auteur, ou_lu: string, sql: Sql): Promise<number> {
   const points = (await sql`
     SELECT * FROM saisie_agent WHERE statut = 'observation' AND ${ou}
       AND cree_le > now() - make_interval(days => ${OBSERVATION_FENETRE_J})`).map(versSaisie)
-  for (const s of points) {
-    const pareil = (s.proposition ?? '') === valeur
-    if (s.decision === 'saisie') {
-      await marquer(s.id, pareil ? 'validee' : 'corrigee', par, valeur, pareil ? null : `Comparé à la saisie faite depuis ${ou_lu} (observation).`, sql)
-    } else if (s.decision === 'aide') {
-      await marquer(s.id, 'resolue', par, valeur, null, sql)
-      await sql`UPDATE saisie_agent SET doute_justifie = ${!pareil},
-        doute_commentaire = ${pareil ? 'Estimé en observation : sa proposition était la valeur saisie, il pouvait décider seul.' : null}
-        WHERE id = ${s.id}`
-    }
+  for (const s of points) await jugerObservation(s, valeur, par, ou_lu, sql)
+  return points.length
+}
+
+/** One observation point judged by the value a person typed. A saisie with
+ *  the same value is validated, another is corrected; an aide is settled with
+ *  that value, and its doubt is ESTIMATED (nobody was asked): asking was
+ *  useful unless its own proposal was already right. */
+export async function jugerObservation(
+  s: Pick<Saisie, 'id' | 'decision' | 'proposition'>, valeur: string, par: Auteur, ou_lu: string, sql: Sql = mpsPg(),
+): Promise<void> {
+  const pareil = (s.proposition ?? '') === valeur
+  if (s.decision === 'saisie') {
+    await marquer(s.id, pareil ? 'validee' : 'corrigee', par, valeur, pareil ? null : `Comparé à la saisie faite depuis ${ou_lu} (observation).`, sql)
+  } else if (s.decision === 'aide') {
+    await marquer(s.id, 'resolue', par, valeur, null, sql)
+    await sql`UPDATE saisie_agent SET doute_justifie = ${!pareil},
+      doute_commentaire = ${pareil ? 'Estimé en observation : sa proposition était la valeur saisie, il pouvait décider seul.' : null}
+      WHERE id = ${s.id}`
   }
+}
+
+/** Observation: a person typed a value on a line or a lot the mail was about,
+ *  and Tricobot read nothing for it: an omission, recorded already judged. */
+export async function enregistrerOmissionObservation(
+  n: Omit<NouvelleSaisie, 'mode' | 'decision' | 'proposition' | 'ecrit' | 'etatAvant'>, valeur: string, par: Auteur, ou_lu: string, sql: Sql = mpsPg(),
+): Promise<number> {
+  const id = await enregistrerSaisie({ ...n, mode: 'observation', decision: 'rien', proposition: null, ecrit: false, etatAvant: null }, sql)
+  await marquer(id, 'omission', par, valeur, `Une personne a saisi cette valeur depuis ${ou_lu} ; Tricobot n’avait rien lu pour elle (observation).`, sql)
+  return id
 }

@@ -50,6 +50,7 @@ import { CATEGORIES } from '../lib/agents/triage/categories.js'
 import { BL_ENNOBLISSEUR_SLUG, etiqueterVerifie } from '../lib/agents/bl-ennoblisseur.js'
 import { rouleauxEnStock, type RouleauEnStock } from '../lib/agents/bl-ennoblisseur-db.js'
 import { comparerObservationsBl } from '../lib/agents/bl-observation.js'
+import { bilanObservation, bilanObservationBl, type BilanObservation } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { DESTINATAIRES } from '../lib/agents/triage/transmission.js'
 import { relaisTriage } from '../lib/agents/triage/relais.js'
 import { conseiller, libelleEtat, mesurer, MODES_COMPETENCE, FENETRE_DEFAUT, type ModeCompetence } from '../lib/agents/competences.js'
@@ -282,6 +283,11 @@ async function vueAgent(def: AgentDef) {
   }
 }
 
+/** A skill in observation, as the Score shows it (flux-ennoblisseur/observation.ts). */
+function bilanDeCompetence(cle: string, runs: AgentRun[], version: number | null): Promise<BilanObservation> | BilanObservation {
+  return cle === 'bl' ? bilanObservationBl(runs, version) : bilanObservation(cle as 'delais' | 'controles', version)
+}
+
 /** Each skill: its mode, its three measures on the version it runs, and
  *  whether to propose going up or down (claude_doc/agents_autonomie.md). */
 async function vueCompetences(def: AgentDef, runs: AgentRun[], state: AgentState) {
@@ -295,7 +301,12 @@ async function vueCompetences(def: AgentDef, runs: AgentRun[], state: AgentState
     const enService = runs.filter((r) => competenceDuRun(r) === c.cle && r.version === prompts.activeVersion && r.source !== 'essai_manuel')
     let points: Awaited<ReturnType<typeof c.points>> = []
     let erreur: string | null = null
-    try { points = await c.points(runs, def.slug, prompts.activeVersion) } catch (e) { erreur = e instanceof Error ? e.message : String(e) }
+    let observation: BilanObservation | null = null
+    try {
+      points = await c.points(runs, def.slug, prompts.activeVersion)
+      // In observation the Score shows executions, the comparison with people and the gaps (2026-11-09).
+      if (etat.mode === 'essai') observation = await bilanDeCompetence(c.cle, runs, prompts.activeVersion)
+    } catch (e) { erreur = e instanceof Error ? e.message : String(e) }
     const livre = c.versionsLivrees?.[c.versionsLivrees.length - 1]
     return {
       cle: c.cle,
@@ -319,7 +330,9 @@ async function vueCompetences(def: AgentDef, runs: AgentRun[], state: AgentState
       /** A prompt shipped with the code that no stored version of the skill carries yet. */
       promptLivre: livre && !estPublie(livre, prompts.versions) ? livre : null,
       mesures: mesurer(points),
-      conseil: conseiller(etat, c.modes, points),
+      // In observation, going up is read on the observation points only (a version may have run supervisé before).
+      conseil: conseiller(etat, c.modes, etat.mode === 'essai' ? points.filter((p) => p.observation) : points),
+      observation,
       erreur,
     }
   }))
@@ -446,7 +459,9 @@ routes.get('/:slug/competences/:cle/mesures', async (req, res) => {
     const [state, runs] = await Promise.all([lireEtat(def.slug, def.versionInitiale), lireRuns(def.slug)])
     const tout = req.query.version === 'tout'
     const version = tout ? null : parseInt(String(req.query.version ?? ''), 10) || versionsDeCompetence(c, state).activeVersion
-    res.json({ cle: c.cle, version, mesures: mesurer(await c.points(runs, def.slug, version)) })
+    const etat = etatCompetence(state, c.cle, c.defaut)
+    const observation = modePlafonne(state.mode, etat.mode) === 'essai' ? await bilanDeCompetence(c.cle, runs, version) : null
+    res.json({ cle: c.cle, version, mesures: mesurer(await c.points(runs, def.slug, version)), observation })
   } catch (err) {
     console.error('[agents-ia] competence measures failed:', err)
     res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })

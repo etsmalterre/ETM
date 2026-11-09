@@ -95,7 +95,8 @@ export type RunStatut =
 
 /** « triage »: a mail the Triage agent handed over (lib/agents/triage/). */
 /** « triage »: a mail the Triage agent handed over (lib/agents/triage/). */
-export type RunSource = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel' | 'triage' | 'triage'
+/** 'observation': a reply to the Point read late by the hourly pass, once a person reacted (2026-11-09). */
+export type RunSource = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel' | 'triage' | 'observation'
 
 export interface RunFichier {
   nom: string

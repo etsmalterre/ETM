@@ -16,7 +16,8 @@
 //  - Empty FK columns store 0, not NULL: guard with (col IS NULL OR col = 0).
 //  - Driver returns état ids as BigInt → coerce with Number().
 
-import { compteursParLot, lotModifie } from '../lib/agents/flux-ennoblisseur/saisies.js'
+import { aDesMesures, compteursParLot, lireMesuresLot, lotModifie, texteMesures } from '../lib/agents/flux-ennoblisseur/saisies.js'
+import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { auteur } from './agents-ia.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
@@ -1043,6 +1044,8 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
       throw e
     }
 
+    // The dyer measures before, for Flux Ennoblisseur › Contrôles in observation.
+    const mesuresAvant = await lireMesuresLot(id)
     await query(
       `UPDATE suivilot SET
          laize_sst = ${n(b.laize_sst)}, poids_sst = ${n(b.poids_sst)}, rendement_sst = ${n(b.rendement_sst)},
@@ -1054,7 +1057,13 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
     )
     await ecrireVrillages(id, vrillages)
     // Dyer measures typed by hand judge Tricobot's open saisie on them (same = validée).
-    await lotModifie(id, req.userId !== undefined ? await auteur(req.userId) : null)
+    const parLot = req.userId !== undefined ? await auteur(req.userId) : null
+    const juges = await lotModifie(id, parLot)
+    // Contrôles in observation: what the dyer's mail will be compared with (observation.ts, hourly).
+    const mesuresApres = await lireMesuresLot(id)
+    if (mesuresApres && aDesMesures(mesuresApres) && (!mesuresAvant || texteMesures(mesuresAvant) !== texteMesures(mesuresApres))) {
+      await noterSaisieHumaine({ competence: 'controles', idsuivilot: id, valeur: texteMesures(mesuresApres), avant: mesuresAvant, par: parLot, juges })
+    }
     // The coloris verdict (#1332): 'conforme' | 'ecart' | null; left as is when absent.
     if ('coloris_tirelle' in b) {
       if (b.coloris_tirelle !== null && b.coloris_tirelle !== '' && !lireVerdictColoris(b.coloris_tirelle)) {

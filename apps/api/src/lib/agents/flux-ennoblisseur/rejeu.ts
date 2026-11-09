@@ -122,7 +122,8 @@ export async function rejouer(competence: 'delais' | 'controles', runs: readonly
             const s = p.saisieId ? saisies.find((x) => x.id === p.saisieId) : undefined
             if (s) juges.set(cleDelai(p), s)
           }
-          const d = await deciderDelais(entree, prompt)
+          // A reading done late (observation) is replayed against the same context, never the answer.
+          const d = await deciderDelais(entree, prompt, res.contexte)
           usd += d.usd
           const ligne = (p: PointDelai): [string, string, string, CotePoint] => [cleDelai(p), `Commande ${p.commande}`, p.reponse, coteDelai(p)]
           avant = (res.delais ?? []).filter((p) => p.reponse).map(ligne)
@@ -132,7 +133,7 @@ export async function rejouer(competence: 'delais' | 'controles', runs: readonly
             const s = c.saisieId ? saisies.find((x) => x.id === c.saisieId) : undefined
             if (s) juges.set(cleControle(c), s)
           }
-          const d = await deciderControles(entree, prompt, sql)
+          const d = await deciderControles(entree, prompt, sql, res.contexte)
           usd += d.usd
           const ligne = (c: ControleRapproche): [string, string, string, CotePoint] => [cleControle(c), `Lot ${c.lotEtm ?? c.lot}`, c.texte, coteControle(c)]
           avant = (res.controles ?? []).map(ligne)
