@@ -217,6 +217,7 @@ export const mainNavigation: MainMenuItem[] = [
       { title: 'Stock', href: '/fils/stock' },
       { title: 'Commandes', href: '/fils/commandes' },
       { title: 'Gestion', href: '/fils/gestion' },
+      { title: 'Matières premières', href: '/fils/matieres' },
       { title: 'Prévisions', href: '/fils/previsions' },
     ],
   },
@@ -336,6 +337,7 @@ export const routeTitles: Record<string, string> = {
   '/fils/stock': 'Stock',
   '/fils/commandes': 'Commandes',
   '/fils/gestion': 'Gestion',
+  '/fils/matieres': 'Matières premières',
   '/fils/previsions': 'Prévisions',
   // Tombé Métier
   '/tombe-metier': 'Tombé Métier',

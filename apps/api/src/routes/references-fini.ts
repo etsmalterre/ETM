@@ -27,6 +27,8 @@ import { TarifsClientPdf, type TarifsClientPdfData, type TarifsSectionData } fro
 import { EtiquetteRefFiniPdf, echantillonUrl, type EtiquetteRefFiniData } from '../lib/pdf/EtiquetteRefFiniPdf.js'
 import QRCode from 'qrcode'
 import { chooseCompositionRows, composeMatieres, repairMatiereLibelle } from '../lib/composition-matieres.js'
+import { colorisReprenables, reprendreColoris, originesColoris, RepriseRefusee } from '../lib/coloris-reprise.js'
+import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 
 export const referencesFiniRouter: RouterType = Router()
 
@@ -337,12 +339,16 @@ referencesFiniRouter.get('/:id', async (req: Request, res: Response) => {
       stock_lots: number
       stock_kg: number
       stock_m: number
+      /** Copied from another reference (LIVA #1359): that reference. */
+      repris_de?: string | null
+      /** The dyer whose recipe it is (dyed catalog only). */
+      IDsous_traitant?: number
     }
     let coloris: ColorisOut[] = []
     const coloris_mode: 'dye' | 'wash' = ref.avec_teinture !== 0 ? 'dye' : 'wash'
     if (coloris_mode === 'dye') {
-      const cr = await query<{ IDref_fini_colori: number; reference: string | null; IDteinture: number | null; gots: number | null }>(
-        `SELECT IDref_fini_colori, reference, IDteinture, gots FROM ref_fini_colori WHERE IDref_fini = ${id} ORDER BY reference`,
+      const cr = await query<{ IDref_fini_colori: number; reference: string | null; IDteinture: number | null; gots: number | null; IDsous_traitant: number | null }>(
+        `SELECT IDref_fini_colori, reference, IDteinture, gots, IDsous_traitant FROM ref_fini_colori WHERE IDref_fini = ${id} ORDER BY reference`,
       )
       const crFixed = (await fixEncoding(cr, 'ref_fini_colori', 'IDref_fini_colori', ['reference'])) as any[]
       // Dye-type labels (teinture catalog), one query. designation_externe
@@ -365,10 +371,14 @@ referencesFiniRouter.get('/:id', async (req: Request, res: Response) => {
         IDteinture: toNumOrNull(c.IDteinture),
         teinture: teintureById.get(Number(c.IDteinture) || 0) ?? null,
         gots: Number(c.gots) ? 1 : 0,
+        IDsous_traitant: Number(c.IDsous_traitant) || 0,
         client: null,
         note: null,
         stock_lots: 0, stock_kg: 0, stock_m: 0,
       }))
+      // Coloris copied from another reference keep their origin.
+      const origines = await originesColoris(id)
+      for (const c of coloris) c.repris_de = origines.get(c.id)?.reference_source ?? null
     } else if (ref.IDref_ecru > 0) {
       const cr = await query<{ IDcolori_ecru: number; reference: string | null; commentaire: string | null }>(
         `SELECT IDcolori_ecru, reference, commentaire FROM colori_ecru WHERE IDref_ecru = ${ref.IDref_ecru} ORDER BY reference`,
@@ -1224,6 +1234,49 @@ referencesFiniRouter.get('/:id/coloris/:colorisId/usages', async (req: Request, 
     res.json({ usages, message: usages.length > 0 ? messageUsages(usages) : null })
   } catch (err) {
     console.error('Error reading coloris usages:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/references-fini/:id/coloris/reprenables — the coloris other dyed
+// references already carry whose écru has the same fibre families (LIVA #1359,
+// lib/coloris-reprise.ts). Read by the « Ajouter un coloris existant » dialog.
+referencesFiniRouter.get('/:id/coloris/reprenables', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    res.json(await colorisReprenables(id))
+  } catch (err) {
+    if (err instanceof RepriseRefusee) {
+      res.status(err.code === 'introuvable' ? 404 : 409).json({ error: err.code, message: err.message })
+      return
+    }
+    console.error('Error listing reprenable coloris:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// POST /api/references-fini/:id/coloris/reprendre — copy an existing coloris
+// (recipe + dyer) onto this reference, under edit_ref_fini. Refused when the
+// fibres differ (409 familles_differentes) or the name is already there.
+referencesFiniRouter.post('/:id/coloris/reprendre', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = z.object({ IDref_fini_colori: z.number().int().positive() }).safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed' }); return }
+    if (!(await aLesDroits(req, res, ['edit_ref_fini'], 'Vous n’avez pas le droit d’ajouter un coloris.'))) return
+    const cree = await reprendreColoris(id, parsed.data.IDref_fini_colori, {
+      id: req.userId!, nom: await nomUtilisateur(req.userId!),
+    })
+    console.info(`[references-fini] coloris « ${cree.reference} » copied onto ref_fini ${id} from coloris ${parsed.data.IDref_fini_colori} by user ${req.userId}`)
+    res.status(201).json(cree)
+  } catch (err) {
+    if (err instanceof RepriseRefusee) {
+      res.status(err.code === 'introuvable' || err.code === 'source_introuvable' ? 404 : 409).json({ error: err.code, message: err.message })
+      return
+    }
+    console.error('Error copying coloris:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

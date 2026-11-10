@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser'
 import { entreprisesRouter } from './routes/entreprises.js'
 import { fournisseursRouter } from './routes/fournisseurs.js'
 import { referencesFilRouter } from './routes/references-fil.js'
+import { matieresPremieresRouter } from './routes/matieres-premieres.js'
 import { referencesFiniRouter } from './routes/references-fini.js'
 import { referencesEcruRouter } from './routes/references-ecru.js'
 import { echantillonsRouter, echantillonsTrmRouter } from './routes/echantillons.js'
@@ -163,6 +164,7 @@ app.use('/api/user-profiles', userProfilesRouter)
 app.use('/api/entreprises', entreprisesRouter)
 app.use('/api/fournisseurs', fournisseursRouter)
 app.use('/api/references-fil', referencesFilRouter)
+app.use('/api/matieres-premieres', matieresPremieresRouter)
 app.use('/api/references-fini', referencesFiniRouter)
 app.use('/api/references-ecru', referencesEcruRouter)
 // Tombé Métier › Échantillons — one router, each app's own Écrans grant + client ledger.

@@ -65,6 +65,7 @@ import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
+import { RepriseColorisDialog } from '@/components/finis/RepriseColorisDialog'
 import { cn } from '@/lib/utils'
 import { apiFetch, API_URL } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
@@ -97,6 +98,10 @@ interface Coloris {
   stock_lots: number
   stock_kg: number
   stock_m: number
+  /** Copied from another reference (LIVA #1359): that reference. */
+  repris_de?: string | null
+  /** The dyer whose recipe it is (dyed catalog only). */
+  IDsous_traitant?: number
 }
 
 interface Traitement {
@@ -1903,6 +1908,10 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
   // Only the dyed catalog belongs to this ref — a wash-only fini lists the
   // écru's coloris, which live in Tombé Métier.
   const canDelete = useHasPermission('delete_coloris_fini') && dyed
+  // Copying an existing coloris from another reference of the same fibres
+  // (LIVA #1359) is a write on the reference: edit_ref_fini, dyed refs only.
+  const canReprendre = useHasPermission('edit_ref_fini') && dyed
+  const [repriseOpen, setRepriseOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Coloris | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   // The dialog asks the server what holds the coloris BEFORE offering
@@ -1928,6 +1937,21 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
   })
   const closeDelete = () => { setDeleteTarget(null); setDeleteError(null) }
   const showDelete = isEditing && canDelete
+  const showReprise = isEditing && canReprendre
+  const sstDeLaRef = useMemo(
+    () => Array.from(new Set(detail.coloris.map((c) => c.IDsous_traitant ?? 0).filter((x) => x > 0))),
+    [detail.coloris],
+  )
+  const boutonReprise = (vide: boolean) => (
+    <Button
+      variant={vide ? 'outline' : 'ghost'}
+      size="sm"
+      onClick={() => setRepriseOpen(true)}
+      className={vide ? 'mt-3' : 'w-full text-muted-foreground hover:text-accent hover:bg-accent/5 border border-dashed border-border/60 hover:border-accent/40'}
+    >
+      <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter un coloris existant
+    </Button>
+  )
   const [q, setQ] = useState('')
   // Reset the filter when the selection changes — a term typed for one ref
   // silently emptying the next one's table reads as "no coloris".
@@ -1978,7 +2002,10 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
         </div>
 
         {detail.coloris.length === 0 ? (
-          <p className="text-sm text-muted-foreground italic">Aucun coloris</p>
+          <div className="flex flex-col items-center py-6">
+            <p className="text-sm text-muted-foreground italic">Aucun coloris</p>
+            {showReprise && boutonReprise(true)}
+          </div>
         ) : rows.length === 0 ? (
           <p className="text-sm text-muted-foreground italic">Aucun coloris ne correspond au filtre</p>
         ) : (
@@ -2000,6 +2027,11 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
                       <div className="flex items-center gap-2 min-w-0">
                         <Palette className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
                         <span className="font-medium truncate">{c.reference ?? '—'}</span>
+                        {c.repris_de && (
+                          <span className="text-[11px] text-muted-foreground flex-shrink-0" title="Coloris repris d’une autre référence de mêmes fibres">
+                            repris de {c.repris_de}
+                          </span>
+                        )}
                         {hasGots && !!c.gots && (
                           <Badge variant="outline" className="text-[10px] py-0 gap-0.5 border-green-600/30 text-green-700 flex-shrink-0">
                             <Leaf className="h-2.5 w-2.5" />GOTS
@@ -2038,14 +2070,31 @@ function ColorisCard({ detail, isEditing }: { detail: RefFiniDetail; isEditing: 
             </table>
           </div>
         )}
+        {showReprise && detail.coloris.length > 0 && boutonReprise(false)}
         <p className="text-[11px] text-muted-foreground/70 italic flex items-center gap-1.5">
           <Lock className="h-3 w-3" />
-          {showDelete
-            ? 'Les coloris se créent dans Finis › Études coloris. Seul un coloris utilisé nulle part peut être supprimé.'
-            : 'Les coloris se gèrent dans Finis › Études coloris.'}
+          {!dyed
+            ? 'Les coloris de cette référence sont ceux de son écru (Tombé Métier › Références).'
+            : showDelete
+              ? 'Un coloris naît d’une étude coloris (Finis › Études coloris) ou se reprend d’une autre référence de mêmes fibres. Seul un coloris utilisé nulle part peut être supprimé.'
+              : 'Un coloris naît d’une étude coloris (Finis › Études coloris) ou se reprend d’une autre référence de mêmes fibres, en mode édition.'}
         </p>
       </CardContent>
     </Card>
+    {canReprendre && (
+      <RepriseColorisDialog
+        open={repriseOpen}
+        onClose={() => setRepriseOpen(false)}
+        idRefFini={detail.IDref_fini}
+        referenceFini={detail.reference ?? ''}
+        sousTraitantsDeLaRef={sstDeLaRef}
+        onAdded={() => {
+          queryClient.invalidateQueries({ queryKey: ['ref-fini', detail.IDref_fini] })
+          queryClient.invalidateQueries({ queryKey: ['refs-fini'] })
+          queryClient.invalidateQueries({ queryKey: ['ref-fini-coloris-reprenables', detail.IDref_fini] })
+        }}
+      />
+    )}
     <ConfirmDialog
       open={deleteTarget !== null}
       title="Supprimer le coloris"

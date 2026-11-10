@@ -106,6 +106,7 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
       { href: '/fils/stock', label: 'Stock' },
       { href: '/fils/commandes', label: 'Commandes' },
       { href: '/fils/gestion', label: 'Gestion' },
+      { href: '/fils/matieres', label: 'Matières premières' },
       { href: '/fils/previsions', label: 'Prévisions' },
     ],
   },

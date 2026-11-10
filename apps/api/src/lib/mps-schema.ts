@@ -1872,6 +1872,41 @@ ALTER TABLE suivilot
   ADD COLUMN allongementl_tirelle double precision;
 `,
   },
+  {
+    // Reprendre un coloris (LIVA #1359, Vincent + Isabelle 2026-11-10,
+    // lib/familles-fibres.ts): a dyer's recipe holds on another finished
+    // reference whose fibres are of the same FAMILIES (végétales, artificielles,
+    // polyester…). The family belongs to the matière (one per row, NULL = not
+    // classified yet), never to a yarn: a yarn's family follows from its
+    // matières. Seeded from the decision of the day, by label.
+    // coloris_fini_reprise keeps where a copied coloris came from — append-only.
+    name: '0071_familles_fibres_coloris_repris',
+    sql: `
+ALTER TABLE matiere_premiere
+  ADD COLUMN famille text CHECK (famille IN ('vegetale', 'artificielle', 'animale', 'polyester', 'polyamide', 'elasthanne', 'metallique', 'autre'));
+UPDATE matiere_premiere SET famille = CASE
+  WHEN lower(libelle) IN ('coton', 'coton bio', 'coton recyclé', 'lin', 'chanvre') THEN 'vegetale'
+  WHEN lower(libelle) IN ('viscose', 'tencel', 'lyocell', 'modal', 'bambou') THEN 'artificielle'
+  WHEN lower(libelle) IN ('laine', 'merinos', 'mérinos', 'soie') THEN 'animale'
+  WHEN lower(libelle) IN ('polyester', 'polyester recyclé') THEN 'polyester'
+  WHEN lower(libelle) IN ('polyamide', 'polyamide recyclé') THEN 'polyamide'
+  WHEN lower(libelle) IN ('elasthanne', 'élasthanne', 'elasthanne recyclé', 'élasthanne recyclé') THEN 'elasthanne'
+  WHEN lower(libelle) IN ('cuivre', 'inox', 'nickel', 'argent') THEN 'metallique'
+  WHEN lower(libelle) IN ('nomex', 'kevlar', 'modacrylique', 'protex', 'acrylique', 'polypropylène', 'maïs') THEN 'autre'
+END;
+CREATE TABLE coloris_fini_reprise (
+  idref_fini_colori bigint PRIMARY KEY,
+  idref_fini bigint NOT NULL,
+  idref_fini_colori_source bigint NOT NULL,
+  idref_fini_source bigint NOT NULL,
+  reference_source text NOT NULL,
+  par_id bigint NOT NULL DEFAULT 0,
+  par text,
+  le timestamptz NOT NULL DEFAULT now()
+);
+${grantApi('SELECT, INSERT', 'coloris_fini_reprise')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

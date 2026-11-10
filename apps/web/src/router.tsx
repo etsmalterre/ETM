@@ -31,6 +31,7 @@ const FilsPrevisionsPage = createPlaceholder('Prévisions Fournisseurs', 'Prévi
 
 // Fils pages (real)
 import { FilsGestion } from '@/pages/FilsGestion'
+import { FilsMatieres } from '@/pages/FilsMatieres'
 import { FilsReferences } from '@/pages/FilsReferences'
 import { FilsStock } from '@/pages/FilsStock'
 import { FilsCommandes } from '@/pages/FilsCommandes'
@@ -132,6 +133,7 @@ export const router = createBrowserRouter([
       { path: 'fils/stock', element: <FilsStock /> },
       { path: 'fils/commandes', element: <FilsCommandes /> },
       { path: 'fils/gestion', element: <FilsGestion /> },
+      { path: 'fils/matieres', element: <FilsMatieres /> },
       { path: 'fils/previsions', element: <FilsPrevisionsPage /> },
 
       // Tombé Métier
