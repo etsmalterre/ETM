@@ -16,6 +16,7 @@ import { pickVal, stripKeys } from './stock.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
 import { StockFilLabelPdf, type StockFilLabelData } from '../lib/pdf/StockFilLabelPdf.js'
 import { RapportFreintePdf, type RapportFreinteData } from '../lib/pdf/RapportFreintePdf.js'
+import { InventaireFilPdf, type InventaireFilData, type InventaireFilLigne } from '../lib/pdf/InventaireFilPdf.js'
 import { ID_CLIENT_ETS_MALTERRE, gereParEtmParDefaut, regleFilsEtm, reglesFilsEtm } from '../lib/fil-gere-etm.js'
 import { basculerSurLot, lignesCommandeFil } from '../lib/reservation-fil.js'
 import { mpsPg } from '../lib/mps-pg.js'
@@ -562,6 +563,62 @@ stockFilTrmRouter.get('/fil-trm', async (req: Request, res: Response) => {
     res.json([...live, ...(await getArchivedRows())].sort(byEntreeDesc))
   } catch (err) {
     console.error('Error fetching TRM stock_fil list:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// GET /api/stock/fil-trm/inventaire?ids=1,2,…&filtre=… — the landscape
+// « feuille d'inventaire » (LIVA #1357): Nicolas prints it, ticks the lots on
+// the racks, corrects the ERP afterwards. Always the DISPONIBLE lots (an
+// archived lot is not on a shelf); `ids` narrows it to what the screen shows
+// after a search, `filtre` is printed as-is so a partial sheet says so. Sorted
+// in walking order: emplacement, niveau, then fil / coloris / lot.
+// Registered before `/fil-trm/:id`, which would otherwise swallow the path.
+stockFilTrmRouter.get('/fil-trm/inventaire', async (req: Request, res: Response) => {
+  try {
+    const rawIds = typeof req.query.ids === 'string' ? req.query.ids : ''
+    const ids = new Set(
+      rawIds.split(',').map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n) && n > 0),
+    )
+    const filtre = typeof req.query.filtre === 'string' ? req.query.filtre.slice(0, 200).trim() : ''
+
+    const rows = await hydrateRows(await fetchBaseRows('disponible'))
+    const kept = ids.size > 0 ? rows.filter((r) => ids.has(numOf(r.IDstock_fil))) : rows
+
+    const text = (v: unknown) => String(v ?? '').trim()
+    const lignes: InventaireFilLigne[] = kept.map((r) => ({
+      ref_fil: text(r.ref_fil),
+      colori_reference: text(r.colori_reference),
+      lot: text(r.lot),
+      stock: r.stock == null ? null : floatOf(r.stock),
+      fournisseur_nom: text(r.fournisseur_nom),
+      emplacement: text(r.emplacement),
+      niveau: r.niveau == null ? null : numOf(r.niveau),
+    }))
+    const nat = (a: string, b: string) => a.localeCompare(b, 'fr', { numeric: true, sensitivity: 'base' })
+    lignes.sort((a, b) => {
+      // A lot without emplacement goes last: it is the one to look for.
+      if (!a.emplacement !== !b.emplacement) return a.emplacement ? -1 : 1
+      return (
+        nat(a.emplacement, b.emplacement) ||
+        (a.niveau ?? 0) - (b.niveau ?? 0) ||
+        nat(a.ref_fil, b.ref_fil) ||
+        nat(a.colori_reference, b.colori_reference) ||
+        nat(a.lot, b.lot)
+      )
+    })
+
+    const data: InventaireFilData = {
+      date_edition: formatDateFrLong(todayDigits()),
+      filtre: ids.size > 0 ? filtre : '',
+      lignes,
+    }
+    const buffer = await renderToBuffer(
+      React.createElement(InventaireFilPdf, { data }) as React.ReactElement,
+    )
+    sendPdf(res, buffer, `inventaire-fil-${todayDigits()}.pdf`)
+  } catch (err) {
+    console.error('Error rendering inventaire fil:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
