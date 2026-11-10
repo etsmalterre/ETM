@@ -1,22 +1,24 @@
-// Feuille d'inventaire du stock de fil — TRM Fils › Stock, toolbar « Imprimer »
+// « Pointage stock de fil » — TRM Fils › Stock, toolbar « Pointage »
 // (LIVA #1357). Nicolas prints it, walks the racks with a pen, ticks each lot he
 // finds and writes what differs in « Note », then corrects the ERP at the desk.
 //
 // So the sheet is built for a pen, not for reading: rows sorted by emplacement
-// then niveau (the walking order), tall rows, an empty Note column and an empty
-// box on the far right. Landscape A4 on the shared MalterreDocument frame; the
-// column header repeats on every page (`fixed`), a row never splits.
+// then niveau (the walking order), roomy rows, an empty Note column and an
+// empty box on the far right. No totals band (Vincent 2026-11-10): the sheet is
+// the list, nothing else. Landscape A4 on the shared MalterreDocument frame;
+// the table is the house one (BonLivraisonPdf: grey header, gold rule, framed),
+// its header repeats on every page (`fixed`) and a row never splits.
 //
 // Issued by Tricotage Malterre → `companyTrm` footer.
 
 import React from 'react'
 import { View, Text, StyleSheet } from '@react-pdf/renderer'
 import { MalterreDocument } from './MalterreDocument.js'
-import { colors, companyTrm } from './theme.js'
+import { colors, companyTrm, sizes } from './theme.js'
 
 // ── Input shape ──────────────────────────────────────────
 
-export interface InventaireFilLigne {
+export interface PointageFilLigne {
   ref_fil: string
   colori_reference: string
   lot: string
@@ -26,13 +28,13 @@ export interface InventaireFilLigne {
   niveau: number | null
 }
 
-export interface InventaireFilData {
+export interface PointageFilData {
   /** Long-form print date, e.g. « 10 Novembre 2026 ». */
   date_edition: string
   /** What the screen was narrowed to (« Emplacement : B », « nylon »…), or ''
-   *  for the whole stock. Printed so a partial sheet says it is partial. */
+   *  for the whole stock. Printed under the title so a partial sheet says so. */
   filtre: string
-  lignes: InventaireFilLigne[]
+  lignes: PointageFilLigne[]
 }
 
 // ── Formatting ───────────────────────────────────────────
@@ -46,51 +48,47 @@ function fmtKg(value: number | null): string {
 
 // ── Styles ───────────────────────────────────────────────
 
-const ROW_HEIGHT = 21
-
 const styles = StyleSheet.create({
-  summary: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.bgCream,
-    borderLeftWidth: 3,
-    borderLeftColor: colors.gold,
-    borderRadius: 3,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    marginBottom: 10,
+  // Same frame / header / row recipe as BonLivraisonPdf's piece table.
+  table: {
+    borderWidth: 0.75,
+    borderColor: colors.borderStrong,
+    borderStyle: 'solid',
+    borderRadius: 6,
+    overflow: 'hidden',
   },
-  summaryMain: { flex: 1 },
-  summaryValue: { fontSize: 10, color: colors.text, fontWeight: 700 },
-  summaryFiltre: { fontSize: 8.5, color: colors.muted, marginTop: 2 },
-  signature: { flexDirection: 'row', alignItems: 'flex-end' },
-  signatureLabel: { fontSize: 8.5, color: colors.muted, marginLeft: 16 },
-  signatureLine: {
-    width: 110,
-    borderBottomWidth: 0.75,
-    borderBottomColor: colors.borderStrong,
-    marginLeft: 4,
-    marginBottom: 1,
-  },
-
   tableHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.primary,
-    height: 20,
-    paddingHorizontal: 6,
+    backgroundColor: colors.bgMuted,
+    borderBottomWidth: 2,
+    borderBottomColor: colors.gold,
+    borderBottomStyle: 'solid',
+    paddingHorizontal: 8,
+    // Explicit height: the `fixed` repeat on continuation pages otherwise
+    // stretches the header box (see BonLivraisonPdf).
+    height: 24,
   },
-  th: { fontSize: 8, lineHeight: 1.2, color: '#ffffff', fontWeight: 700, paddingHorizontal: 3 },
+  // lineHeight tight and explicit: with the inherited 1.45 the text box
+  // overflows the fixed-height header and react-pdf drops the labels.
+  th: {
+    fontSize: sizes.fontXs,
+    color: colors.text,
+    fontWeight: 900,
+    letterSpacing: 0.5,
+    lineHeight: 1.2,
+    paddingHorizontal: 3,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: ROW_HEIGHT,
+    minHeight: 22,
     paddingVertical: 3,
-    paddingHorizontal: 6,
-    borderBottomWidth: 0.5,
-    borderBottomColor: colors.borderStrong,
+    paddingHorizontal: 8,
+    borderBottomWidth: 0.75,
+    borderBottomColor: '#EEEEEE',
+    borderBottomStyle: 'solid',
   },
-  rowAlt: { backgroundColor: '#FAFAFA' },
   td: { fontSize: 9, lineHeight: 1.2, color: colors.text, paddingHorizontal: 3 },
   tdStrong: { fontSize: 9, lineHeight: 1.2, color: colors.text, fontWeight: 700, paddingHorizontal: 3 },
   tdMuted: { fontSize: 9, lineHeight: 1.2, color: colors.muted, paddingHorizontal: 3 },
@@ -135,52 +133,34 @@ const COL = {
 
 // ── Component ─────────────────────────────────────────────
 
-export function InventaireFilPdf({ data }: { data: InventaireFilData }) {
-  const total = data.lignes.reduce((s, l) => s + (l.stock ?? 0), 0)
-  const lots = data.lignes.length
+export function PointageFilPdf({ data }: { data: PointageFilData }) {
   return (
     <MalterreDocument
-      documentType="Inventaire du fil"
-      reference={`${lots} lot${lots > 1 ? 's' : ''}`}
+      documentType="Pointage stock de fil"
+      reference={data.filtre || 'Tout le stock'}
+      subtleReference
       documentDate={data.date_edition}
       orientation="landscape"
-      title={`Inventaire du fil - ${data.date_edition}`}
+      title={`Pointage stock de fil - ${data.date_edition}`}
       issuer={companyTrm}
     >
-      <View style={styles.summary}>
-        <View style={styles.summaryMain}>
-          <Text style={styles.summaryValue}>
-            {lots} lot{lots > 1 ? 's' : ''} · {fmtKg(total)} kg en stock
-          </Text>
-          <Text style={styles.summaryFiltre}>
-            {data.filtre ? `Filtre : ${data.filtre}` : 'Tout le stock disponible'}
-          </Text>
-        </View>
-        <View style={styles.signature}>
-          <Text style={styles.signatureLabel}>Pointé par</Text>
-          <View style={styles.signatureLine} />
-          <Text style={styles.signatureLabel}>le</Text>
-          <View style={[styles.signatureLine, { width: 70 }]} />
-        </View>
-      </View>
-
-      {lots === 0 ? (
+      {data.lignes.length === 0 ? (
         <Text style={styles.empty}>Aucun lot à pointer.</Text>
       ) : (
-        <View>
+        <View style={styles.table}>
           <View style={styles.tableHeader} fixed>
-            <Text style={[styles.th, COL.fil]}>Fil</Text>
-            <Text style={[styles.th, COL.coloris]}>Coloris</Text>
-            <Text style={[styles.th, COL.lot]}>Lot</Text>
-            <Text style={[styles.th, COL.stock, styles.right]}>Stock (kg)</Text>
-            <Text style={[styles.th, COL.fournisseur]}>Fournisseur</Text>
-            <Text style={[styles.th, COL.emplacement]}>Empl.</Text>
-            <Text style={[styles.th, COL.niveau, styles.right]}>Niv.</Text>
-            <Text style={[styles.th, COL.note]}>Note</Text>
+            <Text style={[styles.th, COL.fil]}>FIL</Text>
+            <Text style={[styles.th, COL.coloris]}>COLORIS</Text>
+            <Text style={[styles.th, COL.lot]}>LOT</Text>
+            <Text style={[styles.th, COL.stock, styles.right]}>STOCK (KG)</Text>
+            <Text style={[styles.th, COL.fournisseur]}>FOURNISSEUR</Text>
+            <Text style={[styles.th, COL.emplacement]}>EMPL.</Text>
+            <Text style={[styles.th, COL.niveau, styles.right]}>NIV.</Text>
+            <Text style={[styles.th, COL.note]}>NOTE</Text>
             <Text style={[styles.th, COL.check, styles.center]}>OK</Text>
           </View>
           {data.lignes.map((l, i) => (
-            <View key={i} style={i % 2 === 1 ? [styles.row, styles.rowAlt] : styles.row} wrap={false}>
+            <View key={i} style={styles.row} wrap={false}>
               <Text style={[styles.td, COL.fil]}>{l.ref_fil || '—'}</Text>
               <Text style={[styles.td, COL.coloris]}>{l.colori_reference || '—'}</Text>
               <Text style={[styles.tdStrong, COL.lot]}>{l.lot || '—'}</Text>
