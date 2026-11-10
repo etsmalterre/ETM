@@ -19,7 +19,7 @@ import {
 import { batchRepair } from '../lib/batch-repair.js'
 import type { PermissionKey } from '../lib/permission-keys.js'
 import { mpsPg } from '../lib/mps-pg.js'
-import { controlesDeRef, colonneMesure, coteDemande, MESURES_CONTROLE, type CoteControle } from '../lib/controles-lot.js'
+import { controlesDeRef, colonneMesure, coteDemande, MESURES_CONTROLE, MESURES_COTE, type CoteControle, type MesureControle } from '../lib/controles-lot.js'
 import { clesRequises, groupesModifies, LIBELLES_GROUPE, GROUPES_REF_FINI } from '../lib/ref-fini-droits.js'
 import { refFiniReferenceLock, refFiniReferenceTaken, freeRefFiniReference } from '../lib/ref-fini-reference.js'
 import { FicheTechniquePdf, type FicheTechniquePdfData } from '../lib/pdf/FicheTechniquePdf.js'
@@ -985,6 +985,7 @@ const refFiniBody = z.object({
   controle_malterre_stab: z.boolean().optional(),
   controle_ennoblisseur_vrillage: z.boolean().optional(),
   controle_malterre_vrillage: z.boolean().optional(),
+  controle_malterre_allongement: z.boolean().optional(),
   expedier_des_reception: z.boolean().optional(),
 })
 
@@ -1018,12 +1019,25 @@ function buildRefFiniSets(b: RefFiniBody): string[] {
   // On by default (lib/controles-lot.ts): written only when sent, never reset by omission.
   // A side sent with its three measures (#1345) stores them and its « any » flag;
   // a side switch sent alone (a client from before #1345) writes the switch only.
+  // The allongement (Malterre only, off by default) is written when sent; a
+  // client that does not send it keeps the stored switch, which then still
+  // counts in the side's « any » flag (the SET reads the row's old value).
   for (const cote of ['ennoblisseur', 'malterre'] as const) {
-    const recues = MESURES_CONTROLE.map((m) => b[colonneMesure(cote, m) as keyof RefFiniBody])
+    const base = MESURES_COTE[cote].filter((m) => m !== 'allongement')
+    const recues = base.map((m) => b[colonneMesure(cote, m) as keyof RefFiniBody])
     if (recues.every((v) => v !== undefined)) {
-      MESURES_CONTROLE.forEach((m, i) => sets.push(`${colonneMesure(cote, m)} = ${recues[i] ? 1 : 0}`))
-      const d = Object.fromEntries(MESURES_CONTROLE.map((m, i) => [m, !!recues[i]])) as Record<(typeof MESURES_CONTROLE)[number], boolean>
-      sets.push(`controle_${cote} = ${coteDemande(d) ? 1 : 0}`)
+      base.forEach((m, i) => sets.push(`${colonneMesure(cote, m)} = ${recues[i] ? 1 : 0}`))
+      const d = Object.fromEntries(MESURES_CONTROLE.map((m) => [m, false])) as Record<MesureControle, boolean>
+      base.forEach((m, i) => { d[m] = !!recues[i] })
+      const colAllong = colonneMesure(cote, 'allongement')
+      const allong = MESURES_COTE[cote].includes('allongement') ? b[colAllong as keyof RefFiniBody] : false
+      if (allong !== undefined) {
+        if (MESURES_COTE[cote].includes('allongement')) sets.push(`${colAllong} = ${allong ? 1 : 0}`)
+        d.allongement = !!allong
+        sets.push(`controle_${cote} = ${coteDemande(d) ? 1 : 0}`)
+      } else {
+        sets.push(`controle_${cote} = ${coteDemande(d) ? 1 : colAllong}`)
+      }
     } else if (b[`controle_${cote}`] !== undefined) {
       sets.push(`controle_${cote} = ${b[`controle_${cote}`] ? 1 : 0}`)
     }
@@ -1039,7 +1053,7 @@ function controlesAplatis(row: Record<string, unknown>): Record<string, 0 | 1> {
   const c = controlesDeRef(row)
   const out: Record<string, 0 | 1> = { controle_ennoblisseur: c.ennoblisseur ? 1 : 0, controle_malterre: c.malterre ? 1 : 0 }
   for (const cote of ['ennoblisseur', 'malterre'] as CoteControle[]) {
-    for (const m of MESURES_CONTROLE) out[colonneMesure(cote, m)] = c.mesures[cote][m] ? 1 : 0
+    for (const m of MESURES_COTE[cote]) out[colonneMesure(cote, m)] = c.mesures[cote][m] ? 1 : 0
   }
   return out
 }

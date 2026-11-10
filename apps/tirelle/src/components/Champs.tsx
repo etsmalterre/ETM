@@ -31,6 +31,12 @@ export function horsRetrait(v: number | null, ref: number | null): boolean | nul
   return v < ref
 }
 
+/** The allongement (2026-11-10): like horsBornes, but 0 is a measure, not « empty ». */
+export function horsBornesAllongement(v: number | null, b: { min: number; max: number }): boolean | null {
+  if (v == null || (b.min <= 0 && b.max <= 0)) return null
+  return (b.min > 0 && v < b.min) || (b.max > 0 && v > b.max)
+}
+
 export function texteBornes(b: { min: number; max: number }, unite: string): string | null {
   if (b.min > 0 && b.max > 0) return `${fmt(b.min)} à ${fmt(b.max)} ${unite}`
   if (b.min > 0) return `≥ ${fmt(b.min)} ${unite}`
@@ -162,5 +168,7 @@ export function aidesTolerance(t: Tolerances) {
     stabh: t.stabh != null ? `≥ ${fmt(t.stabh)} %` : null,
     stabl: t.stabl != null ? `≥ ${fmt(t.stabl)} %` : null,
     vrillage: `≤ ${fmt(t.vrillageMax)} %`,
+    allongementh: t.allongementh ? texteBornes(t.allongementh, '%') : null,
+    allongementl: t.allongementl ? texteBornes(t.allongementl, '%') : null,
   }
 }

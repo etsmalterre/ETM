@@ -65,6 +65,7 @@ const n = (v: unknown): number | null => (v === null || v === undefined || v ===
 const mesuresDe = (b: Record<string, unknown>): MesuresLot => ({
   laize_sst: n(b.laize_sst), poids_sst: n(b.poids_sst), stabh_sst: n(b.stabH_sst), stabl_sst: n(b.stabL_sst), vrillage_sst: n(b.vrillage_sst),
   laize_tirelle: n(b.laize_tirelle), poids_tirelle: n(b.poids_tirelle), stabh_tirelle: n(b.stabH_tirelle), stabl_tirelle: n(b.stabL_tirelle), vrillage_tirelle: n(b.vrillage_tirelle),
+  allongementh_tirelle: n(b.allongementH_tirelle), allongementl_tirelle: n(b.allongementL_tirelle),
   coloris_tirelle: typeof b.coloris_tirelle === 'string' ? b.coloris_tirelle : null,
 })
 

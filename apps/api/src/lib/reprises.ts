@@ -118,7 +118,7 @@ async function mesuresLot(tx: Sql, ligneId: number, lot: string): Promise<Record
   const [s] = await tx<Record<string, unknown>[]>`
     SELECT idsuivilot, idetatlot, laize_sst, poids_sst, rendement_sst, stabl_sst, stabh_sst, vrillage_sst,
            laize_tirelle, poids_tirelle, rendement_tirelle, stabl_tirelle, stabh_tirelle, vrillage_tirelle,
-           coloris_tirelle, trim(emplacement_tirelle::text) AS emplacement_tirelle
+           allongementh_tirelle, allongementl_tirelle, coloris_tirelle, trim(emplacement_tirelle::text) AS emplacement_tirelle
     FROM suivilot WHERE idligne_commande_sous_traitant = ${ligneId} AND trim(lot::text) = ${lot}
     ORDER BY idsuivilot LIMIT 1`
   return s ?? null

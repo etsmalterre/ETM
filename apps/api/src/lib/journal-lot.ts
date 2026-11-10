@@ -54,24 +54,27 @@ export async function noterLot(n: {
 export interface MesuresLot {
   laize_sst: number | null; poids_sst: number | null; stabh_sst: number | null; stabl_sst: number | null; vrillage_sst: number | null
   laize_tirelle: number | null; poids_tirelle: number | null; stabh_tirelle: number | null; stabl_tirelle: number | null; vrillage_tirelle: number | null
+  allongementh_tirelle: number | null; allongementl_tirelle: number | null
   coloris_tirelle: string | null
 }
 
 export async function lireMesuresCotes(idsuivilot: number, sql: Sql = mpsPg()): Promise<MesuresLot | null> {
   const [r] = await sql<MesuresLot[]>`
     SELECT laize_sst, poids_sst, stabh_sst, stabl_sst, vrillage_sst,
-           laize_tirelle, poids_tirelle, stabh_tirelle, stabl_tirelle, vrillage_tirelle, coloris_tirelle
+           laize_tirelle, poids_tirelle, stabh_tirelle, stabl_tirelle, vrillage_tirelle,
+           allongementh_tirelle, allongementl_tirelle, coloris_tirelle
     FROM suivilot WHERE idsuivilot = ${idsuivilot}`
   return r ?? null
 }
 
-/** [column base, label, unit]. */
+/** [column base, label, unit]. The allongement exists on the tirelle side only. */
 const LIBELLES: Array<[string, string, string]> = [
   ['laize', 'laize', ''], ['poids', 'poids', ''], ['stabh', 'stab H', ''], ['stabl', 'stab L', ''], ['vrillage', 'vrillage', ' %'],
+  ['allongementh', 'allongement H', ' %'], ['allongementl', 'allongement L', ' %'],
 ]
 
 const num = (v: unknown): number | null => (v === null || v === undefined || v === '' ? null : Number(v))
-/** laize / poids store 0 for « not measured » (legacy); stabs and vrillage NULL. */
+/** laize / poids store 0 for « not measured » (legacy); stabs, vrillage and allongement NULL. */
 const mesure = (champ: string, v: unknown): number | null => {
   const x = num(v)
   if (x === null || !Number.isFinite(x)) return null

@@ -21,7 +21,7 @@ const BOOLEEN = [
   'controle_sst_allongement', 'controle_ennoblisseur', 'controle_malterre',
   'controle_ennoblisseur_laize', 'controle_ennoblisseur_poids', 'controle_ennoblisseur_stab',
   'controle_malterre_laize', 'controle_malterre_poids', 'controle_malterre_stab',
-  'controle_ennoblisseur_vrillage', 'controle_malterre_vrillage',
+  'controle_ennoblisseur_vrillage', 'controle_malterre_vrillage', 'controle_malterre_allongement',
   'expedier_des_reception',
 ] as const
 

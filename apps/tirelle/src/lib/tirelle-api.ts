@@ -17,6 +17,9 @@ export interface MesuresTirelle {
   stabh: number | null
   stabl: number | null
   vrillage: number | null
+  /** Allongement H / L in % (10 cm strip, 2026-11-10): null = not measured, 0 is a measure. */
+  allongementh: number | null
+  allongementl: number | null
   coloris: VerdictColoris | null
 }
 
@@ -26,6 +29,9 @@ export interface Tolerances {
   stabh: number | null
   stabl: number | null
   vrillageMax: number
+  /** The fiche's « Allongement H / L » min · max; 0 = no bound. */
+  allongementh: { min: number; max: number }
+  allongementl: { min: number; max: number }
 }
 
 /** The lab's window: 5 working days from the reception (API delaiControle). */
@@ -48,7 +54,7 @@ export interface LotLabo {
   manque: string[]
   mesures: MesuresTirelle
   tolerances: Tolerances
-  hors: Record<'laize' | 'poids' | 'stabh' | 'stabl' | 'vrillage' | 'coloris', boolean | null>
+  hors: Record<'laize' | 'poids' | 'stabh' | 'stabl' | 'vrillage' | 'allongementh' | 'allongementl' | 'coloris', boolean | null>
   rond0: { lot: string; date: string | null; estCeLot: boolean } | null
   emplacement: string
   /** The lot's observations — the same field as Qualité › Suivi lots in ETM. */
@@ -85,7 +91,7 @@ export const fetchLots = () => apiFetch<LotsLabo>('/tirelle/lots')
 const post = <T = { ok: true }>(path: string, body?: unknown) =>
   apiFetch<T>(path, { method: 'POST', body: JSON.stringify(body ?? {}) })
 
-export const enregistrerAvantLavage = (id: number, b: { laize: string; poids: string; coloris: VerdictColoris | null; observations: string }) =>
+export const enregistrerAvantLavage = (id: number, b: { laize: string; poids: string; allongementh: string; allongementl: string; coloris: VerdictColoris | null; observations: string }) =>
   post<{ lot: LotLabo | null }>(`/tirelle/lots/${id}/avant-lavage`, b)
 export const terminerApresLavage = (id: number, b: { stabh: string; stabl: string; vrillage: string; casier: string; observations: string }) =>
   post(`/tirelle/lots/${id}/apres-lavage`, b)

@@ -1857,6 +1857,21 @@ ${grantApi('SELECT, INSERT', 'journal_commande_sst')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE journal_commande_sst_id_seq')}
 `,
   },
+  {
+    // Allongement H / L on the tirelle (Vincent 2026-11-10, lib/allongement.ts):
+    // Laetitia stretches a 10 cm strip beside a ruler, both ways, and notes the %
+    // (19 cm = 90 %). Malterre side only, measured before the wash. OFF by default,
+    // unlike the other measures (0054): only a few references ask it (1731, 1732,
+    // EDF85/55). NULL = not measured, 0 is a measure, like the stabilités (0065).
+    name: '0070_allongement_tirelle',
+    sql: `
+ALTER TABLE ref_fini
+  ADD COLUMN controle_malterre_allongement smallint NOT NULL DEFAULT 0 CHECK (controle_malterre_allongement IN (0, 1));
+ALTER TABLE suivilot
+  ADD COLUMN allongementh_tirelle double precision,
+  ADD COLUMN allongementl_tirelle double precision;
+`,
+  },
 ]
 
 export interface MigrationStatus {

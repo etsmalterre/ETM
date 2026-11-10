@@ -23,8 +23,13 @@
 // The stabilités are a pair (hauteur / largeur), NULL when not measured and 0 a
 // real shrinkage since #1358 (lib/stabilites.ts): measured when both are given.
 // The vrillage is NULL when not measured and 0 is a real one (lib/vrillage.ts).
+//
+// The allongement H / L (lib/allongement.ts, Vincent 2026-11-10) is a fifth
+// measure of the Malterre side only, and the one OFF by default: only a few
+// references ask it. The ennoblisseur never owes it (no column on that side).
 
 import { stabMesurees } from './stabilites.js'
+import { allongementMesure } from './allongement.js'
 
 /** suivilot measures of one side. */
 export interface MesuresLot {
@@ -35,15 +40,28 @@ export interface MesuresLot {
   stabL: number | null
   /** NULL / absent = not measured; 0 is a measure. */
   vrillage?: number | null
+  /** Malterre only: allongement H / L, NULL / absent = not measured (lib/allongement.ts). */
+  allongementH?: number | null
+  allongementL?: number | null
   /** Malterre only: the coloris is owed (dyed fini, not the rond 0) and not given yet. */
   colorisManquant?: boolean
 }
 
 /** The measures a side can be asked, in display order. */
-export const MESURES_CONTROLE = ['laize', 'poids', 'stabilites', 'vrillage'] as const
+export const MESURES_CONTROLE = ['laize', 'poids', 'stabilites', 'vrillage', 'allongement'] as const
 export type MesureControle = (typeof MESURES_CONTROLE)[number]
 export type MesuresDemandees = Record<MesureControle, boolean>
 export type CoteControle = 'ennoblisseur' | 'malterre'
+
+/** The measures each side can be asked: the allongement is ours only. */
+export const MESURES_COTE: Record<CoteControle, readonly MesureControle[]> = {
+  ennoblisseur: ['laize', 'poids', 'stabilites', 'vrillage'],
+  malterre: ['laize', 'poids', 'stabilites', 'vrillage', 'allongement'],
+}
+
+/** The measures on by default (a missing column asks them); the others are
+ *  asked only when their switch is explicitly on. */
+const PAR_DEFAUT_ON: readonly MesureControle[] = ['laize', 'poids', 'stabilites', 'vrillage']
 
 /** What the reference asks (ref_fini). */
 export interface ControlesRef {
@@ -53,7 +71,7 @@ export interface ControlesRef {
   mesures: Record<CoteControle, MesuresDemandees>
 }
 
-const TOUTES: MesuresDemandees = { laize: true, poids: true, stabilites: true, vrillage: true }
+const TOUTES: MesuresDemandees = { laize: true, poids: true, stabilites: true, vrillage: true, allongement: false }
 
 export const CONTROLES_PAR_DEFAUT: ControlesRef = {
   ennoblisseur: true,
@@ -68,7 +86,7 @@ export function colonneMesure(cote: CoteControle, mesure: MesureControle): strin
 
 /** Every per-measure column, ennoblisseur first. */
 export const COLONNES_MESURES: string[] = (['ennoblisseur', 'malterre'] as const).flatMap((c) =>
-  MESURES_CONTROLE.map((m) => colonneMesure(c, m)),
+  MESURES_COTE[c].map((m) => colonneMesure(c, m)),
 )
 
 /** The measures still missing among those asked, in display order. Empty = complete. */
@@ -78,11 +96,14 @@ export function mesuresManquantes(m: MesuresLot, demandees: MesuresDemandees = T
   if (demandees.poids && !(Number(m.poids) > 0)) out.push('poids')
   if (demandees.stabilites && !stabMesurees(m.stabH, m.stabL)) out.push('stabilités')
   if (demandees.vrillage && (m.vrillage == null || !Number.isFinite(Number(m.vrillage)))) out.push('vrillage')
+  if (demandees.allongement && !allongementMesure(m.allongementH, m.allongementL)) out.push('allongement')
   if (m.colorisManquant) out.push('coloris')
   return out
 }
 
 const actif = (v: unknown) => Number(v ?? 1) !== 0
+/** A switch OFF by default: on only when stored 1. */
+const allume = (v: unknown) => v != null && Number(v) !== 0
 
 /** ref_fini row → what it asks. Anything but an explicit 0 asks; a side stored
  *  0 asks none of its measures, whatever their own switches say. */
@@ -95,6 +116,7 @@ export function controlesDeRef(r: Record<string, unknown> | undefined): Controle
       poids: on && actif(r[colonneMesure(c, 'poids')]),
       stabilites: on && actif(r[colonneMesure(c, 'stabilites')]),
       vrillage: on && actif(r[colonneMesure(c, 'vrillage')]),
+      allongement: on && c === 'malterre' && allume(r[colonneMesure(c, 'allongement')]),
     }
   }
   const mesures = { ennoblisseur: cote('ennoblisseur'), malterre: cote('malterre') }
@@ -102,14 +124,15 @@ export function controlesDeRef(r: Record<string, unknown> | undefined): Controle
   return { ennoblisseur: auMoinsUne(mesures.ennoblisseur), malterre: auMoinsUne(mesures.malterre), mesures }
 }
 
-/** The side's stored « any » flag, from its three measure switches. */
+/** The side's stored « any » flag, from its measure switches. */
 export function coteDemande(d: MesuresDemandees): boolean {
   return MESURES_CONTROLE.some((m) => d[m])
 }
 
-/** French label of the measures NOT asked by a side that is asked (« stabilités »,
- *  « laize, poids »), for the neutral chip on Suivi lots. Empty = all asked. */
+/** French label of the default measures NOT asked by a side that is asked
+ *  (« stabilités », « laize, poids »), for the neutral chip on Suivi lots.
+ *  Empty = all asked. An off-by-default measure (allongement) is never listed. */
 export function mesuresNonDemandees(d: MesuresDemandees): string[] {
-  const libelle: Record<MesureControle, string> = { laize: 'laize', poids: 'poids', stabilites: 'stabilités', vrillage: 'vrillage' }
-  return MESURES_CONTROLE.filter((m) => !d[m]).map((m) => libelle[m])
+  const libelle: Record<MesureControle, string> = { laize: 'laize', poids: 'poids', stabilites: 'stabilités', vrillage: 'vrillage', allongement: 'allongement' }
+  return PAR_DEFAUT_ON.filter((m) => !d[m]).map((m) => libelle[m])
 }

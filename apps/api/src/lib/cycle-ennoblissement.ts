@@ -512,6 +512,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       laize_sst: number; poids_sst: number; stabh_sst: number | null; stabl_sst: number | null
       laize_tirelle: number; poids_tirelle: number; stabh_tirelle: number | null; stabl_tirelle: number | null
       vrillage_sst: number | null; vrillage_tirelle: number | null
+      allongementh_tirelle: number | null; allongementl_tirelle: number | null
       idref_fini_colori: number; coloris_tirelle: string | null
     }[]>`
       SELECT idsuivilot, idligne_commande_sous_traitant AS ligne, lot::text AS lot, COALESCE(idetatlot, 0)::int AS etat,
@@ -520,7 +521,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
              stabh_sst, stabl_sst,
              COALESCE(laize_tirelle, 0) AS laize_tirelle, COALESCE(poids_tirelle, 0) AS poids_tirelle,
              stabh_tirelle, stabl_tirelle,
-             vrillage_sst, vrillage_tirelle,
+             vrillage_sst, vrillage_tirelle, allongementh_tirelle, allongementl_tirelle,
              COALESCE(idref_fini_colori, 0) AS idref_fini_colori, coloris_tirelle
       FROM suivilot WHERE idligne_commande_sous_traitant = ANY(${lineIds})`,
     sql<{ ligne: number; idecru: number }[]>`
@@ -583,6 +584,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       SELECT idref_fini AS id, controle_ennoblisseur, controle_malterre,
         controle_ennoblisseur_laize, controle_ennoblisseur_poids, controle_ennoblisseur_stab, controle_ennoblisseur_vrillage,
         controle_malterre_laize, controle_malterre_poids, controle_malterre_stab, controle_malterre_vrillage,
+        controle_malterre_allongement,
         COALESCE(avec_teinture, 0)::int AS avec_teinture
       FROM ref_fini WHERE idref_fini = ANY(${refsLots})`
     for (const r of rows) { controlesParRef.set(Number(r.id), controlesDeRef(r)); teinteParRef.set(Number(r.id), Number(r.avec_teinture)) }
@@ -601,7 +603,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     const manqueTeinturier = controles.ennoblisseur
       ? mesuresManquantes({ laize: s.laize_sst, poids: s.poids_sst, stabH: s.stabh_sst, stabL: s.stabl_sst, vrillage: s.vrillage_sst }, controles.mesures.ennoblisseur) : []
     const manqueMalterre = controles.malterre
-      ? mesuresManquantes({ laize: s.laize_tirelle, poids: s.poids_tirelle, stabH: s.stabh_tirelle, stabL: s.stabl_tirelle, vrillage: s.vrillage_tirelle, colorisManquant: colorisManquant(s, ref) }, controles.mesures.malterre) : []
+      ? mesuresManquantes({ laize: s.laize_tirelle, poids: s.poids_tirelle, stabH: s.stabh_tirelle, stabL: s.stabl_tirelle, vrillage: s.vrillage_tirelle, allongementH: s.allongementh_tirelle, allongementL: s.allongementl_tirelle, colorisManquant: colorisManquant(s, ref) }, controles.mesures.malterre) : []
     return {
       mesuresTeinturier: manqueTeinturier.length === 0,
       tirelleMesuree: manqueMalterre.length === 0,

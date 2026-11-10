@@ -51,6 +51,7 @@ import {
 import { etatLaboDuLot } from '../lib/tirelle-labo.js'
 import { lireJournalLot, lireMesuresCotes, noterLot, noterMesures } from '../lib/journal-lot.js'
 import { lireSaisieStab, StabInvalide, valeurStab } from '../lib/stabilites.js'
+import { AllongementInvalide, lireSaisieAllongement, valeurAllongement, type ChampAllongement } from '../lib/allongement.js'
 import { colorisAControler, colorisDemande, historiqueColoris, lireVerdictColoris, rondsZero, rondZeroDe } from '../lib/coloris-lot.js'
 
 /** Tricobot waits for a person on a lot. */
@@ -703,6 +704,25 @@ suiviLotsRouter.get('/:id', async (req: Request, res: Response) => {
       }))),
       vrillage_max: VRILLAGE_MAX,
 
+      // Allongement H / L (lib/allongement.ts): Malterre only, null = not measured;
+      // the tolerance is the fiche's « Allongement H / L » min · max.
+      ...(await (async () => {
+        const [m] = await mpsPg()<{ h: number | null; l: number | null }[]>`
+          SELECT allongementh_tirelle AS h, allongementl_tirelle AS l FROM suivilot WHERE idsuivilot = ${id}`
+        const [f] = IDref_fini > 0 ? await mpsPg()<{ hmin: number; hmax: number; lmin: number; lmax: number }[]>`
+          SELECT COALESCE(allongementh_min, 0)::float8 AS hmin, COALESCE(allongementh_max, 0)::float8 AS hmax,
+                 COALESCE(allongementl_min, 0)::float8 AS lmin, COALESCE(allongementl_max, 0)::float8 AS lmax
+          FROM ref_fini WHERE idref_fini = ${IDref_fini}` : []
+        return {
+          allongementH_tirelle: valeurAllongement(m?.h),
+          allongementL_tirelle: valeurAllongement(m?.l),
+          allongement_tolerance: {
+            h: { min: Number(f?.hmin ?? 0), max: Number(f?.hmax ?? 0) },
+            l: { min: Number(f?.lmin ?? 0), max: Number(f?.lmax ?? 0) },
+          },
+        }
+      })()),
+
       // Coloris against the rond 0 (LIVA #1332, lib/coloris-lot.ts).
       coloris_tirelle: lireVerdictColoris((await mpsPg()<{ v: string | null }[]>`
         SELECT coloris_tirelle AS v FROM suivilot WHERE idsuivilot = ${id}`)[0]?.v),
@@ -1060,6 +1080,19 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
       throw e
     }
 
+    // Allongement H / L (Malterre only): same rule as the stabilités, a field
+    // the body leaves out keeps its value.
+    const allongements: Array<[ChampAllongement, number | null]> = []
+    try {
+      for (const [champ, col, libelle] of [['allongementH_tirelle', 'allongementh_tirelle', 'Allongement H'], ['allongementL_tirelle', 'allongementl_tirelle', 'Allongement L']] as const) {
+        if (!(champ in b)) continue
+        allongements.push([col, lireSaisieAllongement(champ, b[champ], `L’${libelle.toLowerCase()}`)])
+      }
+    } catch (e) {
+      if (e instanceof AllongementInvalide) { res.status(400).json({ error: 'allongement_invalide', champ: e.champ, message: e.message }); return }
+      throw e
+    }
+
     // The dyer measures before, for Flux Ennoblisseur › Contrôles in observation.
     const mesuresAvant = await lireMesuresLot(id)
     // Both sides before, for the lot's Journal (lib/journal-lot.ts).
@@ -1074,6 +1107,10 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
        WHERE IDsuivilot = ${id}`,
     )
     await ecrireVrillages(id, vrillages)
+    for (const [col, v] of allongements) {
+      if (col === 'allongementh_tirelle') await mpsPg()`UPDATE suivilot SET allongementh_tirelle = ${v} WHERE idsuivilot = ${id}`
+      else await mpsPg()`UPDATE suivilot SET allongementl_tirelle = ${v} WHERE idsuivilot = ${id}`
+    }
     // Dyer measures typed by hand judge Tricobot's open saisie on them (same = validée).
     const parLot = req.userId !== undefined ? await auteur(req.userId) : null
     const juges = await lotModifie(id, parLot)

@@ -31,7 +31,7 @@ import {
 } from '@/lib/tirelle-api'
 import type { ApiError } from '@/lib/api'
 import { messagePourErreur } from '@/lib/erreurs'
-import { ChampNombre, aidesTolerance, fmt, horsBornes, horsRetrait, lireNombre } from '@/components/Champs'
+import { ChampNombre, aidesTolerance, fmt, horsBornes, horsBornesAllongement, horsRetrait, lireNombre } from '@/components/Champs'
 import { FiniRollIcon } from '@/components/FiniRollIcon'
 import { cn } from '@/lib/utils'
 
@@ -608,16 +608,21 @@ function AvantLavage({ lot, correction = false, onAnnuler, onFait }: {
   const [laize, setLaize] = useState(fmt(lot.mesures.laize || null))
   const [poids, setPoids] = useState(fmt(lot.mesures.poids || null))
   const [coloris, setColoris] = useState<VerdictColoris | null>(lot.mesures.coloris)
+  // 0 is a real allongement: only null is empty.
+  const [allongementh, setAllongementh] = useState(fmt(lot.mesures.allongementh ?? null))
+  const [allongementl, setAllongementl] = useState(fmt(lot.mesures.allongementl ?? null))
   const [observations, setObservations] = useState(lot.observations)
   const aides = aidesTolerance(lot.tolerances)
   const demande = (m: string) => lot.demandes.rond.includes(m)
   const mut = useMutation({
-    mutationFn: () => enregistrerAvantLavage(lot.idsuivilot, { laize, poids, coloris, observations }),
+    mutationFn: () => enregistrerAvantLavage(lot.idsuivilot, { laize, poids, allongementh, allongementl, coloris, observations }),
     onSuccess: onFait,
   })
+  const allongementFait = !demande('allongement') || (lireNombre(allongementh) != null && lireNombre(allongementl) != null)
   const manque = [
     demande('laize') && !lireNombre(laize) && 'la laize',
     demande('poids') && !lireNombre(poids) && 'le poids',
+    !allongementFait && 'l’allongement',
     demande('coloris') && !coloris && 'le coloris',
   ].filter(Boolean) as string[]
   const mesuresFaites = (!demande('laize') || !!lireNombre(laize)) && (!demande('poids') || !!lireNombre(poids))
@@ -648,13 +653,13 @@ function AvantLavage({ lot, correction = false, onAnnuler, onFait }: {
     >
       {(correction || !mesureRond) && (
         <Consigne icone={correction ? Pencil : Scissors}>
-          <p>{correction ? 'Correction de la laize et du poids : le lot reste en contrôles après lavage.' : decoupe}</p>
+          <p>{correction ? 'Correction des mesures avant lavage : le lot reste en contrôles après lavage.' : decoupe}</p>
           {!demande('coloris') && lot.rond0?.estCeLot && <InfoRond0 lot={lot} />}
         </Consigne>
       )}
       {/* One row: the round's measures beside its coloris, as tall as each
           other; the observations below take the rest of the height. */}
-      <div className={cn('grid grid-cols-1 gap-3', mesureRond && demande('coloris') && 'md:grid-cols-2')}>
+      <div className={cn('grid grid-cols-1 gap-3', mesureRond && (demande('coloris') || demande('allongement')) && 'md:grid-cols-2')}>
         {mesureRond && (
           // The laize is measured on the tirelle, its weight from the round: a title only (Vincent 2026-11-09).
           <Tache n={++n} titre="Mesurer la tirelle" fait={mesuresFaites}>
@@ -666,6 +671,20 @@ function AvantLavage({ lot, correction = false, onAnnuler, onFait }: {
               <ChampNombre grand label="Poids" unite="g/m²" valeur={poids} onChange={setPoids} jauge={bornes(lot.tolerances.poids)}
                 aide={aides.poids} hors={horsBornes(lireNombre(poids), lot.tolerances.poids)} />
             )}
+          </Tache>
+        )}
+        {/* Allongement H / L (2026-11-10): a 10 cm strip stretched beside a ruler. */}
+        {demande('allongement') && (
+          <Tache n={++n} titre="Mesurer l’allongement" fait={allongementFait}
+            droite={<span className="text-sm text-muted-foreground">10 cm étirés à 19 cm = 90 %</span>}>
+            <div className="space-y-2">
+              <ChampNombre grand label="Hauteur" unite="%" valeur={allongementh} onChange={setAllongementh}
+                jauge={bornes(lot.tolerances.allongementh ?? { min: 0, max: 0 })} aide={aides.allongementh}
+                hors={horsBornesAllongement(lireNombre(allongementh), lot.tolerances.allongementh ?? { min: 0, max: 0 })} />
+              <ChampNombre grand label="Largeur" unite="%" valeur={allongementl} onChange={setAllongementl}
+                jauge={bornes(lot.tolerances.allongementl ?? { min: 0, max: 0 })} aide={aides.allongementl}
+                hors={horsBornesAllongement(lireNombre(allongementl), lot.tolerances.allongementl ?? { min: 0, max: 0 })} />
+            </div>
           </Tache>
         )}
         {demande('coloris') && (
@@ -814,9 +833,13 @@ function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: ()
 function RecapRond({ lot, onCorriger }: { lot: LotLabo; onCorriger: () => void }) {
   const m = lot.mesures
   const demande = (k: string) => lot.demandes.rond.includes(k)
-  const parts: Array<{ k: 'laize' | 'poids' | 'coloris'; icone: typeof Scissors; texte: string }> = []
+  const parts: Array<{ k: 'laize' | 'poids' | 'allongementh' | 'allongementl' | 'coloris'; icone: typeof Scissors; texte: string }> = []
   if (demande('laize')) parts.push({ k: 'laize', icone: Ruler, texte: `${fmt(m.laize || null) || '—'} cm` })
   if (demande('poids')) parts.push({ k: 'poids', icone: Ruler, texte: `${fmt(m.poids || null) || '—'} g/m²` })
+  if (demande('allongement')) {
+    parts.push({ k: 'allongementh', icone: Ruler, texte: `H ${fmt(m.allongementh ?? null) || '—'} %` })
+    parts.push({ k: 'allongementl', icone: Ruler, texte: `L ${fmt(m.allongementl ?? null) || '—'} %` })
+  }
   if (demande('coloris') && m.coloris) parts.push({ k: 'coloris', icone: Palette, texte: m.coloris === 'ecart' ? 'écart' : 'conforme' })
   return (
     <div className="flex items-center gap-3 rounded-xl border border-success/40 bg-success/[0.06] px-4 py-1.5">

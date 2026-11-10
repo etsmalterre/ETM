@@ -8,7 +8,7 @@
 //     POST /appareil/enroler                { code } → sets the `mps_tirelle` cookie
 //   The lab (enrolled tablet; reads also open to an admin session):
 //     GET  /lots                            every lot with something to do, by status
-//     POST /lots/:id/avant-lavage           { laize, poids, coloris, observations?, note? }
+//     POST /lots/:id/avant-lavage           { laize, poids, allongementh?, allongementl?, coloris, observations?, note? }
 //     POST /lots/:id/apres-lavage           { stabh, stabl, vrillage, casier, observations? } — done
 //     POST /lots/:id/jete                   after a reprise: round, square, tirelle thrown
 //
@@ -199,6 +199,8 @@ const avantBody = z
   .object({
     laize: z.union([z.number(), z.string()]).nullable().optional(),
     poids: z.union([z.number(), z.string()]).nullable().optional(),
+    allongementh: z.union([z.number(), z.string()]).nullable().optional(),
+    allongementl: z.union([z.number(), z.string()]).nullable().optional(),
     coloris: z.enum(['conforme', 'ecart']).nullable().optional(),
     note: z.string().max(500).optional(),
     observations: z.string().max(OBSERVATIONS_MAX).optional(),

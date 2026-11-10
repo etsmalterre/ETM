@@ -206,6 +206,12 @@ interface SuiviLotDetail {
   vrillage_tirelle?: number | null
   /** In tolerance up to this %, included. */
   vrillage_max?: number
+  /** Allongement H / L in % on the tirelle (2026-11-10, Malterre only): null = not
+   *  measured, 0 is a measure. Absent on an older API. */
+  allongementH_tirelle?: number | null
+  allongementL_tirelle?: number | null
+  /** The fiche's « Allongement H / L » min · max; 0 = no bound. */
+  allongement_tolerance?: { h: { min: number; max: number }; l: { min: number; max: number } }
   /** Malterre's coloris check against the rond 0 (LIVA #1332). Absent on an older API. */
   coloris_tirelle?: 'conforme' | 'ecart' | null
   coloris_controle?: ColorisControle
@@ -245,7 +251,7 @@ interface SuiviLotDetail {
     ennoblisseur: boolean
     malterre: boolean
     /** Per measure (#1345); absent from an older API = all asked. */
-    mesures?: Record<'ennoblisseur' | 'malterre', { laize: boolean; poids: boolean; stabilites: boolean; vrillage?: boolean }>
+    mesures?: Record<'ennoblisseur' | 'malterre', { laize: boolean; poids: boolean; stabilites: boolean; vrillage?: boolean; allongement?: boolean }>
   }
   /** The clients its pieces are affected to: the rapport de contrôle's recipients. */
   clients_rc?: ClientRc[]
@@ -331,6 +337,8 @@ interface EditState {
   stabL_tirelle: string
   vrillage_sst: string
   vrillage_tirelle: string
+  allongementH_tirelle: string
+  allongementL_tirelle: string
   coloris_tirelle: '' | 'conforme' | 'ecart'
   observations: string
   emplacement_tirelle: string
@@ -361,6 +369,9 @@ function snapshotEdit(d: SuiviLotDetail): EditState {
     // 0 is a real vrillage: only null (not measured) is empty.
     vrillage_sst: d.vrillage_sst == null ? '' : String(d.vrillage_sst),
     vrillage_tirelle: d.vrillage_tirelle == null ? '' : String(d.vrillage_tirelle),
+    // 0 is a real allongement too: only null is empty.
+    allongementH_tirelle: d.allongementH_tirelle == null ? '' : String(d.allongementH_tirelle),
+    allongementL_tirelle: d.allongementL_tirelle == null ? '' : String(d.allongementL_tirelle),
     coloris_tirelle: d.coloris_tirelle ?? '',
     observations: d.observations ?? '',
     emplacement_tirelle: d.emplacement_tirelle ?? '',
@@ -483,6 +494,8 @@ export function QualiteSuiviLots() {
           stabL_tirelle: edit.stabL_tirelle,
           vrillage_sst: edit.vrillage_sst,
           vrillage_tirelle: edit.vrillage_tirelle,
+          allongementH_tirelle: edit.allongementH_tirelle,
+          allongementL_tirelle: edit.allongementL_tirelle,
           coloris_tirelle: edit.coloris_tirelle || null,
           observations: edit.observations,
           emplacement_tirelle: edit.emplacement_tirelle,
@@ -1871,7 +1884,7 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
         )}
         {/* Spec banner — the lot's target values, so it keeps a divider above:
             it belongs to the lot, not to either order panel. */}
-        <div className="mt-3 pt-3 border-t border-border/50 grid grid-cols-2 sm:grid-cols-7 gap-2">
+        <div className={cn('mt-3 pt-3 border-t border-border/50 grid grid-cols-2 gap-2', detail.controles?.mesures?.malterre?.allongement ? 'sm:grid-cols-9' : 'sm:grid-cols-7')}>
           <SpecStat label="Laize" value={fmtNum(detail.laize_demandee)} />
           <SpecStat label="Poids" value={fmtNum(detail.poids_demande)} />
           <SpecStat label="Freinte" value={fmtNum(detail.freinte_demandee * 100, 0)} suffix="%" />
@@ -1879,6 +1892,13 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
           <SpecStat label="Stab H" value={fmtNum(detail.stabH_demandee)} />
           <SpecStat label="Stab L" value={fmtNum(detail.stabL_demandee)} />
           <SpecStat label="Vrillage" value={`≤ ${fmtNum(detail.vrillage_max ?? 5)}`} suffix=" %" />
+          {/* Allongement H / L (2026-11-10): only on the references that ask it. */}
+          {detail.controles?.mesures?.malterre?.allongement && (
+            <>
+              <SpecStat label="Allong. H" value={bornesTexte(detail.allongement_tolerance?.h)} />
+              <SpecStat label="Allong. L" value={bornesTexte(detail.allongement_tolerance?.l)} />
+            </>
+          )}
         </div>
       </div>
 
@@ -2017,6 +2037,17 @@ function RecapField({ label, value, mono, to, toTitle }: { label: string; value:
       )}
     </div>
   )
+}
+
+/** « 85 – 95 », « ≥ 85 », « ≤ 95 » from a fiche's min · max (0 = no bound); « — » without any. */
+function bornesTexte(t?: { min: number; max: number }): string {
+  const min = t && t.min > 0 ? t.min : null
+  const max = t && t.max > 0 ? t.max : null
+  const f = (x: number) => fmtNum(x, Number.isInteger(x) ? 0 : 1)
+  if (min != null && max != null) return `${f(min)} – ${f(max)} %`
+  if (min != null) return `≥ ${f(min)} %`
+  if (max != null) return `≤ ${f(max)} %`
+  return '—'
 }
 
 function SpecStat({ label, value, suffix, highlight }: { label: string; value: string; suffix?: string; highlight?: boolean }) {
@@ -2477,6 +2508,12 @@ function ControlesTab({
   const aDesValeurs = (cote: 'sst' | 'tirelle') =>
     [detail[`laize_${cote}`], detail[`poids_${cote}`], detail[`stabH_${cote}`], detail[`stabL_${cote}`]].some((v) => Number(v) !== 0)
     || detail[`vrillage_${cote}`] != null
+    || (cote === 'tirelle' && (detail.allongementH_tirelle != null || detail.allongementL_tirelle != null))
+  // The allongement (Malterre only, off by default): shown when the reference
+  // asks it, or when the lot already holds a value.
+  const allongementDemande = !!controles.mesures?.malterre?.allongement
+  const voirAllongement = allongementDemande || detail.allongementH_tirelle != null || detail.allongementL_tirelle != null
+  const tolAllong = detail.allongement_tolerance
   return (
     <>
       {/* Sous-Traitant */}
@@ -2498,6 +2535,12 @@ function ControlesTab({
         <KVNum label="Stab H" field="stabH_tirelle" detailVal={detail.stabH_tirelle} conformKind="stabH" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVNum label="Stab L" field="stabL_tirelle" detailVal={detail.stabL_tirelle} conformKind="stabL" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
         <KVVrillage label="Vrillage" field="vrillage_tirelle" detailVal={detail.vrillage_tirelle ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        {voirAllongement && (
+          <>
+            <KVAllongement label="Allong. H" titre="Allongement en hauteur" field="allongementH_tirelle" detailVal={detail.allongementH_tirelle ?? null} tol={tolAllong?.h} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+            <KVAllongement label="Allong. L" titre="Allongement en largeur" field="allongementL_tirelle" detailVal={detail.allongementL_tirelle ?? null} tol={tolAllong?.l} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+          </>
+        )}
         {detail.coloris_controle && (detail.coloris_controle.demande || detail.coloris_controle.est_rond0) && (
           <KVColoris controle={detail.coloris_controle} detailVal={detail.coloris_tirelle ?? null} isEditing={isEditing} edit={edit} onEditField={onEditField} />
         )}
@@ -2688,11 +2731,11 @@ function MarkerSlot({ conform }: { conform: boolean | null }) {
  *  collapses and every gauge starts right after its label (Vincent 2026-11-02). */
 const CarteSansValeur = createContext(false)
 
-function MesureRow({ label, gauge, isEditing, schema, children }: { label: string; gauge: React.ReactNode; isEditing: boolean; schema?: SchemaKind; children: React.ReactNode }) {
+function MesureRow({ label, titre, gauge, isEditing, schema, children }: { label: string; titre?: string; gauge: React.ReactNode; isEditing: boolean; schema?: SchemaKind; children: React.ReactNode }) {
   const sansValeur = useContext(CarteSansValeur) && !isEditing
   return (
     <div className="flex items-start gap-2 min-h-[1.75rem]">
-      <LabelMesure label={label} aide={schema && <SchemaControle kind={schema} />} />
+      <LabelMesure label={label} titre={titre} aide={schema && <SchemaControle kind={schema} />} />
       {/* The value sits between the label and the gauge, so every gauge runs to
           the card's edge whether the lot is measured or not (Vincent 2026-11-02). */}
       {!sansValeur && (
@@ -2711,9 +2754,9 @@ function MesureRow({ label, gauge, isEditing, schema, children }: { label: strin
  *  drawing): on the TITLE, not the gauge — the title is what one wonders about,
  *  and the gauge stays free while typing (Vincent 2026-11-02). Dotted underline
  *  + help cursor say it can be hovered. */
-function LabelMesure({ label, aide }: { label: string; aide?: React.ReactNode }) {
+function LabelMesure({ label, titre, aide }: { label: string; titre?: string; aide?: React.ReactNode }) {
   const cls = 'text-xs leading-4 text-muted-foreground whitespace-nowrap'
-  if (!aide) return <span className={cn('w-[60px] flex-shrink-0', cls)}>{label}</span>
+  if (!aide) return <span className={cn('w-[60px] flex-shrink-0', cls)} title={titre}>{label}</span>
   return (
     // flex: the Tooltip's inline-flex wrapper would otherwise sit on the text
     // baseline of a taller line box and push the label 6 px under its value.
@@ -2773,6 +2816,62 @@ function KVVrillage({
           ) : (
             <span className="tabular-nums text-sm">{detailVal === null ? '' : `${fmtNum(detailVal, Number.isInteger(detailVal) ? 0 : 1)} %`}</span>
           )}
+    </MesureRow>
+  )
+}
+
+/** An allongement measure (2026-11-10, lib/allongement.ts): Laetitia stretches a
+ *  10 cm strip beside a ruler, 19 cm = 90 %. A % >= 0 where 0 is a measure and
+ *  empty is « not measured »; conforme inside the fiche's min · max (0 = no bound). */
+function KVAllongement({
+  label,
+  titre,
+  field,
+  detailVal,
+  tol,
+  isEditing,
+  edit,
+  onEditField,
+}: {
+  label: string
+  titre: string
+  field: 'allongementH_tirelle' | 'allongementL_tirelle'
+  detailVal: number | null
+  tol?: { min: number; max: number }
+  isEditing: boolean
+  edit: EditState | null
+  onEditField: <K extends keyof EditState>(key: K, value: string) => void
+}) {
+  const raw = isEditing && edit ? edit[field].trim().replace(',', '.') : null
+  const currentVal: number | null = raw === null ? detailVal : raw === '' || isNaN(Number(raw)) ? null : Number(raw)
+  const bande: Tolerance = { min: tol && tol.min > 0 ? tol.min : null, max: tol && tol.max > 0 ? tol.max : null }
+  const conform = currentVal === null ? null : checkConform(currentVal, bande, true)
+  return (
+    <MesureRow
+      label={label}
+      titre={titre}
+      gauge={<ToleranceGauge value={currentVal ?? 0} tol={bande} conform={conform} dec={0} zeroIsValue />}
+      isEditing={isEditing && !!edit}
+    >
+      <MarkerSlot conform={conform} />
+      {isEditing && edit ? (
+        <span className="inline-flex items-center gap-1">
+          <input
+            type="number"
+            step="any"
+            min={0}
+            inputMode="decimal"
+            value={edit[field]}
+            // An allongement is never negative: the minus sign is not accepted.
+            onChange={(e) => onEditField(field, e.target.value.replace(/-/g, ''))}
+            onKeyDown={(e) => { if (e.key === '-') e.preventDefault() }}
+            className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right w-[56px] tabular-nums"
+          />
+          <span className="text-xs text-muted-foreground">%</span>
+        </span>
+      ) : (
+        <span className="tabular-nums text-sm whitespace-nowrap">{detailVal === null ? '' : `${fmtNum(detailVal, Number.isInteger(detailVal) ? 0 : 1)} %`}</span>
+      )}
     </MesureRow>
   )
 }

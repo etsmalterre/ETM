@@ -23,7 +23,7 @@ describe('mesuresManquantes', () => {
 })
 
 describe('mesuresManquantes with what the reference asks (#1345)', () => {
-  const sansStabs = { laize: true, poids: true, stabilites: false, vrillage: true }
+  const sansStabs = { laize: true, poids: true, stabilites: false, vrillage: true, allongement: false }
   it('a bord côte without stabs at Malterre: laize + poids complete the control', () => {
     expect(mesuresManquantes({ laize: 163, poids: 418, stabH: 0, stabL: 0, vrillage: 2 }, sansStabs)).toEqual([])
     expect(mesuresManquantes({ laize: 0, poids: 418, stabH: 0, stabL: 0, vrillage: 2 }, sansStabs)).toEqual(['laize'])
@@ -41,13 +41,13 @@ describe('vrillage (#1345)', () => {
     expect(mesuresManquantes({ ...base, vrillage: 0 })).toEqual([])
   })
   it('not asked: never missing', () => {
-    expect(mesuresManquantes({ ...base, vrillage: null }, { laize: true, poids: true, stabilites: true, vrillage: false })).toEqual([])
+    expect(mesuresManquantes({ ...base, vrillage: null }, { laize: true, poids: true, stabilites: true, vrillage: false, allongement: false })).toEqual([])
   })
 })
 
 describe('controlesDeRef', () => {
-  const tout = { laize: true, poids: true, stabilites: true, vrillage: true }
-  const rien = { laize: false, poids: false, stabilites: false, vrillage: false }
+  const tout = { laize: true, poids: true, stabilites: true, vrillage: true, allongement: false }
+  const rien = { laize: false, poids: false, stabilites: false, vrillage: false, allongement: false }
   it('everything asked unless explicitly 0', () => {
     expect(controlesDeRef(undefined)).toEqual(CONTROLES_PAR_DEFAUT)
     expect(controlesDeRef({})).toEqual(CONTROLES_PAR_DEFAUT)
@@ -63,11 +63,35 @@ describe('controlesDeRef', () => {
   it('one measure off: the side stays asked, without it', () => {
     const c = controlesDeRef({ controle_ennoblisseur: 1, controle_malterre: 1, controle_malterre_stab: 0 })
     expect(c.malterre).toBe(true)
-    expect(c.mesures.malterre).toEqual({ laize: true, poids: true, stabilites: false, vrillage: true })
+    expect(c.mesures.malterre).toEqual({ laize: true, poids: true, stabilites: false, vrillage: true, allongement: false })
     expect(c.mesures.ennoblisseur).toEqual(tout)
   })
   it('every measure off = the side is not asked', () => {
     const c = controlesDeRef({ controle_malterre: 1, controle_malterre_laize: 0, controle_malterre_poids: 0, controle_malterre_stab: 0, controle_malterre_vrillage: 0 })
     expect(c.malterre).toBe(false)
+  })
+})
+
+describe('allongement (2026-11-10)', () => {
+  const base = { laize: 160, poids: 210, stabH: -3, stabL: 0, vrillage: 2 }
+  const avec = { laize: true, poids: true, stabilites: true, vrillage: true, allongement: true }
+  it('off by default: a reference without the switch never asks it', () => {
+    expect(controlesDeRef({}).mesures.malterre.allongement).toBe(false)
+    expect(controlesDeRef({ controle_malterre: 1, controle_malterre_allongement: 0 }).mesures.malterre.allongement).toBe(false)
+    expect(mesuresManquantes(base)).toEqual([])
+  })
+  it('on: Malterre owes it, never the ennoblisseur', () => {
+    const c = controlesDeRef({ controle_malterre_allongement: 1, controle_ennoblisseur_allongement: 1 })
+    expect(c.mesures.malterre.allongement).toBe(true)
+    expect(c.mesures.ennoblisseur.allongement).toBe(false)
+  })
+  it('both sides measured, 0 included', () => {
+    expect(mesuresManquantes(base, avec)).toEqual(['allongement'])
+    expect(mesuresManquantes({ ...base, allongementH: 90, allongementL: null }, avec)).toEqual(['allongement'])
+    expect(mesuresManquantes({ ...base, allongementH: 90, allongementL: 0 }, avec)).toEqual([])
+  })
+  it('the allongement alone keeps the side asked', () => {
+    const c = controlesDeRef({ controle_malterre: 1, controle_malterre_laize: 0, controle_malterre_poids: 0, controle_malterre_stab: 0, controle_malterre_vrillage: 0, controle_malterre_allongement: 1 })
+    expect(c.malterre).toBe(true)
   })
 })

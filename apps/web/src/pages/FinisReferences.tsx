@@ -168,6 +168,8 @@ interface RefFiniDetail {
   controle_malterre_stab: number
   controle_ennoblisseur_vrillage: number
   controle_malterre_vrillage: number
+  /** Allongement H / L on the tirelle (2026-11-10): Malterre only, off by default. */
+  controle_malterre_allongement: number
   /** « Expédier dès la réception » (#1351): En Contrôle rolls may ship. */
   expedier_des_reception: number
   archive: number
@@ -343,6 +345,7 @@ interface HeaderDraft {
   controle_malterre_stab: boolean
   controle_ennoblisseur_vrillage: boolean
   controle_malterre_vrillage: boolean
+  controle_malterre_allongement: boolean
   expedier_des_reception: boolean
 }
 
@@ -352,9 +355,13 @@ const CONTROLE_MESURES = [
   { mesure: 'Poids', ennoblisseur: 'controle_ennoblisseur_poids', malterre: 'controle_malterre_poids' },
   { mesure: 'Stabilités', ennoblisseur: 'controle_ennoblisseur_stab', malterre: 'controle_malterre_stab' },
   { mesure: 'Vrillage', ennoblisseur: 'controle_ennoblisseur_vrillage', malterre: 'controle_malterre_vrillage' },
+  // Laetitia's 10 cm strip, H and L (2026-11-10): ours only, off by default.
+  { mesure: 'Allongement', ennoblisseur: null, malterre: 'controle_malterre_allongement' },
 ] as const
-type ControleKey = (typeof CONTROLE_MESURES)[number]['ennoblisseur' | 'malterre']
-const CONTROLE_KEYS: ControleKey[] = CONTROLE_MESURES.flatMap((r) => [r.ennoblisseur, r.malterre])
+type ControleKey = NonNullable<(typeof CONTROLE_MESURES)[number]['ennoblisseur' | 'malterre']>
+const CONTROLE_KEYS: ControleKey[] = CONTROLE_MESURES.flatMap((r) => (r.ennoblisseur ? [r.ennoblisseur, r.malterre] : [r.malterre]))
+/** The switches a new reference starts with off (all others on). */
+const CONTROLE_OFF_PAR_DEFAUT: ControleKey[] = ['controle_malterre_allongement']
 
 const numStr = (n: number | null | undefined): string => (n == null ? '' : String(n))
 
@@ -392,7 +399,7 @@ function emptyDraft(): HeaderDraft {
     controle_sst_stab: false,
     controle_sst_allongement: false,
     en_developpement: false,
-    ...(Object.fromEntries(CONTROLE_KEYS.map((k) => [k, true])) as Record<ControleKey, boolean>),
+    ...(Object.fromEntries(CONTROLE_KEYS.map((k) => [k, !CONTROLE_OFF_PAR_DEFAUT.includes(k)])) as Record<ControleKey, boolean>),
     expedier_des_reception: false,
   }
 }
@@ -431,7 +438,7 @@ function draftFromDetail(d: RefFiniDetail): HeaderDraft {
     controle_sst_stab: !!d.controle_sst_stab,
     controle_sst_allongement: !!d.controle_sst_allongement,
     en_developpement: !!d.en_developpement,
-    ...(Object.fromEntries(CONTROLE_KEYS.map((k) => [k, d[k] !== 0])) as Record<ControleKey, boolean>),
+    ...(Object.fromEntries(CONTROLE_KEYS.map((k) => [k, CONTROLE_OFF_PAR_DEFAUT.includes(k) ? !!d[k] : d[k] !== 0])) as Record<ControleKey, boolean>),
     expedier_des_reception: !!d.expedier_des_reception,
   }
 }
@@ -2869,7 +2876,9 @@ function DetailSidebar({
             {CONTROLE_MESURES.map((r) => (
               <Fragment key={r.mesure}>
                 <span className="text-xs text-muted-foreground">{r.mesure}</span>
-                {([r.ennoblisseur, r.malterre] as const).map((k) => (
+                {([r.ennoblisseur, r.malterre] as const).map((k, i) => !k ? (
+                  <span key={`vide-${i}`} />
+                ) : (
                   <span key={k} className="flex justify-center">
                     {isEditing && droits.controles ? (
                       <Pill value={draft[k]} onChange={(v) => onDraftChange({ ...draft, [k]: v })} />

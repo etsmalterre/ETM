@@ -6,7 +6,9 @@
 //     controls come by mail and are typed in ETM, not here);
 //   - BEFORE THE WASH: she cuts a round and a 50 × 50 cm square (lot written on
 //     it) out of each tirelle, weighs the round, measures the laize, compares
-//     the round with the « rond 0 » of the ref + coloris in the binder;
+//     the round with the « rond 0 » of the ref + coloris in the binder, and on
+//     the references that ask it stretches a 10 cm strip both ways beside a
+//     ruler: the allongement H / L in % (lib/allongement.ts, 2026-11-10);
 //   - the squares are washed and dried, as many at once as she likes;
 //   - AFTER THE WASH: she measures stab H, stab L and vrillage on the square,
 //     stores square + tirelle in a casier and marks the lot done.
@@ -37,6 +39,7 @@ import { colorisAControler, rondsZero, rondZeroDe, lireVerdictColoris, type Verd
 import { horsBornes, horsRetrait } from './analyse-qualite.js'
 import { VRILLAGE_MAX, lireSaisieVrillage, VrillageInvalide } from './vrillage.js'
 import { lireSaisieStab, StabInvalide, valeurStab } from './stabilites.js'
+import { AllongementInvalide, allongementHors, lireSaisieAllongement, valeurAllongement } from './allongement.js'
 import { RELANCE_J, plusJoursOuvres } from './cycle-ennoblissement.js'
 import { joursOuvresEntre } from './jours-ouvres.js'
 
@@ -66,6 +69,9 @@ export interface MesuresTirelle {
   stabh: number | null
   stabl: number | null
   vrillage: number | null
+  /** NULL = not measured, 0 is a measure (lib/allongement.ts). */
+  allongementh: number | null
+  allongementl: number | null
   coloris: VerdictColoris | null
 }
 
@@ -74,6 +80,7 @@ export function demandesParPhase(d: MesuresDemandees, colorisDu: boolean): { ron
   const rond: string[] = []
   if (d.laize) rond.push('laize')
   if (d.poids) rond.push('poids')
+  if (d.allongement) rond.push('allongement')
   if (colorisDu) rond.push('coloris')
   const carre: string[] = []
   if (d.stabilites) carre.push('stabilités')
@@ -108,6 +115,9 @@ export interface Tolerances {
   stabh: number | null
   stabl: number | null
   vrillageMax: number
+  /** The fiche's « Allongement H / L » min · max; 0 = no bound. */
+  allongementh: { min: number; max: number }
+  allongementl: { min: number; max: number }
 }
 
 export interface HorsTolerance {
@@ -116,6 +126,8 @@ export interface HorsTolerance {
   stabh: boolean | null
   stabl: boolean | null
   vrillage: boolean | null
+  allongementh: boolean | null
+  allongementl: boolean | null
   coloris: boolean | null
 }
 
@@ -128,6 +140,8 @@ export function horsTolerance(m: MesuresTirelle, t: Tolerances): HorsTolerance {
     stabh: horsRetrait(m.stabh, t.stabh),
     stabl: horsRetrait(m.stabl, t.stabl),
     vrillage: m.vrillage == null ? null : m.vrillage > t.vrillageMax,
+    allongementh: allongementHors(m.allongementh, t.allongementh.min, t.allongementh.max),
+    allongementl: allongementHors(m.allongementl, t.allongementl.min, t.allongementl.max),
     coloris: m.coloris == null ? null : m.coloris === 'ecart',
   }
 }
@@ -204,6 +218,8 @@ interface LotBrut {
   stabh_tirelle: string | null
   stabl_tirelle: string | null
   vrillage_tirelle: string | null
+  allongementh_tirelle: string | null
+  allongementl_tirelle: string | null
   coloris_tirelle: string | null
   emplacement: string | null
   observations: string | null
@@ -239,6 +255,7 @@ export async function lireLotsLabo(opts: { ids?: number[] } = {}, sql: Sql = mps
            COALESCE(NULLIF(s.idref_fini, 0), l.idreference, 0) AS ref,
            COALESCE(s.idref_fini_colori, 0) AS coloris_id, COALESCE(s.idcoloris, 0) AS idcoloris,
            s.laize_tirelle, s.poids_tirelle, s.stabh_tirelle, s.stabl_tirelle, s.vrillage_tirelle, s.coloris_tirelle,
+           s.allongementh_tirelle, s.allongementl_tirelle,
            trim(s.emplacement_tirelle::text) AS emplacement, s.observations::text AS observations,
            COALESCE(s.idligne_commande_sous_traitant, 0) AS ligne_sst, COALESCE(l.idcommande_sous_traitant, 0) AS cmd_sst,
            s.stabh_demandee, s.stabl_demandee, st.nom::text AS sst,
@@ -259,9 +276,12 @@ export async function lireLotsLabo(opts: { ids?: number[] } = {}, sql: Sql = mps
         COALESCE(laizeht_min, 0)::float8 AS laize_min, COALESCE(laizeht_max, 0)::float8 AS laize_max,
         COALESCE(poids_min, 0)::float8 AS poids_min, COALESCE(poids_max, 0)::float8 AS poids_max,
         COALESCE(stab_hauteur, 0)::float8 AS stab_hauteur, COALESCE(stab_largeur, 0)::float8 AS stab_largeur,
+        COALESCE(allongementh_min, 0)::float8 AS allongementh_min, COALESCE(allongementh_max, 0)::float8 AS allongementh_max,
+        COALESCE(allongementl_min, 0)::float8 AS allongementl_min, COALESCE(allongementl_max, 0)::float8 AS allongementl_max,
         controle_ennoblisseur, controle_malterre,
         controle_ennoblisseur_laize, controle_ennoblisseur_poids, controle_ennoblisseur_stab, controle_ennoblisseur_vrillage,
-        controle_malterre_laize, controle_malterre_poids, controle_malterre_stab, controle_malterre_vrillage
+        controle_malterre_laize, controle_malterre_poids, controle_malterre_stab, controle_malterre_vrillage,
+        controle_malterre_allongement
       FROM ref_fini WHERE idref_fini = ANY(${refIds})`
     for (const r of rr) refs.set(Number(r.id), r)
   }
@@ -309,12 +329,15 @@ export async function lireLotsLabo(opts: { ids?: number[] } = {}, sql: Sql = mps
       stabh: valeurStab(r.stabh_tirelle),
       stabl: valeurStab(r.stabl_tirelle),
       vrillage: r.vrillage_tirelle == null ? null : num(r.vrillage_tirelle),
+      allongementh: valeurAllongement(r.allongementh_tirelle),
+      allongementl: valeurAllongement(r.allongementl_tirelle),
       coloris: lireVerdictColoris(r.coloris_tirelle),
     }
     const colorisDu = controles.malterre && colorisAControler(avecTeinture, id, r0)
     const demandees = controles.mesures.malterre
     const manque = mesuresManquantes(
-      { laize: mesures.laize, poids: mesures.poids, stabH: mesures.stabh, stabL: mesures.stabl, vrillage: mesures.vrillage, colorisManquant: colorisDu && !mesures.coloris },
+      { laize: mesures.laize, poids: mesures.poids, stabH: mesures.stabh, stabL: mesures.stabl, vrillage: mesures.vrillage,
+        allongementH: mesures.allongementh, allongementL: mesures.allongementl, colorisManquant: colorisDu && !mesures.coloris },
       demandees,
     )
     const etape = etapeLabo({ demandees, colorisDu, manque, labo })
@@ -331,6 +354,8 @@ export async function lireLotsLabo(opts: { ids?: number[] } = {}, sql: Sql = mps
       stabh: stabRef(r.stabh_demandee, fiche?.stab_hauteur),
       stabl: stabRef(r.stabl_demandee, fiche?.stab_largeur),
       vrillageMax: VRILLAGE_MAX,
+      allongementh: { min: num(fiche?.allongementh_min), max: num(fiche?.allongementh_max) },
+      allongementl: { min: num(fiche?.allongementl_min), max: num(fiche?.allongementl_max) },
     }
     out.push({
       idsuivilot: id,
@@ -452,21 +477,35 @@ async function toucherLabo(sql: Sql, id: number): Promise<void> {
   await sql`INSERT INTO tirelle_labo (idsuivilot) VALUES (${id}) ON CONFLICT (idsuivilot) DO NOTHING`
 }
 
-/** Before the wash (on the round): laize, poids, coloris vs the rond 0. Every
+/** Before the wash (on the round): laize, poids, allongement H / L (a 10 cm
+ *  strip, when the reference asks it), coloris vs the rond 0. Every
  *  measure the reference asks here is required; a later call corrects them.
  *  Once given, the lot moves to « après lavage » on its own. An écart of
  *  coloris carries its why into the lot's observations, like on Suivi lots
  *  (`note`, sent by builds older than the observations field). */
-export async function enregistrerAvantLavage(id: number, b: { laize?: unknown; poids?: unknown; coloris?: unknown; note?: unknown; observations?: unknown }): Promise<LotLabo | null> {
+export async function enregistrerAvantLavage(id: number, b: { laize?: unknown; poids?: unknown; allongementh?: unknown; allongementl?: unknown; coloris?: unknown; note?: unknown; observations?: unknown }): Promise<LotLabo | null> {
   const l = await lotOuRefus(id)
   if (l.etape === 'a_jeter') throw new RefusLabo('lot_a_jeter', 'Ce lot est parti en reprise : jetez d’abord son rond, son carré et sa tirelle.')
   const laize = borner(lireNombre(b.laize), 10, 400, 'Laize')
   const poids = borner(lireNombre(b.poids), 10, 2000, 'Poids')
   const coloris = b.coloris === undefined || b.coloris === null || b.coloris === '' ? null : lireVerdictColoris(b.coloris)
   if (b.coloris && !coloris) throw new RefusLabo('coloris_invalide', 'Coloris : conforme ou écart.', 400)
+  let allongementh: number | null
+  let allongementl: number | null
+  try {
+    allongementh = lireSaisieAllongement('allongementh_tirelle', b.allongementh, 'L’allongement H')
+    allongementl = lireSaisieAllongement('allongementl_tirelle', b.allongementl, 'L’allongement L')
+  } catch (e) {
+    if (e instanceof AllongementInvalide) throw new RefusLabo('valeur_hors_limites', e.message, 400)
+    throw e
+  }
   const manque: string[] = []
   if (l.demandes.rond.includes('laize') && !laize) manque.push('la laize')
   if (l.demandes.rond.includes('poids') && !poids) manque.push('le poids')
+  // 0 is a measure; a value already on the lot (typed on a PC) stands for the one left empty.
+  if (l.demandes.rond.includes('allongement') && ((allongementh ?? l.mesures.allongementh) === null || (allongementl ?? l.mesures.allongementl) === null)) {
+    manque.push('les deux allongements')
+  }
   if (l.demandes.rond.includes('coloris') && !coloris) manque.push('le coloris')
   if (manque.length) throw new RefusLabo('mesure_manquante', `Il manque ${manque.join(', ')}.`, 400)
   const note = typeof b.note === 'string' ? b.note.trim().slice(0, 500) : ''
@@ -476,7 +515,9 @@ export async function enregistrerAvantLavage(id: number, b: { laize?: unknown; p
     const tx = t as unknown as Sql
     await tx`UPDATE suivilot SET
         laize_tirelle = ${laize ?? l.mesures.laize}, poids_tirelle = ${poids ?? l.mesures.poids},
-        coloris_tirelle = ${coloris ?? l.mesures.coloris}
+        coloris_tirelle = ${coloris ?? l.mesures.coloris},
+        allongementh_tirelle = ${allongementh ?? l.mesures.allongementh},
+        allongementl_tirelle = ${allongementl ?? l.mesures.allongementl}
       WHERE idsuivilot = ${id}`
     if (observations !== undefined) await tx`UPDATE suivilot SET observations = ${observations} WHERE idsuivilot = ${id}`
     if (coloris === 'ecart' && note) {
@@ -562,7 +603,7 @@ export async function effacerControlesPourReprise(tx: Sql, ligneId: number, lot:
   await tx`UPDATE suivilot SET
       laize_sst = 0, poids_sst = 0, rendement_sst = 0, stabh_sst = NULL, stabl_sst = NULL, vrillage_sst = NULL,
       laize_tirelle = 0, poids_tirelle = 0, rendement_tirelle = 0, stabh_tirelle = NULL, stabl_tirelle = NULL,
-      vrillage_tirelle = NULL, coloris_tirelle = NULL
+      vrillage_tirelle = NULL, coloris_tirelle = NULL, allongementh_tirelle = NULL, allongementl_tirelle = NULL
     WHERE idsuivilot = ANY(${ids})`
   // The lab's material of a received lot goes to the bin; the reworked lot
   // comes back with a new tirelle and starts again at « rond ».

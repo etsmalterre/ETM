@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { delaiControle, demandesParPhase, etapeLabo, horsTolerance, type LaboRow } from './tirelle-labo.js'
 
-const TOUT = { laize: true, poids: true, stabilites: true, vrillage: true }
+const TOUT = { laize: true, poids: true, stabilites: true, vrillage: true, allongement: false }
 const labo = (p: Partial<LaboRow> = {}): LaboRow => ({
   termine_le: null, a_jeter_depuis: null, a_jeter_motif: null, a_jeter_casier: null, ...p,
 })
@@ -26,7 +26,7 @@ describe('etapeLabo', () => {
   })
 
   it('a reference asking nothing before the wash goes straight to « après lavage »', () => {
-    const d = { laize: false, poids: false, stabilites: true, vrillage: false }
+    const d = { laize: false, poids: false, stabilites: true, vrillage: false, allongement: false }
     expect(etapeLabo({ demandees: d, colorisDu: false, manque: ['stabilités'], labo: null })).toBe('apres_lavage')
   })
 
@@ -41,20 +41,30 @@ describe('demandesParPhase', () => {
     expect(demandesParPhase(TOUT, true)).toEqual({ rond: ['laize', 'poids', 'coloris'], carre: ['stabilités', 'vrillage'] })
     expect(demandesParPhase(TOUT, false).rond).toEqual(['laize', 'poids'])
   })
+  it('the allongement H / L is measured before the wash, when the reference asks it', () => {
+    expect(demandesParPhase({ ...TOUT, allongement: true }, true).rond).toEqual(['laize', 'poids', 'allongement', 'coloris'])
+  })
+})
+
+describe('etapeLabo with the allongement', () => {
+  it('a missing allongement keeps the lot before the wash', () => {
+    expect(etapeLabo({ demandees: { ...TOUT, allongement: true }, colorisDu: false, manque: ['allongement', 'stabilités'], labo: null })).toBe('avant_lavage')
+    expect(etapeLabo({ demandees: { ...TOUT, allongement: true }, colorisDu: false, manque: ['stabilités'], labo: null })).toBe('apres_lavage')
+  })
 })
 
 describe('horsTolerance', () => {
-  const t = { laize: { min: 150, max: 160 }, poids: { min: 200, max: 220 }, stabh: -5, stabl: -3, vrillageMax: 5 }
+  const t = { laize: { min: 150, max: 160 }, poids: { min: 200, max: 220 }, stabh: -5, stabl: -3, vrillageMax: 5, allongementh: { min: 85, max: 95 }, allongementl: { min: 0, max: 0 } }
   it('reads the fiche bounds, the retrait référentiel and the vrillage max', () => {
-    const h = horsTolerance({ laize: 162, poids: 210, stabh: -6, stabl: -2, vrillage: 5, coloris: 'ecart' }, t)
-    expect(h).toEqual({ laize: true, poids: false, stabh: true, stabl: false, vrillage: false, coloris: true })
+    const h = horsTolerance({ laize: 162, poids: 210, stabh: -6, stabl: -2, vrillage: 5, allongementh: 80, allongementl: 120, coloris: 'ecart' }, t)
+    expect(h).toEqual({ laize: true, poids: false, stabh: true, stabl: false, vrillage: false, allongementh: true, allongementl: null, coloris: true })
   })
   it('says nothing about what is not measured', () => {
-    const h = horsTolerance({ laize: 0, poids: 0, stabh: null, stabl: null, vrillage: null, coloris: null }, t)
-    expect(h).toEqual({ laize: null, poids: null, stabh: null, stabl: null, vrillage: null, coloris: null })
+    const h = horsTolerance({ laize: 0, poids: 0, stabh: null, stabl: null, vrillage: null, allongementh: null, allongementl: null, coloris: null }, t)
+    expect(h).toEqual({ laize: null, poids: null, stabh: null, stabl: null, vrillage: null, allongementh: null, allongementl: null, coloris: null })
   })
   it('0 / 0 is an ultra-stable matter, within tolerance (#1358)', () => {
-    const h = horsTolerance({ laize: 155, poids: 210, stabh: 0, stabl: 0, vrillage: 0, coloris: null }, t)
+    const h = horsTolerance({ laize: 155, poids: 210, stabh: 0, stabl: 0, vrillage: 0, allongementh: 90, allongementl: null, coloris: null }, t)
     expect(h).toMatchObject({ stabh: false, stabl: false, vrillage: false })
   })
 })
