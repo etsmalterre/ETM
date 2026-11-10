@@ -9,13 +9,16 @@ import type { Response } from 'express'
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 
-/** The ETM orders of `ids` still being prepared. */
+/** The ETM orders of `ids` still being prepared. A DONATION order is never « En préparation » (#1360):
+ *  it gives matter already in stock, has no lines and no date to commit to — it closes straight away.
+ *  Read here rather than stamped on validee_le, so turning the switch off puts the order back in préparation. */
 export async function commandesEnPreparation(ids: readonly number[]): Promise<Set<number>> {
   const u = [...new Set(ids.filter((x) => x > 0))]
   if (u.length === 0) return new Set()
   const rows = await mpsPg().unsafe<{ id: number }[]>(
     `SELECT idcommande_client AS id FROM commande_client
-      WHERE idcommande_client = ANY($1::bigint[]) AND idsociete = 1 AND validee_le IS NULL`, [u as any])
+      WHERE idcommande_client = ANY($1::bigint[]) AND idsociete = 1 AND validee_le IS NULL
+        AND COALESCE(donation, 0) <> 1`, [u as any])
   return new Set(rows.map((r) => Number(r.id)))
 }
 
