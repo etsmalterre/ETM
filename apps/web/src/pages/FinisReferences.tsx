@@ -318,6 +318,7 @@ interface HeaderDraft {
   observation_technique: string
   description_commercial: string
   IDref_ecru: number
+  avec_teinture: number
   rendement: string
   freinte: string
   temp_lavage: string
@@ -380,6 +381,7 @@ function emptyDraft(): HeaderDraft {
     observation_technique: '',
     description_commercial: '',
     IDref_ecru: 0,
+    avec_teinture: 0,
     rendement: '',
     freinte: '',
     temp_lavage: '',
@@ -419,6 +421,7 @@ function draftFromDetail(d: RefFiniDetail): HeaderDraft {
     observation_technique: d.observation_technique ?? '',
     description_commercial: d.description_commercial ?? '',
     IDref_ecru: Number(d.IDref_ecru) || 0,
+    avec_teinture: Number(d.avec_teinture) || 0,
     rendement: numStr(d.rendement),
     freinte: numStr(d.freinte),
     temp_lavage: numStr(d.temp_lavage),
@@ -459,6 +462,7 @@ function draftToBody(d: HeaderDraft) {
     observation_technique: d.observation_technique,
     description_commercial: d.description_commercial,
     IDref_ecru: d.IDref_ecru || 0,
+    avec_teinture: d.avec_teinture,
     rendement: num(d.rendement),
     freinte: num(d.freinte),
     temp_lavage: num(d.temp_lavage),
@@ -612,9 +616,11 @@ export function FinisReferences() {
       setIsEditing(false)
       originalDraftRef.current = null
     },
-    onError: (err: Error & { status?: number }) => {
+    onError: (err: Error & { status?: number; body?: { error?: string; message?: string } }) => {
       setSaveError(
-        err.status === 409
+        err.body?.error === 'teinture_verrouillee' && err.body.message
+          ? err.body.message
+          : err.status === 409
           ? `La référence « ${draft.reference.trim()} » existe déjà. Choisissez un autre nom.`
           : err.status === 401
             ? 'Votre session a expiré. Veuillez vous reconnecter, puis réessayer.'
@@ -1777,9 +1783,42 @@ function SpecsCard({
             )}
           >
             <Droplet className="h-2.5 w-2.5" />
-            {teintureLabel(detail.avec_teinture)}
+            {teintureLabel(isEditing ? draft.avec_teinture : detail.avec_teinture)}
           </Badge>
         </div>
+
+        {/* Lavage or teinture (#1365): decides where the coloris come from — the
+            écru's (lavage) or the reference's own dyed coloris. The API refuses
+            lavage ↔ teinture once the reference is used (lib/teinture-ref-fini.ts). */}
+        {isEditing && (
+          <div className="space-y-1">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Teinture</p>
+            <div className="flex flex-wrap gap-1">
+              {([0, 1, 2] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => onDraftChange({ ...draft, avec_teinture: v })}
+                  className={cn(
+                    'px-2 py-1 text-xs rounded-md transition-colors flex-grow basis-[calc(33.333%-0.25rem)]',
+                    draft.avec_teinture === v
+                      ? 'bg-accent text-accent-foreground shadow-sm font-medium'
+                      : 'text-muted-foreground hover:bg-accent/10',
+                  )}
+                >
+                  {teintureLabel(v)}
+                </button>
+              ))}
+            </div>
+            {(draft.avec_teinture === 0) !== (detail.avec_teinture === 0) && (
+              <p className="text-[11px] text-muted-foreground">
+                {draft.avec_teinture === 0
+                  ? 'Les coloris viendront de la référence écru.'
+                  : 'Les coloris seront ceux de la référence, créés par les études coloris.'}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Row 1 — the three scalar figures */}
         <div className="grid grid-cols-3 gap-2">

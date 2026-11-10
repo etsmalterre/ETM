@@ -29,6 +29,7 @@ import QRCode from 'qrcode'
 import { chooseCompositionRows, composeMatieres, repairMatiereLibelle } from '../lib/composition-matieres.js'
 import { colorisReprenables, reprendreColoris, originesColoris, RepriseRefusee } from '../lib/coloris-reprise.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
+import { changeDeCatalogue, messageTeintureVerrouillee, usagesColorisRefFini } from '../lib/teinture-ref-fini.js'
 
 export const referencesFiniRouter: RouterType = Router()
 
@@ -949,9 +950,10 @@ referencesFiniRouter.get('/:id/tarifs/pdf', async (req: Request, res: Response) 
 
 // Editable datasheet fields — every column here is ASCII-named, so the same SET
 // list is bridge-safe on Linux and Windows. The accented flags (archivé /
-// catalogue_privé), the dates, avec_teinture, and the écru/coloris ids that drive
-// the coloris catalog + pricing are intentionally NOT writable from this screen,
-// except IDref_ecru which is a clean FK the user sets when wiring a new ref.
+// catalogue_privé), the dates and the écru/coloris ids that drive the coloris
+// catalog + pricing are intentionally NOT writable from this screen, except
+// IDref_ecru which is a clean FK the user sets when wiring a new ref, and
+// avec_teinture (#1365), guarded by lib/teinture-ref-fini.ts.
 const refFiniBody = z.object({
   reference: z.string().trim().min(1).max(100),
   designation: z.string().optional().nullable(),
@@ -961,6 +963,7 @@ const refFiniBody = z.object({
   description_commercial: z.string().optional().nullable(),
   responsable: z.string().optional().nullable(),
   IDref_ecru: z.number().int().nonnegative().optional().nullable(),
+  avec_teinture: z.number().int().min(0).max(2).optional(),
   rendement: z.number().optional().nullable(),
   freinte: z.number().optional().nullable(),
   temp_lavage: z.number().optional().nullable(),
@@ -1024,6 +1027,8 @@ function buildRefFiniSets(b: RefFiniBody): string[] {
   sets.push(`description_commercial = ${sqlText(b.description_commercial ?? '')}`)
   sets.push(`responsable = ${sqlText(b.responsable ?? '')}`)
   sets.push(`IDref_ecru = ${Number(b.IDref_ecru) || 0}`)
+  // Written only when sent (#1365); the PUT checks the catalog switch first.
+  if (b.avec_teinture !== undefined) sets.push(`avec_teinture = ${Number(b.avec_teinture) || 0}`)
   for (const c of NUMERIC_COLS) sets.push(`${c} = ${toNumOrNull(b[c]) ?? 0}`)
   for (const c of BOOL_COLS) sets.push(`${c} = ${b[c] ? 1 : 0}`)
   // On by default (lib/controles-lot.ts): written only when sent, never reset by omission.
@@ -1131,6 +1136,16 @@ referencesFiniRouter.put('/:id', async (req: Request, res: Response) => {
       const groupe = groupes.find((g) => GROUPES_REF_FINI[g].cle === cle) ?? 'general'
       const message = `Vous n’avez pas le droit de modifier ${LIBELLES_GROUPE[groupe]}.`
       if (!(await aLesDroits(req, res, [cle], message))) return
+    }
+    // Lavage ↔ teinture moves every coloris id to another catalog: refused once
+    // the reference holds a coloris anywhere (#1365, lib/teinture-ref-fini.ts).
+    const teintureAvant = Number(stored[0].avec_teinture) || 0
+    if (parsed.data.avec_teinture !== undefined && changeDeCatalogue(teintureAvant, parsed.data.avec_teinture)) {
+      const usages = await usagesColorisRefFini(id)
+      if (usages.length > 0) {
+        res.status(409).json({ error: 'teinture_verrouillee', message: messageTeintureVerrouillee(teintureAvant, usages) })
+        return
+      }
     }
     // If an écru is set, validate it exists (a stray id would orphan the ref).
     if (parsed.data.IDref_ecru && parsed.data.IDref_ecru > 0) {

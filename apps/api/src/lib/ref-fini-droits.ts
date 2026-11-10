@@ -33,7 +33,7 @@ export const GROUPES_REF_FINI: Record<GroupeRefFini, { cle: PermissionKey; champ
   specifications: {
     cle: 'edit_ref_fini_specifications',
     champs: [
-      'IDref_ecru', 'rendement', 'freinte', 'temp_lavage',
+      'IDref_ecru', 'avec_teinture', 'rendement', 'freinte', 'temp_lavage',
       'poids_Moy', 'poids_Min', 'poids_Max',
       'laizeHT_Moy', 'laizeHT_Min', 'laizeHT_Max',
       'laizeUtile_Moy', 'laizeUtile_Min', 'laizeUtile_Max',
