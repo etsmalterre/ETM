@@ -19,6 +19,8 @@
 
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
+import { changementsCote, lireMesuresCotes, noterLot, type MesuresLot } from '../lib/journal-lot.js'
+import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { COOKIE_MAX_AGE_SECONDS, appareilCookieOptions, isEffectiveAdmin } from '../lib/auth.js'
 import {
   codeEnAttente,
@@ -79,6 +81,25 @@ async function tablette(req: Request): Promise<AppareilAtelier | null> {
   const a = raw ? await resoudreAppareil(raw) : null
   if (a && typeAppareil(a) === 'tirelle') return a
   return enrolementTirelleContourne() ? TABLETTE_DE_DEV : null
+}
+
+/** The lab tablet's gesture in the lot's Journal (lib/journal-lot.ts): who is the
+ *  tablet (its label — an admin trying it from a desk is named), what changed. */
+async function journalTablette(req: Request, id: number, evenement: 'tirelle_avant_lavage' | 'tirelle_apres_lavage' | 'tirelle_jete', avant: MesuresLot | null): Promise<void> {
+  const a = await tablette(req)
+  const par = a && a !== TABLETTE_DE_DEV
+    ? { id: 0, nom: a.libelle || 'Tablette tirelle' }
+    : req.userId ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : { id: 0, nom: 'Tablette tirelle' }
+  let detail: string | null = null
+  if (evenement !== 'tirelle_jete') {
+    const apres = await lireMesuresCotes(id)
+    const parts = [changementsCote(avant, apres, 'tirelle')]
+    if (apres && (avant?.coloris_tirelle ?? null) !== (apres.coloris_tirelle ?? null) && apres.coloris_tirelle) {
+      parts.push(apres.coloris_tirelle === 'conforme' ? 'coloris conforme' : 'coloris en écart')
+    }
+    detail = parts.filter(Boolean).join(' · ') || null
+  }
+  await noterLot({ idsuivilot: id, evenement, detail, par })
 }
 
 async function gateLecture(req: Request, res: Response): Promise<boolean> {
@@ -194,7 +215,10 @@ tirelleRouter.post('/lots/:id/avant-lavage', async (req: Request, res: Response)
     return
   }
   try {
-    res.json({ lot: await enregistrerAvantLavage(id, parsed.data) })
+    const avant = await lireMesuresCotes(id)
+    const lot = await enregistrerAvantLavage(id, parsed.data)
+    await journalTablette(req, id, 'tirelle_avant_lavage', avant)
+    res.json({ lot })
   } catch (err) {
     erreur(res, 'avant-lavage', err)
   }
@@ -220,7 +244,9 @@ tirelleRouter.post('/lots/:id/apres-lavage', async (req: Request, res: Response)
     return
   }
   try {
+    const avant = await lireMesuresCotes(id)
     await terminerApresLavage(id, parsed.data)
+    await journalTablette(req, id, 'tirelle_apres_lavage', avant)
     res.json({ ok: true })
   } catch (err) {
     erreur(res, 'apres-lavage', err)
@@ -233,6 +259,7 @@ tirelleRouter.post('/lots/:id/jete', async (req: Request, res: Response) => {
   if (id === null) return
   try {
     await marquerJete(id)
+    await journalTablette(req, id, 'tirelle_jete', null)
     res.json({ ok: true })
   } catch (err) {
     erreur(res, 'jete', err)

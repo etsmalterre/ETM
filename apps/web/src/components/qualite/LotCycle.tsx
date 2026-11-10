@@ -236,30 +236,26 @@ export interface AttenduLot {
   delai: number | null
 }
 
-const MAIN_LABEL: Record<MainLot, string> = {
-  nous: 'À faire chez Malterre',
-  teinturier: 'Attendu de l’ennoblisseur',
-  client: 'Attendu du client',
+/** One thing standing between the lot and « Valider le lot » (API `Prealable`). */
+export interface PrealableLot {
+  texte: string
+  main: MainLot
+  etape: EtapeLot | null
 }
 
-/** What the step's start date is, in words. */
-function libelleDepuis(etape: EtapeLot): string {
-  if (etape === 'coloris_soumis' || etape === 'soumis') return 'Soumission envoyée le'
-  if (etape === 'ok_ramer_a_envoyer') return 'Coloris accepté le'
-  if (etape === 'en_rame') return 'Validation transmise le'
-  return 'Lot reçu le'
-}
-
-/** « Prochaine étape »: ONE thing, the step the lot waits for and how long it has
- *  been there against the days it gets (Vincent 2026-11-05: 2 days in « contrôle
- *  ennoblisseur » is fine, 5 is a problem). What else blocks « Valider le lot »
- *  stays in the footer menu, with every gesture (no button on the card, 2026-11-05);
+/** « Prochaines étapes » (top of the Journal tab since 2026-11-10): the step the
+ *  lot waits for and how long it has been there against the days it gets
+ *  (Vincent 2026-11-05: 2 days in « contrôle ennoblisseur » is fine, 5 is a
+ *  problem), then what Malterre can already do and what others still owe.
+ *  The gestures stay in the footer menu (no button on the card, 2026-11-05);
  *  the RC per client in the header button. */
 export function CycleCard({
-  etape, prealables, attendu, clients,
+  etape, prealables, etapes, attendu, clients,
 }: {
   etape: EtapeLot
   prealables: string[]
+  /** Every prealable with whose move it is; absent from an older API = no lists. */
+  etapes?: PrealableLot[]
   /** Absent from an older API: the card falls back to the first prealable. */
   attendu?: AttenduLot | null
   clients: ClientRc[]
@@ -278,6 +274,10 @@ export function CycleCard({
   // used up, amber on the last one.
   const niveau = !mesure ? null : jours >= delai ? 'rouge' : jours >= delai - 1 ? 'ambre' : null
   const retard = mesure ? jours - delai : 0
+  // The rest of the list, the awaited step aside: ours first, then the others'.
+  const autres = (etapes ?? []).filter((p) => p.texte !== tete?.texte)
+  const aFaire = autres.filter((p) => p.main === 'nous')
+  const enAttente = autres.filter((p) => p.main !== 'nous')
 
   return (
     <div className={cn(
@@ -293,10 +293,7 @@ export function CycleCard({
             <EtapeIcon className={cn('h-5 w-5', meta.iconColor)} />
           </div>
           <div className="min-w-0 flex-1">
-            <p className="text-base font-semibold leading-snug">{meta.label}</p>
-            <p className="text-xs text-muted-foreground truncate" title={tete.texte}>
-              {MAIN_LABEL[tete.main]}{tete.depuis ? ` · ${libelleDepuis(etape)} ${fmtJour(tete.depuis)}` : ''}
-            </p>
+            <p className="text-base font-semibold leading-snug" title={tete.texte}>{meta.label}</p>
           </div>
           {mesure && (
             <div className="flex-shrink-0 text-right">
@@ -332,6 +329,37 @@ export function CycleCard({
                 ? `Dernier jour demain : ${tete!.main === 'nous' ? 'à traiter' : `relancer ${tete!.main === 'client' ? 'le client' : 'l’ennoblisseur'}`}`
                 : `${tete!.main === 'nous' ? 'À traiter' : `Relancer ${tete!.main === 'client' ? 'le client' : 'l’ennoblisseur'}`}${retard > 0 ? ` : ${retard} j de retard` : ' aujourd’hui'}`}
             </p>
+          )}
+        </div>
+      )}
+
+      {!valide && (aFaire.length > 0 || enAttente.length > 0) && (
+        <div className="mt-3 pt-3 border-t border-border/60 space-y-2.5">
+          {aFaire.length > 0 && (
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Déjà faisable chez Malterre</p>
+              <ul className="space-y-1">
+                {aFaire.map((p) => (
+                  <li key={p.texte} className="flex items-start gap-2 text-sm">
+                    <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0 mt-0.5 text-amber-600" />
+                    <span className="min-w-0">{p.texte}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {enAttente.length > 0 && (
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Attendu ensuite</p>
+              <ul className="space-y-1">
+                {enAttente.map((p) => (
+                  <li key={p.texte} className="flex items-start gap-2 text-sm text-muted-foreground">
+                    <Hourglass className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                    <span className="min-w-0">{p.texte}<span className="text-[11px]"> · {p.main === 'client' ? 'client' : 'ennoblisseur'}</span></span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       )}

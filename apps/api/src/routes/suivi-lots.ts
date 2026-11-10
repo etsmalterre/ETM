@@ -49,6 +49,7 @@ import {
   VRILLAGE_MAX, type ChampVrillage, type VrillagesLot,
 } from '../lib/vrillage.js'
 import { etatLaboDuLot } from '../lib/tirelle-labo.js'
+import { lireJournalLot, lireMesuresCotes, noterLot, noterMesures } from '../lib/journal-lot.js'
 import { lireSaisieStab, StabInvalide, valeurStab } from '../lib/stabilites.js'
 import { colorisAControler, colorisDemande, historiqueColoris, lireVerdictColoris, rondsZero, rondZeroDe } from '../lib/coloris-lot.js'
 
@@ -790,6 +791,8 @@ async function cycleDuDetail(id: number, cmdId: number, ligneId: number, lot: st
   return {
     etape: e?.etape ?? null,
     prealables: e?.prealables ?? [],
+    /** Same list with whose move each is: the Journal tab's « Prochaines étapes ». */
+    prealables_detail: (e?.detail ?? []).map((p) => ({ texte: p.texte, main: p.main, etape: p.etape })),
     attendu: attendu
       ? {
         texte: attendu.texte,
@@ -835,6 +838,19 @@ function texteDefaut(d: Record<string, unknown>): string {
 //
 // SELECT * (single table) so accented spec columns survive the bridge — every
 // metric is read by prefix-regex (pickNum), never named in SQL.
+// GET /suivi-lots/:id/journal — who did what on the lot and when, newest first
+// (the right panel's « Journal » tab, lib/journal-lot.ts).
+suiviLotsRouter.get('/:id/journal', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (!(id > 0)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    res.json({ entrees: await lireJournalLot(id) })
+  } catch (err) {
+    console.error('Error reading suivi-lot journal:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 suiviLotsRouter.get('/:id/serie', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
@@ -1046,6 +1062,8 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
 
     // The dyer measures before, for Flux Ennoblisseur › Contrôles in observation.
     const mesuresAvant = await lireMesuresLot(id)
+    // Both sides before, for the lot's Journal (lib/journal-lot.ts).
+    const cotesAvant = await lireMesuresCotes(id)
     await query(
       `UPDATE suivilot SET
          laize_sst = ${n(b.laize_sst)}, poids_sst = ${n(b.poids_sst)}, rendement_sst = ${n(b.rendement_sst)},
@@ -1071,6 +1089,8 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
       }
       await mpsPg()`UPDATE suivilot SET coloris_tirelle = ${lireVerdictColoris(b.coloris_tirelle)} WHERE idsuivilot = ${id}`
     }
+    // The Journal keeps what this save changed, per side — never the whole form.
+    await noterMesures(id, cotesAvant, await lireMesuresCotes(id), parLot)
     res.json({ ok: true })
   } catch (err) {
     console.error('Error saving suivi-lot:', err)
@@ -1135,6 +1155,7 @@ suiviLotsRouter.post('/:id/etat', async (req: Request, res: Response) => {
     }
 
     await query(`UPDATE suivilot SET IDetatLot = ${etat} WHERE IDsuivilot = ${id}`)
+    await noterLot({ idsuivilot: id, evenement: 'etat', detail: 'Lot validé', par: req.userId ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null })
     // Validation flag lives in the accented `approuvé_qualité` column — skipped
     // only on the Linux HFSQL bridge, where IDetatLot was the source of truth.
     if (canNameAccented()) {

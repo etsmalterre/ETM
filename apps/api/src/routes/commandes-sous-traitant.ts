@@ -88,6 +88,8 @@ import { uniteLabel } from './expeditions.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
+import { noterLot } from '../lib/journal-lot.js'
+import { lireJournalCommandeSst, noterCommandeSst } from '../lib/journal-commande-sst.js'
 import { journaliserEnvoiRc } from '../lib/rapport-controle-lot.js'
 import { adressesDuClient, clientEnCopie, nomFichierRc, PHRASE_RC_SOUMISSION, PIECE_RC, rcPourSoumission, renderRapportControle } from '../lib/rc-soumission.js'
 import { compteursParCommande, ligneModifiee } from '../lib/agents/flux-ennoblisseur/saisies.js'
@@ -944,7 +946,12 @@ function cycleFields(e: EtatCommande) {
     solde: e.solde,
     lots: e.lots.map((l) => ({ lot: l.lot, idsuivilot: l.idsuivilot, etape: l.etape, main: l.main, relance: l.relance })),
     // joursDepuisDemande: working days since the délai was asked (0 = today).
-    ...(e.delai ? { delai: { ...e.delai, joursDepuisDemande: e.delai.demandeLe ? ouvresEntre(e.delai.demandeLe, todayIso()) : null } } : {}),
+    // joursAccordes: working days from the demand to the échéance (the card's gauge).
+    ...(e.delai ? { delai: {
+      ...e.delai,
+      joursDepuisDemande: e.delai.demandeLe ? ouvresEntre(e.delai.demandeLe, todayIso()) : null,
+      joursAccordes: e.delai.demandeLe && e.delai.echeance ? ouvresEntre(e.delai.demandeLe, e.delai.echeance) : null,
+    } } : {}),
   }
 }
 
@@ -2913,6 +2920,7 @@ commandesSousTraitantRouter.post('/:id/email', async (req: Request, res: Respons
       // Audit field is informational; fall back to empty.
     }
     await logEnvoiEmails(13, id, allRecipients, societe)
+    await noterCommandeSst({ idcommande: id, evenement: 'bon_commande', par: { id: req.userId, nom: await nomUtilisateur(req.userId) } })
 
     // State machine: bon de commande has now been sent → flip every
     // still-Non_Envoye line to Attente_Delai. We intentionally do NOT
@@ -4499,6 +4507,19 @@ commandesSousTraitantRouter.get('/:id/historique', async (req: Request, res: Res
   }
 })
 
+// « Journal » tab (Vincent 2026-11-10): the order's gestures + every lot's
+// journal, by whom and when (lib/journal-commande-sst.ts).
+commandesSousTraitantRouter.get('/:id/journal', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    res.json({ entrees: await lireJournalCommandeSst(id) })
+  } catch (err) {
+    console.error('Error fetching journal commande sst:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // ── Create commande ──────────────────────────────────────
 
 commandesSousTraitantRouter.post('/', async (req: Request, res: Response) => {
@@ -4591,6 +4612,10 @@ commandesSousTraitantRouter.post('/', async (req: Request, res: Response) => {
       mirrorStatus = 'skipped'
     }
 
+    await noterCommandeSst({
+      idcommande: Number(newId), evenement: 'creation',
+      par: req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null,
+    })
     const body: Record<string, unknown> = { IDcommande_sous_traitant: Number(newId) }
     if (mirrorStatus && mirrorStatus !== 'skipped') body.mirror_status = mirrorStatus
     if (mirrorError) body.mirror_error = mirrorError
@@ -4687,6 +4712,10 @@ commandesSousTraitantRouter.put('/:id/etat', async (req: Request, res: Response)
     await query(
       `UPDATE commande_sous_traitant SET est_soldee = ${parsed.data.est_soldee} WHERE IDcommande_sous_traitant = ${id}`,
     )
+    await noterCommandeSst({
+      idcommande: id, evenement: 'etat', detail: parsed.data.est_soldee ? 'Commande clôturée' : 'Commande rouverte',
+      par: req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null,
+    })
     res.json({ ok: true })
   } catch (err) {
     console.error('Error toggling commande-sous-traitant etat:', err)
@@ -7037,7 +7066,14 @@ commandesSousTraitantRouter.post(
       // (ligne, lot) — only the first reception of a given lot creates
       // the row. Totals stay at 0 (a downstream workflow populates
       // quantite_receptionnee / metrage_receptionne), matching legacy.
-      await upsertSuivilot({ commandeId, ligneId, lot: d.lot ?? '' })
+      const idsuivilot = await upsertSuivilot({ commandeId, ligneId, lot: d.lot ?? '' })
+      // The lot's Journal: one line per roll, shown as one « BL enregistré » per click.
+      if (idsuivilot) {
+        await noterLot({
+          idsuivilot, evenement: 'reception', detail: d.numero ? String(d.numero) : null,
+          par: req.userId ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null,
+        })
+      }
 
       res.status(201).json(await fetchPiecesPayload(ctx, ligneId))
     } catch (err) {

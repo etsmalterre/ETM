@@ -1812,6 +1812,51 @@ ALTER TABLE ref_ecru ADD COLUMN vente_au_metre smallint NOT NULL DEFAULT 0;
 ALTER TABLE ref_ecru ADD COLUMN rendement_metre double precision NOT NULL DEFAULT 0;
 `,
   },
+  {
+    // Qualité › Suivi lots « Journal » tab (Vincent 2026-11-10): who did what on
+    // a lot and when. Only the gestures with no trace of their own land here
+    // (reception, dyer / Malterre measures, the lab tablet, état changes); the
+    // soumissions, answers, RC, reprises… are read from their own tables
+    // (lib/journal-lot.ts). Append-only: never an UPDATE nor a DELETE.
+    name: '0068_journal_lot',
+    sql: `
+CREATE TABLE journal_lot (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idsuivilot bigint NOT NULL,
+  evenement text NOT NULL,
+  detail text,
+  par_id bigint NOT NULL DEFAULT 0,
+  par text,
+  le timestamptz NOT NULL DEFAULT now(),
+  source text NOT NULL DEFAULT 'geste' CHECK (source IN ('geste', 'historique'))
+);
+CREATE INDEX journal_lot_suivilot ON journal_lot (idsuivilot, le);
+${grantApi('SELECT, INSERT', 'journal_lot')}
+${grantApi('USAGE, SELECT', 'SEQUENCE journal_lot_id_seq')}
+`,
+  },
+  {
+    // Sous-traitants › Ennoblissement « Journal » tab (Vincent 2026-11-10,
+    // lib/journal-commande-sst.ts): who created the order, sent the bon de
+    // commande, closed or reopened it — the order's gestures that had no author
+    // anywhere (envoi_email has none). Append-only, like journal_lot.
+    name: '0069_journal_commande_sst',
+    sql: `
+CREATE TABLE journal_commande_sst (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idcommande_sous_traitant bigint NOT NULL,
+  evenement text NOT NULL,
+  detail text,
+  par_id bigint NOT NULL DEFAULT 0,
+  par text,
+  le timestamptz NOT NULL DEFAULT now(),
+  source text NOT NULL DEFAULT 'geste' CHECK (source IN ('geste', 'historique'))
+);
+CREATE INDEX journal_commande_sst_commande ON journal_commande_sst (idcommande_sous_traitant, le);
+${grantApi('SELECT, INSERT', 'journal_commande_sst')}
+${grantApi('USAGE, SELECT', 'SEQUENCE journal_commande_sst_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

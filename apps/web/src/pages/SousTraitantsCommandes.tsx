@@ -17,6 +17,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { FacturesCommande } from '@/components/sst/FacturesCommande'
+import { JournalListe, type EntreeJournal } from '@/components/qualite/JournalLot'
 import { DelaiQuestion, type DelaiCycle } from '@/components/sst/DelaiQuestion'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery, type InfiniteData } from '@tanstack/react-query'
@@ -41,6 +42,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  History,
   Package,
   Link2,
   Unlink,
@@ -1412,7 +1414,7 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
             // and the historique tab all refresh without a manual reload.
             queryClient.invalidateQueries({ queryKey: ['commande-sst', selectedId] })
             queryClient.invalidateQueries({ queryKey: ['commandes-sst'] })
-            queryClient.invalidateQueries({ queryKey: ['commande-sst-historique', selectedId] })
+            queryClient.invalidateQueries({ queryKey: ['commande-sst-journal', selectedId] })
           }}
         />
       )}
@@ -6648,7 +6650,7 @@ function LineFormFields({
 
 // ── Right Panel: Sidebar with Tabs ─────────────────────
 
-type SidebarTab = 'info' | 'adresses' | 'docs' | 'historique'
+type SidebarTab = 'info' | 'adresses' | 'docs' | 'journal'
 
 function DetailSidebar({
   commande, isLoading, isEditing,
@@ -6695,14 +6697,14 @@ function DetailSidebar({
   )
   if (!commande) return null
 
-  // The Journal lives as a section *inside* the Info tab — no separate
-  // tab. Keeps the sidebar three-tabbed and lets the user see commentaire
-  // and journal entries side by side without flipping back and forth.
+  // « Journal » (ex « Historique », Vincent 2026-11-10): the next steps on top,
+  // then what was done on the order and its lots, by whom and when. The free
+  // text « journal » column stays a section of the Info tab.
   const tabs: { key: SidebarTab; label: string; icon: React.ElementType }[] = [
     { key: 'info', label: 'Info', icon: Info },
     { key: 'adresses', label: 'Adresses', icon: MapPin },
     { key: 'docs', label: 'Docs', icon: FileText },
-    { key: 'historique', label: 'Historique', icon: Clock },
+    { key: 'journal', label: 'Journal', icon: History },
   ]
 
   return (
@@ -6759,8 +6761,8 @@ function DetailSidebar({
               <DocsTab commande={commande} isEditing={isEditing} />
             </>
           )}
-          {activeTab === 'historique' && (
-            <HistoriqueTab commandeId={commande.IDcommande_sous_traitant} />
+          {activeTab === 'journal' && (
+            <JournalTab commande={commande} isEditing={isEditing} />
           )}
         </div>
       </div>
@@ -6991,36 +6993,85 @@ function MentionsQualiteCard({ commandeId }: { commandeId: number }) {
   )
 }
 
-/** Ennoblissement: the délai question while it is asked (« Relancer » /
- *  « Repousser » only, lib/delai-sst.ts, LIVA #1314), and the open lots with
- *  their step, each linked to Qualité › Suivi lots where it turns red. No other
- *  date (Vincent 2026-11-03): the délai is each LINE's, printed on its card;
- *  repeating it here read as a second, different date. Never a typed date. */
+/** Ennoblissement « Prochaines étapes » (top of the Journal tab, drawn like the
+ *  lot's card on Suivi lots, Vincent 2026-11-10): while the délai is asked, how
+ *  long since the demand against the days the dyer gets (« Repousser » moves the
+ *  échéance), red once the relance is due (lib/delai-sst.ts, LIVA #1314); then
+ *  the open lots with their step, each linked to Qualité › Suivi lots where it
+ *  turns red. No other date (Vincent 2026-11-03): the délai is each LINE's. The
+ *  history (relances, reports) is the Journal's. Never a typed date. */
 function CycleCard({ commande, cycle, isEditing }: {
   commande: CommandeDetail
   cycle: CycleCommande
   isEditing: boolean
 }) {
-  const attenteDelai = commande.phase === 'attente_delai'
+  const attenteDelai = commande.phase === 'attente_delai' && !!cycle.delai
   if (!attenteDelai && cycle.lots.length === 0) return null
+  const delai = cycle.delai
+  const jours = delai?.joursDepuisDemande ?? null
+  const accordes = delai?.joursAccordes ?? null
+  // §41: the colour is the API's (relance due = red), never recomputed here.
+  const niveau = !attenteDelai ? null : cycle.urgence === 'late' ? 'rouge' : cycle.urgence === 'soon' ? 'ambre' : null
+  const jauge = attenteDelai && jours !== null && accordes !== null && accordes > 0
+  const retard = jauge ? jours - accordes : 0
   return (
-    <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
-      {attenteDelai && (
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-            <BellRing className="h-3.5 w-3.5 text-accent" />Relance
-          </span>
-          <span className={cn('text-sm', cycle.urgence === 'late' && 'text-red-600 font-semibold', cycle.urgence === 'soon' && 'text-amber-700 font-semibold')}>
-            {cycle.relance ? formatHfsqlDate(cycle.relance.replace(/-/g, '')) : '—'}
-          </span>
-        </div>
-      )}
-      {attenteDelai && cycle.delai && (
-        <DelaiQuestion commandeId={commande.IDcommande_sous_traitant} delai={cycle.delai} disabled={isEditing} enRetard={cycle.urgence === 'late'} />
+    <div className={cn(
+      'rounded-xl border bg-card shadow-sm p-4 border-l-4',
+      niveau === 'rouge' ? 'border-l-red-500' : niveau === 'ambre' ? 'border-l-amber-500' : 'border-l-border',
+    )}>
+      {attenteDelai && delai && (
+        <>
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 flex-shrink-0 rounded-lg flex items-center justify-center bg-zinc-100">
+              <Hourglass className="h-5 w-5 text-amber-600" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-base font-semibold leading-snug">Attente délai</p>
+            </div>
+            {jours !== null && jours >= 0 && (
+              <div className="flex-shrink-0 text-right">
+                <p className={cn(
+                  'text-2xl font-bold tabular-nums leading-none',
+                  niveau === 'rouge' ? 'text-red-600' : niveau === 'ambre' ? 'text-amber-600' : 'text-foreground',
+                )}>
+                  {jours} j
+                </p>
+                {jauge && <p className="text-[11px] text-muted-foreground mt-0.5">sur {accordes} j ouvrés</p>}
+              </div>
+            )}
+          </div>
+          {jauge && (
+            <div className="mt-3">
+              <div className="flex gap-1">
+                {Array.from({ length: accordes }, (_, i) => (
+                  <div
+                    key={i}
+                    className={cn(
+                      'h-2 flex-1 rounded-full',
+                      i >= jours ? 'bg-zinc-200'
+                        : niveau === 'rouge' ? 'bg-red-500' : niveau === 'ambre' ? 'bg-amber-500' : 'bg-sky-500',
+                    )}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          <p className={cn(
+            'mt-1.5 text-xs',
+            niveau === 'rouge' ? 'text-red-700 font-medium' : niveau === 'ambre' ? 'text-amber-700 font-medium' : 'text-muted-foreground',
+          )}>
+            {niveau === 'rouge'
+              ? `Relancer l’ennoblisseur${retard > 0 ? ` : ${retard} j de retard` : ''}`
+              : cycle.relance ? `Relance le ${formatHfsqlDate(cycle.relance.replace(/-/g, ''))}` : 'Délai attendu de l’ennoblisseur'}
+          </p>
+          <div className="mt-3">
+            <DelaiQuestion commandeId={commande.IDcommande_sous_traitant} delai={delai} disabled={isEditing} />
+          </div>
+        </>
       )}
       {cycle.lots.length > 0 && (
-        <div className={cn('space-y-1.5', attenteDelai && 'pt-2 border-t border-border/50')}>
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Lots en cours</p>
+        <div className={cn('space-y-1.5', attenteDelai && 'mt-3 pt-3 border-t border-border/60')}>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Lots en cours</p>
           {cycle.lots.map((l) => (
             <div key={`${l.lot}-${l.idsuivilot}`} className="flex items-center gap-2 text-sm">
               {l.idsuivilot > 0 ? (
@@ -7059,9 +7110,9 @@ function InfoTab({
       {/* Relance — its own container at the top of the tab. The relance
           date is an actionable self-reminder, so it gets a distinct card
           + gold bell icon instead of sitting among the read-only meta. */}
-      {commande.cycle ? (
-        <CycleCard commande={commande} cycle={commande.cycle} isEditing={isEditing} />
-      ) : (
+      {/* With a cycle (Ennoblissement) the relance + délai question sit on top
+          of the Journal tab; the plain relance date stays here otherwise. */}
+      {!commande.cycle && (
       <div className={cn('p-3 rounded-lg border bg-card shadow-sm', isEditing && editSectionClass)}>
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
@@ -7321,170 +7372,30 @@ interface TypeDoc {
   nom: string
 }
 
-// ── Historique tab ─────────────────────────────────────
-// Activity timeline for the commande. Sourced from the legacy
-// `envoi_email` audit table — every email the company sends about a
-// commande gets a row there (one per recipient). The API groups rows
-// from the same send into one event so the timeline shows one entry
-// per real action (bon de commande sent, soumission lot sent, etc.).
+// ── Journal tab ─────────────────────────────────────────
+// lib/journal-commande-sst.ts: the order's gestures + every lot's journal.
 
-type HistoriqueEvent =
-  | {
-      kind: 'email'
-      id: string
-      date: string                   // "YYYY-MM-DD HH:MM:SS"
-      type_doc_id: number
-      type_doc_label: string
-      recipients: Array<{ email: string; societe: string | null }>
-      notes: string | null
-    }
-  | {
-      kind: 'reponse'
-      id: string
-      date: string                   // "YYYY-MM-DD"
-      reponse: number                // 1 = approuvé, 0 = refusé
-      lot: string
-      IDclient: number
-    }
-
-interface HistoriqueResponse {
-  events: HistoriqueEvent[]
-}
-
-// Icon + label per type_doc for email events. Type 14 (avis expédition)
-// is NOT in the server scope today (its IDreference points to
-// `expedition`, not `commande_sous_traitant`) — kept here for a future
-// wiring that walks sst lines → stock_fini → expedition.
-const HISTORIQUE_EMAIL_META: Record<number, {
-  label: string
-  icon: typeof Clock
-  accent: string
-}> = {
-  13: { label: 'Bon de commande envoyé',    icon: AtSign, accent: 'text-blue-700 bg-blue-500/10 border-blue-500/30' },
-  14: { label: 'Avis d’expédition envoyé',  icon: Truck,  accent: 'text-cyan-700 bg-cyan-500/10 border-cyan-500/30' },
-  15: { label: 'Soumission au client',      icon: Send,   accent: 'text-violet-700 bg-violet-500/10 border-violet-500/30' },
-}
-
-function HistoriqueTab({ commandeId }: { commandeId: number }) {
-  const { data, isLoading, error } = useQuery<HistoriqueResponse>({
-    queryKey: ['commande-sst-historique', commandeId],
-    queryFn: () => apiFetch(`/commandes-sous-traitant/${commandeId}/historique`),
+function JournalTab({ commande, isEditing }: { commande: CommandeDetail; isEditing: boolean }) {
+  const commandeId = commande.IDcommande_sous_traitant
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['commande-sst-journal', commandeId],
+    queryFn: () => apiFetch<{ entrees: EntreeJournal[] }>(`/commandes-sous-traitant/${commandeId}/journal`),
+    // Suivi lots, the reception and the Point write it from other screens.
+    staleTime: 0,
+    refetchOnMount: 'always',
   })
-
-  if (isLoading) {
-    return (
-      <div className="space-y-2">
-        {[1, 2, 3].map((i) => <div key={i} className="h-16 bg-muted animate-pulse rounded-lg" />)}
-      </div>
-    )
-  }
-  if (error) {
-    return (
-      <div className="flex flex-col items-center justify-center py-6 text-destructive">
-        <AlertCircle className="h-6 w-6 mb-2" />
-        <p className="text-sm">Erreur de chargement de l’historique</p>
-      </div>
-    )
-  }
-  const events = data?.events ?? []
-  if (events.length === 0) {
-    return (
-      <p className="text-xs text-muted-foreground italic px-2 py-6 text-center">
-        Aucune activité pour le moment.
-      </p>
-    )
-  }
-
+  const etapes = commande.cycle && (commande.phase === 'attente_delai' || commande.cycle.lots.length > 0)
   return (
-    <div className="space-y-2">
-      {events.map((evt) => evt.kind === 'email'
-        ? <EmailEventCard key={evt.id} evt={evt} />
-        : <ReponseEventCard key={evt.id} evt={evt} />
+    <>
+      {etapes && commande.cycle && (
+        <section className="space-y-1.5">
+          <h3 className="text-[10px] font-semibold uppercase tracking-wide text-primary/70 px-0.5">Prochaines étapes</h3>
+          <CycleCard commande={commande} cycle={commande.cycle} isEditing={isEditing} />
+        </section>
       )}
-    </div>
+      <JournalListe entrees={data?.entrees ?? []} isLoading={isLoading} error={error} />
+    </>
   )
-}
-
-function EmailEventCard({ evt }: { evt: Extract<HistoriqueEvent, { kind: 'email' }> }) {
-  const meta = HISTORIQUE_EMAIL_META[evt.type_doc_id]
-    ?? { label: evt.type_doc_label || `type_doc ${evt.type_doc_id}`, icon: Clock, accent: 'text-muted-foreground bg-muted border-border' }
-  const Icon = meta.icon
-  return (
-    <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
-      <div className="flex items-start gap-2">
-        <div className={cn('h-8 w-8 rounded-md flex items-center justify-center flex-shrink-0 border', meta.accent)}>
-          <Icon className="h-4 w-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-sm font-semibold truncate">{meta.label}</p>
-            <span className="text-[10px] text-muted-foreground tabular-nums flex-shrink-0">
-              {formatHistoriqueDate(evt.date)}
-            </span>
-          </div>
-          {evt.notes && (
-            <span className={cn(
-              'inline-flex items-center gap-1 mt-1.5 px-1.5 py-0.5 rounded border text-[11px] font-medium',
-              meta.accent,
-            )}>
-              <Package className="h-3 w-3 flex-shrink-0" />
-              Lot {evt.notes}
-            </span>
-          )}
-          {evt.recipients.length > 0 && (
-            <p className="text-xs text-muted-foreground mt-1.5 break-all">
-              {evt.recipients.map((r) => r.email).join(', ')}
-            </p>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ReponseEventCard({ evt }: { evt: Extract<HistoriqueEvent, { kind: 'reponse' }> }) {
-  // reponse: 1 = approuvé (green check), 0 = refusé (red X).
-  const approved = evt.reponse === 1
-  const meta = approved
-    ? { label: 'Lot approuvé par le client',  Icon: CheckCircle2, accent: 'text-green-700 bg-green-500/10 border-green-500/30' }
-    : { label: 'Lot refusé par le client',    Icon: X,            accent: 'text-red-700 bg-red-500/10 border-red-500/30' }
-  return (
-    <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3">
-      <div className="flex items-start gap-2">
-        <div className={cn('h-8 w-8 rounded-md flex items-center justify-center flex-shrink-0 border', meta.accent)}>
-          <meta.Icon className="h-4 w-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-sm font-semibold truncate">{meta.label}</p>
-            <span className="text-[10px] text-muted-foreground tabular-nums flex-shrink-0">
-              {formatHistoriqueDate(evt.date)}
-            </span>
-          </div>
-          {evt.lot && (
-            <span className={cn(
-              'inline-flex items-center gap-1 mt-1.5 px-1.5 py-0.5 rounded border text-[11px] font-medium',
-              meta.accent,
-            )}>
-              <Package className="h-3 w-3 flex-shrink-0" />
-              Lot {evt.lot}
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-/** "2026-03-09 14:17:36" → "09/03/2026 · 14:17"
- *  "2025-04-16"          → "16/04/2025"          (date-only — used by reponse_soumission). */
-function formatHistoriqueDate(raw: string): string {
-  if (!raw) return '—'
-  const withTime = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/)
-  if (withTime) return `${withTime[3]}/${withTime[2]}/${withTime[1]} · ${withTime[4]}:${withTime[5]}`
-  const dateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-  if (dateOnly) return `${dateOnly[3]}/${dateOnly[2]}/${dateOnly[1]}`
-  return raw
 }
 
 function DocsTab({ commande, isEditing }: { commande: CommandeDetail; isEditing: boolean }) {

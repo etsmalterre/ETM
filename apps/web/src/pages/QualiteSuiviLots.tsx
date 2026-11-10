@@ -53,6 +53,7 @@ import {
   Palette,
   Plus,
   Send,
+  History,
   type LucideIcon,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -80,7 +81,6 @@ import {
   type LotBloque,
 } from '@/components/qualite/SoumissionLotPicker'
 import {
-  CycleCard,
   ETAPE_LOT_META,
   EtapeLotPill,
   LotCycleFooter,
@@ -93,8 +93,10 @@ import {
   type EtapeLot,
   type GesteLot,
   type NatureSoumission,
+  type PrealableLot,
   type SoumissionsLot,
 } from '@/components/qualite/LotCycle'
+import { JournalLotTab } from '@/components/qualite/JournalLot'
 import { TableauMetrageLotDialog } from '@/components/etiquettes/TableauMetrageLotDialog'
 import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { useHasPermission } from '@/contexts/PermissionsContext'
@@ -228,6 +230,8 @@ interface SuiviLotDetail {
   etape?: EtapeLot | null
   /** What still blocks « Valider le lot », in order. */
   prealables?: string[]
+  /** The same with whose move each is (Journal tab, 2026-11-10). */
+  prealables_detail?: PrealableLot[]
   /** The step the flow waits for and since when (2026-11-05). */
   attendu?: AttenduLot | null
   /** The lot came back from the dyer (false: it exists through its coloris soumission, LIVA #1313). */
@@ -403,7 +407,7 @@ export function QualiteSuiviLots() {
   const [isEditing, setIsEditing] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
   const [tableauOpen, setTableauOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<'controles' | 'documents' | 'actions'>('controles')
+  const [activeTab, setActiveTab] = useState<'controles' | 'documents' | 'actions' | 'journal'>('controles')
   const [edit, setEdit] = useState<EditState | null>(null)
   const originalRef = useRef<EditState | null>(null)
 
@@ -855,7 +859,7 @@ export function QualiteSuiviLots() {
             // The lot moves to « soumis » here and on the dye order (a coloris one is created).
             invalidateLotQualityCaches(queryClient)
             queryClient.invalidateQueries({ queryKey: ['suivi-lots-soumission-coloris'] })
-            queryClient.invalidateQueries({ queryKey: ['commande-sst-historique', soumissionLot.cmd] })
+            queryClient.invalidateQueries({ queryKey: ['commande-sst-journal', soumissionLot.cmd] })
           }}
         />
       )}
@@ -1796,14 +1800,6 @@ function TrendChart({
 function RecapSection({ detail }: { detail: SuiviLotDetail }) {
   return (
     <div className="flex-1 min-h-0 overflow-auto space-y-4 scrollbar-transparent pr-1">
-      {detail.etape && (
-        <CycleCard
-          etape={detail.etape}
-          prealables={detail.prealables ?? []}
-          attendu={detail.attendu}
-          clients={detail.clients_rc ?? []}
-        />
-      )}
       {/* Récapitulatif */}
       <div className="rounded-xl border bg-card shadow-sm p-4">
         <div className="flex items-center gap-2 mb-3">
@@ -2065,8 +2061,8 @@ function LotSidebar({
   edit: EditState | null
   canManage: boolean
   onEditField: <K extends keyof EditState>(key: K, value: string) => void
-  activeTab: 'controles' | 'documents' | 'actions'
-  onTabChange: (t: 'controles' | 'documents' | 'actions') => void
+  activeTab: 'controles' | 'documents' | 'actions' | 'journal'
+  onTabChange: (t: 'controles' | 'documents' | 'actions' | 'journal') => void
   onEtatChange: (e: Etat) => void
   etatChanging: boolean
   onGeste: (g: GesteLot) => void
@@ -2079,6 +2075,8 @@ function LotSidebar({
     // Conformité vs the standing quality instructions attached to this lot's
     // sst line in Qualité › Actions.
     { key: 'actions' as const, label: 'Actions', icon: ClipboardCheck },
+    // Who did what on the lot and when, with « Prochaines étapes » on top (2026-11-10).
+    { key: 'journal' as const, label: 'Journal', icon: History },
   ]
   // NB: there is deliberately no "Client" tab. It only ever held the client
   // name (already in the récapitulatif), the client order N° and the réf.
@@ -2119,6 +2117,16 @@ function LotSidebar({
           {activeTab === 'controles' && <ControlesTab detail={detail} isEditing={isEditing} edit={edit} onEditField={onEditField} />}
           {activeTab === 'documents' && <DocumentsTab commandeId={detail.IDcommande_sous_traitant} />}
           {activeTab === 'actions' && <ActionsQualiteTab lotId={detail.IDsuivilot} canManage={canManage} />}
+          {activeTab === 'journal' && (
+            <JournalLotTab
+              lotId={detail.IDsuivilot}
+              etape={detail.etape}
+              prealables={detail.prealables ?? []}
+              etapes={detail.prealables_detail}
+              attendu={detail.attendu}
+              clients={detail.clients_rc ?? []}
+            />
+          )}
         </div>
       </div>
 
