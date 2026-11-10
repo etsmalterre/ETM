@@ -49,6 +49,19 @@ const TYPE_DOC_SOUMISSION = 15
 const MEME_CLIC_MS = 3 * 60 * 1000
 const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
 
+/** What one line of a Point asked the sous-traitant (its section, lib/point-sst/regles.ts SECTIONS). */
+function demandePoint(l: { section: number; date_prevue: string | null; commentaire: string }): string {
+  const c = (l.commentaire ?? '').trim()
+  switch (l.section) {
+    case 1: return l.date_prevue ? `Sortie du ${jjmm(l.date_prevue)} rappelée` : 'Sortie rappelée'
+    case 2: return `Contrôles demandés${c ? ` (${c})` : ''}`
+    case 3: return 'Soumission proposée'
+    case 4: return `Métrages demandés${c ? ` (${c})` : ''}`
+    case 5: return `Délai demandé${c ? ` (${c})` : ''}`
+    default: return 'Études demandées'
+  }
+}
+
 /** Everything known about the order and its lots, newest first. */
 export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsPg()): Promise<EntreeJournalCommande[]> {
   const [entete] = await sql<{ jour: string | null }[]>`
@@ -68,11 +81,14 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
       LEFT JOIN ligne_commande_sous_traitant l ON l.idligne_commande_sous_traitant = e.idligne_commande_sous_traitant
       LEFT JOIN ref_fini rf ON rf.idref_fini = l.idreference AND l.type = 2
       WHERE e.idcommande_sous_traitant = ${idcommande} ORDER BY e.le`,
-    // A Point sent with the order in it (any section, not removed): one line per Point.
-    sql<{ le: Date; jour: string; par: string | null }[]>`
-      SELECT DISTINCT p.envoye_le AS le, to_char(p.jour, 'YYYY-MM-DD') AS jour, p.envoye_par_nom AS par
+    // A Point sent with the order in it (any section, not removed): its lines, grouped per Point below
+    // so the entry says WHAT the Point asked about this order (Vincent 2026-11-10).
+    sql<{ id: number; le: Date; jour: string; par: string | null; section: number; date_prevue: string | null; commentaire: string; reference: string }[]>`
+      SELECT p.idpoint_sst AS id, p.envoye_le AS le, to_char(p.jour, 'YYYY-MM-DD') AS jour, p.envoye_par_nom AS par,
+             l.section, to_char(l.date_prevue, 'YYYY-MM-DD') AS date_prevue, l.commentaire, l.reference
       FROM point_sst_ligne l JOIN point_sst p ON p.idpoint_sst = l.idpoint_sst
-      WHERE p.statut = 'envoye' AND p.envoye_le IS NOT NULL AND NOT l.retiree AND l.idcommande_sous_traitant = ${idcommande}`,
+      WHERE p.statut = 'envoye' AND p.envoye_le IS NOT NULL AND NOT l.retiree AND l.idcommande_sous_traitant = ${idcommande}
+      ORDER BY p.idpoint_sst, l.section, l.ordre`,
     sql<{ id: number; lot: string }[]>`
       SELECT idsuivilot AS id, trim(lot::text) AS lot FROM suivilot WHERE idcommande_sous_traitant = ${idcommande} ORDER BY idsuivilot`,
   ])
@@ -159,8 +175,17 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
     }
   }
 
-  for (const p of points) {
-    out.push(commande({ le: iso(p.le), type: 'point', titre: `Point du ${jjmm(p.jour)} envoyé`, detail: null, par: p.par, auteur: qui(p.par) }))
+  // One entry per Point: what it asked (its sections for this order), the first ask as the title.
+  const parPoint = new Map<number, Array<(typeof points)[number]>>()
+  for (const l of points) parPoint.set(Number(l.id), [...(parPoint.get(Number(l.id)) ?? []), l])
+  for (const lignes of parPoint.values()) {
+    const p = lignes[0]
+    const demandes = [...new Set(lignes.map((l) => demandePoint(l)))]
+    out.push(commande({
+      le: iso(p.le), type: 'point', titre: `${demandes[0]} dans le Point du ${jjmm(p.jour)}`,
+      detail: demandes.length > 1 ? `Aussi : ${demandes.slice(1).map((d) => d.charAt(0).toLowerCase() + d.slice(1)).join(', ')}` : null,
+      par: p.par, auteur: qui(p.par),
+    }))
   }
 
   return out.sort((a, b) => b.le.localeCompare(a.le))

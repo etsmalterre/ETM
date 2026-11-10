@@ -102,6 +102,7 @@ import {
   saveMlNonFactures,
 } from '@/components/shared/MlNonFactures'
 import { cn } from '@/lib/utils'
+import { LineStat, SOULIGNE_INFO } from '@/components/commandes/LineStat'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { mergedNumero, splitMergedNumero } from '@/lib/roll-merge'
 import { childNumero, cutBase, nextCutIndex } from '@/lib/roll-cut'
@@ -1089,20 +1090,22 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
   // pair, the user can click any other row without us yanking them back.
   // A deep link pre-applies the initial key so the first load keeps the linked
   // order instead of snapping to the first row.
-  const lastAppliedListKey = useRef<string | undefined>(linkedCommandeId !== null ? 'open|' : undefined)
+  // The red / amber pills narrow the list too: switching one on lands on the first order of the
+  // narrowed list (Vincent 2026-11-10), like a status or a search.
+  const lastAppliedListKey = useRef<string | undefined>(linkedCommandeId !== null ? 'open||' : undefined)
   useEffect(() => {
     if (commandes === undefined) return
     // Never yank the selection out from under an in-progress edit — that would
     // leave isEditing=true with the draft pointing at a different row. Defer
     // until edit mode ends (isEditing is in the dep list).
     if (isEditing) return
-    const key = `${statusFilter}|${debouncedSearch}`
+    const key = `${statusFilter}|${debouncedSearch}|${urgencyQuery}`
     if (lastAppliedListKey.current === key) return
     lastAppliedListKey.current = key
     // Stacked mode (phone): a null selection IS the list view — never
     // auto-jump into the first row's detail.
     setSelectedId(!isStacked && commandes.length > 0 ? commandes[0].IDcommande_sous_traitant : null)
-  }, [commandes, statusFilter, debouncedSearch, isEditing, isStacked])
+  }, [commandes, statusFilter, debouncedSearch, urgencyQuery, isEditing, isStacked])
 
   // Reset the pieces drawer when the active commande changes — avoids stale
   // drawer state leaking into the next commande's lines.
@@ -2445,253 +2448,264 @@ function LineCard({
   // Rectiligne lines (cols / bandes) count pieces, priced per piece.
   const qtyUnit = isRecti ? 'U' : line.type === 1 ? 'kg' : 'Ml'
 
-  // "Délai initial" indicator: HFSQL stores YYYYMMDD; show only when rescheduled.
   const dateDelaiRaw = line.date_delai && /^\d{8}$/.test(line.date_delai) ? line.date_delai : ''
   const dateLivRaw = line.date_livraison && /^\d{8}$/.test(line.date_livraison) ? line.date_livraison : ''
-  const showDelaiInitial = !!dateDelaiRaw && !!dateLivRaw && dateDelaiRaw !== dateLivRaw
   const dateDemRaw = line.date_demandee && /^\d{8}$/.test(line.date_demandee) ? line.date_demandee : ''
   // Attente délai: bon de commande sent, no délai confirmed yet. The line
-  // shows how long we've been waiting instead of a Livraison date.
+  // shows how long we've been waiting instead of a délai.
   const isAttenteDelai = (line.sstatut ?? '').trim() === 'Attente_Delai'
   const attenteDays = isAttenteDelai ? attenteDelaiDays(bonEnvoyeAt) : null
+  // Delivered (every écru back dyed, Vincent 2026-11-03): the lot is « En contrôle » on its own clock,
+  // the délai no longer alerts. A rectiligne line's sstatut never moves (legacy parity), so the closed
+  // order is its only « done » signal.
+  const livreeLe = line.livree_le && /^\d{8}$/.test(line.livree_le) ? line.livree_le : ''
+  const lineDone = isLineDone(line.sstatut) || (isRecti && linesLocked) || !!livreeLe
+  const retard = Number(line.retard_jours) || 0
+  const TypeIcon = isRecti ? Spline : line.type === 1 ? TmRollIcon : FiniRollIcon
+  const typeLabel = isRecti ? 'Rectiligne' : line.type === 1 ? 'Tricotage' : 'Ennoblissement'
+  // The gauge: what came back against what was ordered — fini Ml at the dyer, écru kg at the knitter.
+  const fait = line.type === 1 ? totalKgEcru : totalMetrageFini
+  const faitPct = qty > 0 ? Math.min(100, (fait / qty) * 100) : 0
 
   return (
     <div
       className={cn(
-        'group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3',
+        'group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3.5',
         border,
         clickable && 'cursor-pointer hover:bg-zinc-100 hover:border-accent/40 transition-colors',
         isDrawerOpen && 'ring-1 ring-accent bg-accent/[0.06] border-accent/50'
       )}
       onClick={clickable ? () => onOpenDrawer(isDrawerOpen ? null : line.IDligne_commande_sous_traitant) : undefined}
     >
+      {/* Top row: icon, « REF - coloris », edit affordances — the client line card's header
+          (Clients › Commandes), so both line cards read alike (Vincent 2026-11-10). */}
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className={cn('h-9 w-9 rounded-md flex items-center justify-center flex-shrink-0', iconBg)}>
-            {isRecti
-              ? <Spline className={cn('h-5 w-5', iconColor)} />
-              : <FiniRollIcon className={cn('h-6 w-6', iconColor)} />}
+        <div className="flex items-center gap-3 min-w-0">
+          <div title={typeLabel} className={cn('h-10 w-10 rounded-lg flex items-center justify-center flex-shrink-0', iconBg)}>
+            <TypeIcon className={cn('h-[22px] w-[22px]', iconColor)} />
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-medium truncate">
+            <p className="text-base font-semibold truncate">
               {line.ref_label || '—'}
-              {line.colori_reference ? <span className="text-muted-foreground"> / {line.colori_reference}</span> : null}
+              {line.colori_reference ? <span className="font-normal text-muted-foreground"> - {line.colori_reference}</span> : null}
             </p>
             {isRecti && line.ref_designation && (
               <p className="text-[11px] text-muted-foreground truncate">Rectiligne · {line.ref_designation}</p>
             )}
           </div>
         </div>
-        <div className="flex items-center gap-1.5 flex-shrink-0">
-          {/* Per-line "En cours / Terminée" pill and toggle dropped — line
-              state now derives from the per-roll état pill surfaced
-              inside the pieces drawer. The commande header pill at the
-              top of the sidebar carries the overall phase. */}
-          {isEditing && !linesLocked && (
-            <div className="flex gap-0.5">
-              {linesEditable && (
-                <Button variant="ghost" size="icon" className="h-6 w-6" onClick={(e) => { e.stopPropagation(); onEdit() }}>
-                  <Pencil className="h-3 w-3" />
-                </Button>
-              )}
-              <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive" onClick={(e) => { e.stopPropagation(); onDelete() }}>
-                <Trash2 className="h-3 w-3" />
+        {isEditing && !linesLocked && (
+          <div className="flex gap-0.5 flex-shrink-0">
+            {linesEditable && (
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={(e) => { e.stopPropagation(); onEdit() }}>
+                <Pencil className="h-3 w-3" />
               </Button>
-            </div>
-          )}
-        </div>
-      </div>
-      {/* Production metrics: Quantité commandée + Prix unitaire are two
-          independent inputs (the employee enters them separately at
-          line-creation), so they get their own rows. Then Affecté (kg +
-          potentiel Ml + €) and Reçu (actual Ml) appear as work progresses.
-          Each row is conditional on its values existing. */}
-      {/* Production metrics grid. Each row is intentionally one line tall
-          (label + value + right-aligned context) so vertical rhythm is
-          uniform — past versions stacked Livraison + Délai initial in the
-          right column of the Quantité row, which inflated that row to
-          ~32px while the others stayed ~20px and made the gap to "Prix
-          unit." feel off. The Délai initial reminder now sits inline next
-          to Livraison as a small italic parenthetical.
-
-          The line's € total (kg × prix) lives in its own footer row at
-          the bottom with a thin top divider — it's a SUMMARY of all the
-          metrics above, not a piece of the Affecté row. */}
-      <div className="mt-1.5 ml-12 space-y-1.5 text-sm tabular-nums">
-        {/* Quantité commandée — nominal Ml. The right side carries the
-            Livraison date; if a rescheduled date exists, the original
-            "(initial: ...)" date appears inline so this row stays a
-            single line. */}
-        {(qty > 0 || dateLivRaw || isAttenteDelai) && (
-          <div className="flex items-center gap-3">
-            <span className="text-xs uppercase tracking-wide text-muted-foreground/80 w-24 flex-shrink-0">Quantité</span>
-            <span className="text-foreground">
-              {qty > 0 ? `${fmtNum(qty, isRecti ? 0 : 1)} ${qtyUnit}` : '—'}
-            </span>
-            {dateLivRaw ? (() => {
-              // A rectiligne line's sstatut never moves (legacy parity: no
-              // reception, no affectation), so the closed order is its only
-              // « done » signal — without it every soldée col order reads late.
-              // Delivered (every écru back dyed, Vincent 2026-11-03): the lot is
-              // « En contrôle » on its own clock, the délai no longer alerts.
-              const livreeLe = line.livree_le && /^\d{8}$/.test(line.livree_le) ? line.livree_le : ''
-              const lineDone = isLineDone(line.sstatut) || (isRecti && linesLocked) || !!livreeLe
-              const lineUrgency = deliveryUrgency(dateLivRaw, lineDone ? 1 : 0)
-              // When the délai is past, surface how overdue it is on a
-              // second line right under the Livraison date.
-              const overdue = lineUrgency === 'late' ? deliveryOverdueDays(dateLivRaw) : 0
-              return (
-                <span
-                  data-tricobot-cible={line.IDligne_commande_sous_traitant}
-                  className={cn(
-                    'ml-auto flex flex-col items-end leading-tight',
-                    lineUrgency === 'late' ? 'text-red-600'
-                      : lineUrgency === 'soon' ? 'text-amber-600'
-                      : 'text-foreground'
-                  )}
-                >
-                  <span className="flex items-baseline gap-2">
-                    <span className="font-medium">Livraison {formatHfsqlDate(dateLivRaw)}</span>
-                    {showDelaiInitial && !(Number(line.retard_jours) > 0) && (
-                      <span className="text-xs italic text-muted-foreground">
-                        (engagement : {formatHfsqlDate(dateDelaiRaw)})
-                      </span>
-                    )}
-                  </span>
-                  {/* The délai pushed back after the engagement (LIVA #1364): its delay, the reports on hover. */}
-                  {Number(line.retard_jours) > 0 && (
-                    <span className="text-xs font-medium text-red-600 cursor-default"
-                      title={(line.reports_delai ?? []).map((r) => `${formatHfsqlDate(r.ancien)} → ${formatHfsqlDate(r.nouveau)} · ${r.imputable === 'malterre' ? 'Malterre' : 'sous-traitant'} · ${r.motif}${r.par ? ` (${r.par})` : ''}`).join('\n') || undefined}>
-                      Retard {line.retard_jours} j sur l’engagement du {formatHfsqlDate(dateDelaiRaw)}
-                    </span>
-                  )}
-                  {livreeLe && (
-                    <span className="text-xs text-muted-foreground">Livrée le {formatHfsqlDate(livreeLe)}</span>
-                  )}
-                  {lineUrgency === 'late' && (
-                    <span className="text-xs font-medium">
-                      {overdue >= 1
-                        ? `Expiré depuis ${overdue} jour${overdue > 1 ? 's' : ''}`
-                        : "Échéance aujourd'hui"}
-                    </span>
-                  )}
-                </span>
-              )
-            })() : isAttenteDelai ? (() => {
-              // Bon de commande sent, no délai confirmed yet — show how long
-              // we've been waiting. Colour mirrors the card urgency frame.
-              const urgency = cycleUrgence !== undefined ? cycleUrgence : attenteDelaiUrgency(dateNotif, bonEnvoyeAt)
-              const label = cycleUrgence !== undefined
-                ? (cycleUrgence === 'late' ? 'Délai à relancer' : 'En attente du délai')
-                : attenteDays == null
-                ? 'En attente du délai'
-                : attenteDays === 0
-                  ? 'En attente du délai'
-                  : `Attente depuis ${attenteDays} jour${attenteDays > 1 ? 's' : ''}`
-              return (
-                <span
-                  data-tricobot-cible={line.IDligne_commande_sous_traitant}
-                  className={cn(
-                    'ml-auto flex items-center gap-1 font-medium',
-                    urgency === 'late' ? 'text-red-600'
-                      : urgency === 'soon' ? 'text-amber-600'
-                      : 'text-muted-foreground'
-                  )}
-                >
-                  <Hourglass className="h-3.5 w-3.5" />
-                  {label}
-                  {dateDemRaw && <span className="text-xs italic font-normal text-muted-foreground">(demandée : {formatHfsqlDate(dateDemRaw)})</span>}
-                </span>
-              )
-            })() : dateDemRaw ? (
-              <span className="ml-auto text-muted-foreground">Demandée pour le {formatHfsqlDate(dateDemRaw)}</span>
-            ) : null}
-          </div>
-        )}
-        {/* Prix unitaire — independent value, €/Kg of finished fabric. */}
-        {prix > 0 && (
-          <div className="flex items-center gap-3">
-            <span className="text-xs uppercase tracking-wide text-muted-foreground/80 w-24 flex-shrink-0">Prix unit.</span>
-            <span className="text-foreground">{fmtNum(prix, 2)} €/{isRecti ? 'U' : 'Kg'}</span>
-            {!isRecti && (
-              <PrixBreakdownInfo
-                commandeId={line.IDcommande_sous_traitant}
-                ligneId={line.IDligne_commande_sous_traitant}
-              />
             )}
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive" onClick={(e) => { e.stopPropagation(); onDelete() }}>
+              <Trash2 className="h-3 w-3" />
+            </Button>
           </div>
         )}
-        {/* Affecté — once écru is linked. Total kg + derived potentiel
-            Ml (green/amber/red vs ordered Ml). The € total is no longer
-            on this row — it has its own footer line below.
-            On a tricoteur line the kg are the écru the knitter has produced
-            for the line so far (LIVA #1138) — the row is the « prévu /
-            reçu » progress: roll count + share of the ordered kg. */}
+      </div>
+
+      {/* Stat row: Commandé · Affecté · Reçu · Prix u. · Montant, the délai pinned right. */}
+      <div className="mt-3 flex flex-wrap items-end gap-x-6 gap-y-1.5">
+        <LineStat label="Commandé" value={qty > 0 ? `${fmtNum(qty, isRecti ? 0 : 1)} ${qtyUnit}` : '—'} />
+        {/* Affecté: the écru linked to the line. At the dyer, its potential Ml (kg × rendement) against
+            the ordered Ml (green ideal, amber tolerance, red off); at the knitter, the rolls produced. */}
         {totalKgEcru > 0 && (
-          <div className="flex items-center gap-3">
-            <span className="text-xs uppercase tracking-wide text-muted-foreground/80 w-24 flex-shrink-0">Affecté</span>
-            <span className="text-foreground">{fmtNum(totalKgEcru, 1)} kg</span>
-            {line.type === 1 && (() => {
-              const nb = Number(line.nb_ecru_lies) || 0
-              const pct = qty > 0 ? (totalKgEcru / qty) * 100 : null
-              // Partial reception is the normal state of a knitting order:
-              // stay neutral until the order is nearly complete, green
-              // inside ±5 % of the ordered kg, red once over-delivered.
-              const pctClass = pct == null ? 'text-muted-foreground'
-                : pct < 95 ? 'text-muted-foreground'
-                : pct <= 105 ? 'text-green-700'
-                : 'text-red-600'
-              return (
-                <span className="text-xs text-muted-foreground flex items-center gap-1.5">
-                  {nb > 0 && <span>{nb} rouleau{nb > 1 ? 'x' : ''}</span>}
-                  {pct != null && (
-                    <span className={cn('font-medium', pctClass)} title={`Commandé : ${fmtNum(qty, 1)} kg`}>
-                      ({fmtNum(pct, 0)} %)
-                    </span>
-                  )}
-                </span>
-              )
-            })()}
-            {mlPotentiel > 0 && (
-              <span
-                className={cn(
-                  'font-medium',
+          <LineStat
+            label={line.type === 1 ? 'Tricoté' : 'Affecté'}
+            value={mlPotentiel > 0 ? (
+              // At the dyer the line is read in Ml: the potential Ml shows, the kg behind it on hover.
+              <Tooltip side="top" content={
+                <div className="w-max min-w-[240px] py-1 font-normal text-xs tabular-nums space-y-1">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">Écru affecté</p>
+                  <div className="flex justify-between gap-4"><span className="text-muted-foreground">Poids</span><span className="font-semibold">{fmtNum(totalKgEcru, 1)} kg</span></div>
+                  <div className="flex justify-between gap-4"><span className="text-muted-foreground">× rendement</span><span>{fmtNum(rendement, 2)} Ml/kg</span></div>
+                  <div className="flex justify-between gap-4 pt-1 border-t border-border/60"><span className="text-muted-foreground">= potentiel</span><span className="font-semibold">~ {fmtNum(mlPotentiel, 1)} Ml</span></div>
+                </div>
+              }>
+                <span className={cn(
+                  SOULIGNE_INFO,
                   potentielStatus === 'green' && 'text-green-700',
                   potentielStatus === 'amber' && 'text-amber-600',
                   potentielStatus === 'red' && 'text-red-600',
-                  potentielStatus === null && 'text-muted-foreground',
+                )}>
+                  ~ {fmtNum(mlPotentiel, 1)} Ml
+                </span>
+              </Tooltip>
+            ) : (
+              <span className="inline-flex items-baseline gap-1.5">
+                {fmtNum(totalKgEcru, 1)} kg
+                {line.type === 1 && Number(line.nb_ecru_lies) > 0 && (
+                  <span className="font-normal text-muted-foreground">· {line.nb_ecru_lies} rouleau{Number(line.nb_ecru_lies) > 1 ? 'x' : ''}</span>
                 )}
-                title={qty > 0 ? `Commandé : ${fmtNum(qty, 1)} Ml` : undefined}
-              >
-                ~ {fmtNum(mlPotentiel, 1)} Ml
               </span>
             )}
-          </div>
+          />
         )}
-        {/* Reçu — once fini rolls have come back. The optional tolerance
-            badge compares the received metrage to the ordered Ml: green
-            inside ±5 %, red outside. Hidden when qty is 0 (can't compute
-            a percentage against a zero baseline). */}
+        {/* Reçu: fini back from the dyer. The gap to the order means something only once the line is
+            delivered (every écru back); before that a half delivery is normal, the gauge says it. */}
         {totalMetrageFini > 0 && (
-          <div className="flex items-center gap-3">
-            <span className="text-xs uppercase tracking-wide text-muted-foreground/80 w-24 flex-shrink-0">Reçu</span>
-            <span className="font-medium text-green-700">{fmtNum(totalMetrageFini, 1)} Ml</span>
-            {qty > 0 && (() => {
-              const diffPct = (totalMetrageFini - qty) / qty * 100
-              const withinTolerance = Math.abs(diffPct) <= 5
-              const sign = diffPct >= 0 ? '+' : '−'
-              return (
-                <span
-                  className={cn(
-                    'text-xs font-medium',
-                    withinTolerance ? 'text-green-700' : 'text-red-600',
-                  )}
-                  title={`Commandé : ${fmtNum(qty, 1)} Ml`}
-                >
-                  ({sign}{fmtNum(Math.abs(diffPct), 1)} %)
-                </span>
+          <LineStat
+            label="Reçu"
+            value={
+              <span className="inline-flex items-baseline gap-1.5">
+                {fmtNum(totalMetrageFini, 1)} Ml
+                {livreeLe && qty > 0 && (() => {
+                  const diffPct = (totalMetrageFini - qty) / qty * 100
+                  return (
+                    <span className={Math.abs(diffPct) <= 5 ? 'text-green-700' : 'text-red-600'} title={`Commandé : ${fmtNum(qty, 1)} Ml`}>
+                      {diffPct >= 0 ? '+' : '−'}{fmtNum(Math.abs(diffPct), 1)} %
+                    </span>
+                  )
+                })()}
+              </span>
+            }
+          />
+        )}
+        {prix > 0 && (
+          <LineStat
+            label="Prix u."
+            value={
+              isRecti ? `${fmtNum(prix, 2)} €/U` : (
+                <PrixBreakdownInfo commandeId={line.IDcommande_sous_traitant} ligneId={line.IDligne_commande_sous_traitant}>
+                  {fmtNum(prix, 2)} €/Kg
+                </PrixBreakdownInfo>
               )
-            })()}
+            }
+          />
+        )}
+        {totalEur > 0 && <LineStat label="Montant" value={`${fmtNum(totalEur, 2)} €`} />}
+
+        {/* The délai, pinned right: the sous-traitant's engagement (LIVA #1364). It only moves later, by a
+            report with its motif (the hover lists them); a delivery ahead of it is read on the reception. */}
+        <div className="ml-auto text-right" data-tricobot-cible={line.IDligne_commande_sous_traitant}>
+          {dateLivRaw ? (() => {
+            const urgency = deliveryUrgency(dateLivRaw, lineDone ? 1 : 0)
+            const overdue = urgency === 'late' ? deliveryOverdueDays(dateLivRaw) : 0
+            const reports = line.reports_delai ?? []
+            const stat = (
+              <LineStat
+                label="Délai"
+                value={formatHfsqlDate(dateLivRaw)}
+                valueClass={cn(SOULIGNE_INFO, urgency === 'late' ? 'text-red-600' : urgency === 'soon' ? 'text-amber-600' : undefined)}
+              >
+                {retard > 0 && dateDelaiRaw && (
+                  <p className="text-[11px] font-medium text-red-600">Retard {retard} j sur l’engagement du {formatHfsqlDate(dateDelaiRaw)}</p>
+                )}
+                {livreeLe && <p className="text-[11px] text-muted-foreground">Livrée le {formatHfsqlDate(livreeLe)}</p>}
+                {overdue >= 1 && (
+                  <p className="text-[11px] font-medium text-red-600">Dépassé de {overdue} jour{overdue > 1 ? 's' : ''} : relancer</p>
+                )}
+              </LineStat>
+            )
+            return (
+              <Tooltip side="top" content={
+                <DelaiSstDetail delai={dateLivRaw} engagement={dateDelaiRaw} retard={retard} livreeLe={livreeLe}
+                  depasse={!livreeLe ? overdue : 0} reports={reports} />
+              }>{stat}</Tooltip>
+            )
+          })() : isAttenteDelai ? (() => {
+            // Bon de commande sent, no délai confirmed yet. Colour mirrors the card urgency frame.
+            const urgency = cycleUrgence !== undefined ? cycleUrgence : attenteDelaiUrgency(dateNotif, bonEnvoyeAt)
+            const label = cycleUrgence !== undefined
+              ? (cycleUrgence === 'late' ? 'À relancer' : 'En attente')
+              : attenteDays ? `Attente ${attenteDays} j` : 'En attente'
+            return (
+              <LineStat
+                label="Délai"
+                value={<span className="inline-flex items-center gap-1"><Hourglass className="h-3 w-3" />{label}</span>}
+                valueClass={urgency === 'late' ? 'text-red-600' : urgency === 'soon' ? 'text-amber-600' : 'text-muted-foreground'}
+              >
+                {dateDemRaw && <p className="text-[11px] text-muted-foreground">Demandé pour le {formatHfsqlDate(dateDemRaw)}</p>}
+              </LineStat>
+            )
+          })() : dateDemRaw ? (
+            <LineStat label="Demandé pour le" value={formatHfsqlDate(dateDemRaw)} valueClass="text-muted-foreground" />
+          ) : null}
+        </div>
+      </div>
+
+      {/* Progress gauge, like the client line's: what came back against the order. */}
+      {!isRecti && qty > 0 && (line.type === 1 || line.type === 2) && (
+        <div className="mt-2.5 flex items-center gap-2">
+          <div className="h-1.5 flex-1 rounded-full bg-zinc-200 overflow-hidden">
+            <div
+              className={cn('h-full rounded-full transition-all', faitPct >= 99.9 || livreeLe ? 'bg-green-500' : 'bg-accent')}
+              style={{ width: `${livreeLe ? 100 : faitPct}%` }}
+            />
+          </div>
+          <span className="text-xs text-muted-foreground tabular-nums flex-shrink-0">
+            {line.type === 1 ? 'Tricoté' : 'Reçu'} {fmtNum(fait, 1)} / {fmtNum(qty, 1)} {qtyUnit}
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** The délai's hover: the date, where it stands against the sous-traitant's engagement (LIVA #1364),
+ *  and every report with its motif and who it is due to — the same card language as a client line's
+ *  « Prête le » hover (Clients › Commandes, DelaiLigneDetail). */
+function DelaiSstDetail({ delai, engagement, retard, livreeLe, depasse, reports }: {
+  /** YYYYMMDD the current délai */
+  delai: string
+  /** YYYYMMDD the first délai given, '' when unknown */
+  engagement: string
+  /** working days the délai is behind the engagement */
+  retard: number
+  /** YYYYMMDD the day every écru came back, '' while not delivered */
+  livreeLe: string
+  /** calendar days past the délai, 0 when not past */
+  depasse: number
+  reports: NonNullable<LigneCommande['reports_delai']>
+}) {
+  const jj = (d: string) => formatHfsqlDate(d)
+  const leJour = (iso: string) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('fr-FR') }
+  return (
+    <div className="w-max min-w-[260px] max-w-[360px] py-1 font-normal">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">Délai</p>
+      <p className="text-sm font-semibold tabular-nums">{jj(delai)}</p>
+      {livreeLe ? (
+        <p className="text-xs text-green-700">Livrée le {jj(livreeLe)}</p>
+      ) : depasse >= 1 ? (
+        <p className="text-xs font-medium text-red-600">Dépassé de {depasse} jour{depasse > 1 ? 's' : ''} : à relancer</p>
+      ) : null}
+
+      <div className="mt-2 pt-2 border-t border-border/60 space-y-1 text-xs tabular-nums">
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-muted-foreground">Engagement initial</span>
+          <span className="font-semibold">{engagement ? jj(engagement) : '—'}</span>
+        </div>
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-muted-foreground">Retard sur l’engagement</span>
+          <span className={cn('font-semibold', retard > 0 ? 'text-red-600' : 'text-green-700')}>
+            {retard > 0 ? `${retard} j ouvré${retard > 1 ? 's' : ''}` : 'Aucun'}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-2 pt-2 border-t border-border/60">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">
+          {reports.length === 0 ? 'Aucun report' : `Report${reports.length > 1 ? 's' : ''} (${reports.length})`}
+        </p>
+        {reports.length > 0 && (
+          <div className="mt-1.5 space-y-2">
+            {reports.map((r, i) => (
+              <div key={`${r.le}-${i}`} className="text-xs">
+                <div className="flex items-center gap-2 tabular-nums">
+                  <span className="font-semibold">{jj(r.ancien).slice(0, 5)} → {jj(r.nouveau).slice(0, 5)}</span>
+                  <span className={cn('rounded-full border px-1.5 py-0 text-[10px] font-medium',
+                    r.imputable === 'malterre' ? 'border-amber-500/30 bg-amber-500/10 text-amber-800' : 'border-sky-500/25 bg-sky-500/10 text-sky-700')}>
+                    {r.imputable === 'malterre' ? 'Dû à Malterre' : 'Dû au sous-traitant'}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-foreground/90 whitespace-pre-wrap">{r.motif}</p>
+                <p className="text-[11px] text-muted-foreground">{[r.par, leJour(r.le)].filter(Boolean).join(' · ')}</p>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -2730,7 +2744,9 @@ interface PrixBreakdownData {
 }
 type PrixBreakdownResponse = PrixBreakdownData | { enabled: false; reason: string }
 
-function PrixBreakdownInfo({ commandeId, ligneId }: { commandeId: number; ligneId: number }) {
+/** The unit price, dotted-underlined: its hover breaks the auto-calc down (the dotted underline says
+ *  « there is a detail », the app's convention instead of an « i » icon, Vincent 2026-11-10). */
+function PrixBreakdownInfo({ commandeId, ligneId, children }: { commandeId: number; ligneId: number; children: React.ReactNode }) {
   const [hovering, setHovering] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
@@ -2765,10 +2781,10 @@ function PrixBreakdownInfo({ commandeId, ligneId }: { commandeId: number; ligneI
         onFocus={() => setHovering(true)}
         onBlur={() => setHovering(false)}
         onClick={(e) => e.stopPropagation()}
-        className="text-muted-foreground/60 hover:text-accent transition-colors cursor-help"
+        className={cn(SOULIGNE_INFO, 'cursor-help font-semibold tabular-nums')}
         aria-label="Voir le détail du calcul"
       >
-        <Info className="h-3 w-3" />
+        {children}
       </button>
       {hovering && pos && createPortal(
         <div
@@ -6541,7 +6557,9 @@ function dateDonnee(l: Pick<LigneCommande, 'date_livraison' | 'date_delai'>): st
 
 /** Under the line form's date: the first délai given is an engagement (said once, when it is
  *  being given); a later one is a report — why, and who it is due to (same shape as a client
- *  line's report, ClientsCommandes). An earlier date needs nothing. */
+ *  line's report, ClientsCommandes). An earlier date is refused by the API (Vincent 2026-11-10: the
+ *  engagement stays true, a delivery ahead of it is read on the reception) except to correct a date
+ *  given the same day; said here before the save, the API has the last word. */
 function EngagementDelai({ delaiDonne, nouveau, engagement, report, setReport }: {
   /** YYYYMMDD the date the line holds, '' for none (a new line) */
   delaiDonne: string
@@ -6560,6 +6578,14 @@ function EngagementDelai({ delaiDonne, nouveau, engagement, report, setReport }:
         Ce délai est un engagement du sous-traitant : le repousser ensuite demandera un motif.
       </p>
     ) : null
+  }
+  if (saisi && nouveau < delaiDonne) {
+    return (
+      <p className="flex items-start gap-1.5 text-xs font-medium text-red-700">
+        <Info className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+        Le délai du {formatHfsqlDate(delaiDonne)} est un engagement du sous-traitant : il ne s’avance pas (sauf pour corriger une saisie du jour). Une livraison en avance se lit à la réception.
+      </p>
+    )
   }
   if (!saisi || nouveau <= delaiDonne) return null
   return (

@@ -72,6 +72,7 @@ import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { cn } from '@/lib/utils'
+import { LineStat, SOULIGNE_INFO } from '@/components/commandes/LineStat'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
@@ -2331,23 +2332,6 @@ function RouleauRow({ label, value, strong }: { label: string; value: string; st
 }
 
 /** A figure with a hover (Vincent 2026-10-29): dotted underline, the card's own cursor kept (the hand). */
-const SOULIGNE_INFO = 'underline decoration-dotted decoration-muted-foreground/60 underline-offset-2'
-
-function LineStat({ label, value, className, valueClass, title }: {
-  label: string
-  value: string
-  className?: string
-  valueClass?: string
-  title?: string
-}) {
-  return (
-    <div className={className} title={title}>
-      <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">{label}</p>
-      <p className={cn('text-xs font-semibold tabular-nums', valueClass)}>{value}</p>
-    </div>
-  )
-}
-
 /** « Commande complète »: the order leaves when its last line still to ship is ready, i.e. the latest D
  *  among them (doctrine des délais §5 bis). Null when one of them has no date yet. */
 function departCommande(lignes: LigneCommande[]): string | null {

@@ -7,7 +7,13 @@
 //   - pushing the date LATER afterwards is a « report »: a motif and who it is due
 //     to (the sous-traitant, or Malterre: yarn not there, client undecided…),
 //     recorded as a `report_delai` row of delai_sst_evenement (append-only,
-//     migration 0073). Bringing it earlier needs nothing: good news is free;
+//     migration 0073);
+//   - bringing it EARLIER is refused (Vincent 2026-11-10): the engagement stays
+//     true, a delivery ahead of it is read from the reception (Qualité de
+//     service), never by moving the délai — 30 délais had been set to « the day
+//     the rolls came in », which turned a half delivery red. Two exceptions: the
+//     bon de commande is not out yet (Non_Envoye, the date is hypothetical), and
+//     a typo the same day the date was given (delai_recu / report_delai today);
 //   - the delay a line carries = working days from the engagement to the current
 //     date, in the sous-traitant's own calendar. Clients › Commandes prints it
 //     (« retard MATEL 3 j ») and reads its earliest date from the current délai.
@@ -38,6 +44,36 @@ export function estUnReportDelai(dateLivraison: unknown, dateDelai: unknown, nou
   const avant = dateDeReference(dateLivraison, dateDelai)
   const apres = ymd(nouvelle)
   return !!avant && !!apres && apres > avant
+}
+
+/** True when writing `nouvelle` brings a given délai earlier (refused, see the
+ *  header). Clearing the date is not. */
+export function estUneAvanceDelai(dateLivraison: unknown, dateDelai: unknown, nouvelle: unknown): boolean {
+  const avant = dateDeReference(dateLivraison, dateDelai)
+  const apres = ymd(nouvelle)
+  return !!avant && !!apres && apres < avant
+}
+
+export const MESSAGE_AVANCE_DELAI = (avant: string): string =>
+  `Le délai du ${avant.slice(6, 8)}/${avant.slice(4, 6)}/${avant.slice(0, 4)} est un engagement du sous-traitant : il ne s’avance pas. Une livraison en avance se lit à la réception.`
+
+/** The line's délai was given today (« délai reçu » or a report): a typo may
+ *  still be corrected downwards. */
+export async function delaiDonneAujourdhui(idligne: number, sql: Sql = mpsPg()): Promise<boolean> {
+  const [r] = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM delai_sst_evenement
+     WHERE idligne_commande_sous_traitant = ${idligne} AND type IN ('delai_recu', 'report_delai')
+       AND (le AT TIME ZONE 'Europe/Paris')::date = (now() AT TIME ZONE 'Europe/Paris')::date`
+  return Number(r?.n ?? 0) > 0
+}
+
+/** The one check every writer of a sst line's délai runs (ETM line PUT, TRM's
+ *  délai on a mirror, Tricobot): the refusal message, or null when allowed. */
+export async function refusAvanceDelai(idligne: number, cur: { date_livraison: unknown; date_delai: unknown; sstatut: unknown }, nouvelle: unknown, sql: Sql = mpsPg()): Promise<string | null> {
+  if (!estUneAvanceDelai(cur.date_livraison, cur.date_delai, nouvelle)) return null
+  if (String(cur.sstatut ?? '').trim() === 'Non_Envoye') return null
+  if (await delaiDonneAujourdhui(idligne, sql)) return null
+  return MESSAGE_AVANCE_DELAI(dateDeReference(cur.date_livraison, cur.date_delai))
 }
 
 /** Working days the current délai is behind the engagement (0 when on time or

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dateDeReference, estUnReportDelai, lireReport, retardDelai } from './report-delai-sst.js'
+import { dateDeReference, estUneAvanceDelai, estUnReportDelai, lireReport, retardDelai } from './report-delai-sst.js'
 
 describe('report de délai sous-traitant (LIVA #1364)', () => {
   it('the first date and an earlier one are free; a later one is a report', () => {
@@ -8,6 +8,14 @@ describe('report de délai sous-traitant (LIVA #1364)', () => {
     expect(estUnReportDelai('20261110', '20261110', '20261110')).toBe(false)
     expect(estUnReportDelai('20261110', '20261105', '20261112')).toBe(true)
     expect(estUnReportDelai('20261110', '', '2026-11-12')).toBe(true)
+  })
+  it('bringing a given délai earlier is an advance (refused); the first date and clearing are not', () => {
+    expect(estUneAvanceDelai('20261118', '20261118', '20261110')).toBe(true)
+    expect(estUneAvanceDelai('', '20261118', '20261110')).toBe(true)
+    expect(estUneAvanceDelai('', '', '20261110')).toBe(false)
+    expect(estUneAvanceDelai('20261118', '20261118', '')).toBe(false)
+    expect(estUneAvanceDelai('20261118', '20261118', '20261118')).toBe(false)
+    expect(estUneAvanceDelai('20261118', '20261118', '20261120')).toBe(false)
   })
   it('a cleared date is compared with the engagement', () => {
     expect(dateDeReference('', '20261110')).toBe('20261110')

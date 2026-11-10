@@ -96,7 +96,7 @@ import { compteursParCommande, ligneModifiee } from '../lib/agents/flux-ennoblis
 import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
 import { fermetures } from '../lib/delais-standards.js'
-import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, reportsDelaiParLigne, retardDelai } from '../lib/report-delai-sst.js'
+import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, refusAvanceDelai, reportsDelaiParLigne, retardDelai } from '../lib/report-delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { normaliserLot, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
@@ -5087,7 +5087,12 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     let statutApres = (cur.sstatut ?? '').trim()
     let delaiApres: string | null = null
     // A date pushed later than the one given is a report (LIVA #1364): motif +
-    // who it is due to, or refused. The first date and an earlier one are free.
+    // who it is due to, or refused. The first date is free; an earlier one is
+    // refused (the engagement stays true, Vincent 2026-11-10).
+    if (d.date_livraison !== undefined) {
+      const avance = await refusAvanceDelai(lineId, cur, d.date_livraison)
+      if (avance) { res.status(409).json({ error: 'delai_avance', message: avance }); return }
+    }
     const reportAvant = dateDeReference(cur.date_livraison, cur.date_delai)
     const report = d.date_livraison !== undefined && estUnReportDelai(cur.date_livraison, cur.date_delai, d.date_livraison)
       ? lireReport((req.body as Record<string, unknown>)?.report)

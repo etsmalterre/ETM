@@ -69,6 +69,7 @@ import { getUserEmail } from '../lib/user-emails.js'
 import { loadEtmAffectation } from '../lib/affectation-fil-trm.js'
 import { horsRefParOf, type FilHorsRef } from '../lib/hors-ref-trm.js'
 import { noterDelaiRecu } from '../lib/delai-sst.js'
+import { refusAvanceDelai } from '../lib/report-delai-sst.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 
 export const commandesTrmRouter: RouterType = Router()
@@ -1317,6 +1318,23 @@ commandesTrmRouter.put('/lignes/:lineId/delai', async (req: Request, res: Respon
     if (!g) { res.status(404).json({ error: 'Commande not found' }); return }
     // A mirror is fine here (that is the point); a soldée order is not.
     if (refuseIfSoldee(res, g)) return
+
+    // On a mirror the date is ETM's sous-traitant délai too: never brought
+    // earlier once given (lib/report-delai-sst.ts, Vincent 2026-11-10). Checked
+    // before either ledger is written.
+    if (g.IDcommande_ETM > 0) {
+      const link = await query<{ IDligne_commande_ETM: number | null }>(
+        `SELECT IDligne_commande_ETM FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
+      )
+      const sstId = n(link[0]?.IDligne_commande_ETM)
+      if (sstId > 0) {
+        const [c] = await query<{ date_livraison: string | null; date_delai: string | null; sstatut: string | null }>(
+          `SELECT date_livraison, date_delai, sstatut FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant = ${sstId}`,
+        )
+        const avance = c ? await refusAvanceDelai(sstId, c, nextLiv) : null
+        if (avance) { res.status(409).json({ error: 'delai_avance', message: avance }); return }
+      }
+    }
 
     await query(
       `UPDATE ligne_commande_client SET date_livraison = '${nextLiv}' WHERE IDligne_commande_client = ${lineId}`,
