@@ -1907,6 +1907,35 @@ CREATE TABLE coloris_fini_reprise (
 ${grantApi('SELECT, INSERT', 'coloris_fini_reprise')}
 `,
   },
+  {
+    // A sous-traitant's délai is an engagement (LIVA #1364, Vincent 2026-11-10,
+    // lib/report-delai-sst.ts): the first date a line gets is frozen in
+    // ligne_commande_sous_traitant.date_delai, and every later date is a
+    // « report_delai » event with its motif and who it is due to (old date in
+    // ancien_delai, new one in delai_donne). The capture-once rule only froze a
+    // date typed at creation, so every line born without one (all 216 dyer
+    // lines since June) had no engagement: backfilled from the first délai
+    // received (#1314), else the current date (no history before it).
+    name: '0073_report_delai_sst',
+    sql: `
+ALTER TABLE delai_sst_evenement DROP CONSTRAINT delai_sst_evenement_type_check;
+ALTER TABLE delai_sst_evenement ADD CONSTRAINT delai_sst_evenement_type_check
+  CHECK (type IN ('relance', 'report', 'delai_recu', 'report_delai'));
+ALTER TABLE delai_sst_evenement ADD COLUMN ancien_delai date;
+ALTER TABLE delai_sst_evenement ADD CONSTRAINT delai_sst_evenement_report_delai_check
+  CHECK (type <> 'report_delai' OR (idligne_commande_sous_traitant > 0 AND delai_donne IS NOT NULL
+    AND ancien_delai IS NOT NULL AND motif IS NOT NULL AND imputable IS NOT NULL));
+CREATE INDEX delai_sst_evenement_ligne ON delai_sst_evenement (idligne_commande_sous_traitant, le)
+  WHERE idligne_commande_sous_traitant > 0;
+UPDATE ligne_commande_sous_traitant l
+   SET date_delai = COALESCE((
+         SELECT e.delai_donne FROM delai_sst_evenement e
+          WHERE e.idligne_commande_sous_traitant = l.idligne_commande_sous_traitant
+            AND e.type = 'delai_recu' AND e.delai_donne IS NOT NULL
+          ORDER BY e.le, e.id LIMIT 1), l.date_livraison)
+ WHERE l.date_delai IS NULL AND l.date_livraison IS NOT NULL;
+`,
+  },
 ]
 
 export interface MigrationStatus {

@@ -212,6 +212,8 @@ interface AuPlusTot {
     libelle: string; du: string; au: string; jours: number; estime?: boolean
     /** the partner holding the matter on a launched order, its délai, and whether that délai is past */
     partenaire?: string | null; delai?: string | null; depasse?: boolean
+    /** that partner's first délai on its order, and how many working days its current one is behind (LIVA #1364) */
+    engagement?: string | null; retard?: number
   }[]
   /** part of the quantity has no matter reserved */
   sansMatiere: boolean
@@ -277,12 +279,21 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
             <div className="mt-1.5 space-y-1">
               {/* Latest step on top, read from the date down to today (Vincent 2026-10-29). */}
               {[...a.etapes].reverse().map((e) => (
-                <div key={e.libelle} className="flex items-center gap-2 text-xs tabular-nums">
+                <div key={e.libelle}>
+                <div className="flex items-center gap-2 text-xs tabular-nums">
                   {/* A partner past its délai: red swatch, read from that délai to today (« if it delivers today »). */}
                   <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: e.depasse ? COULEUR_RETARD : (COULEUR_ETAPE[e.libelle] ?? '#e4e4e7'), boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
                   <span className="flex-1">{e.libelle}{e.estime && <span className="text-muted-foreground"> (estimé)</span>}</span>
                   <span className="text-muted-foreground">{formatHfsqlDate(e.depasse && e.delai ? e.delai : e.du).slice(0, 5)} → {formatHfsqlDate(e.au).slice(0, 5)}</span>
                   <span className={cn('w-10 text-right font-semibold', e.jours < 0 && 'text-amber-700')}>{fmtJours(e.jours)}</span>
+                </div>
+                {/* The partner pushed its délai back after its engagement (LIVA #1364). */}
+                {!!e.retard && e.retard > 0 && (
+                  <p className="pl-[18px] text-[11px] font-medium text-red-600">
+                    Retard {e.libelle === 'Tricotage' ? 'tricoteur' : 'ennoblisseur'}{e.partenaire ? ` ${e.partenaire}` : ''} : {fmtJours(e.retard)}
+                    {e.engagement && <span className="font-normal text-muted-foreground"> (engagement {formatHfsqlDate(e.engagement).slice(0, 5)})</span>}
+                  </p>
+                )}
                 </div>
               ))}
               <p className="pt-0.5 text-[10px] text-muted-foreground">En jours ouvrés, fermetures des partenaires comprises</p>

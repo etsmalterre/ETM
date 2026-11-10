@@ -98,6 +98,12 @@ describe('délai au plus tôt (doctrine des délais §5 ter)', () => {
       expect(d.etapes[0]).toMatchObject({ libelle: 'Ennoblissement', au: '20261102', depasse: true, jours: 0 })
       expect(d.date).toBe('20261109')
     })
+    it('a délai pushed back carries its delay on the engagement (LIVA #1364: « retard MATEL 3 j »)', () => {
+      const d = delaiAuPlusTot(base({ ecru: 1000, enCours: true, ecruChezEnnoblisseur: [{ quantite: 1000, partenaire: 'MATEL', delai: '20261113', engagement: '20261110' }] }))!
+      expect(d.etapes[0]).toMatchObject({ engagement: '20261110', retard: 2 }) // 11/11 off
+      const atemps = delaiAuPlusTot(base({ ecru: 1000, enCours: true, ecruChezEnnoblisseur: [{ quantite: 1000, partenaire: 'MATEL', delai: '20261110', engagement: '20261110' }] }))!
+      expect(atemps.etapes[0].retard).toBeUndefined()
+    })
     it('a dyer order without délai: its standard from today, estimated', () => {
       const d = delaiAuPlusTot(base({ ecru: 1000, enCours: true, ecruChezEnnoblisseur: [{ quantite: 1000, partenaire: 'MATEL', delai: null }] }))!
       expect(d.etapes[0]).toMatchObject({ estime: true, jours: 15, au: '20261124' })

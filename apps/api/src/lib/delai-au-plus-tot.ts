@@ -40,6 +40,11 @@ export interface EtapeDelai {
   delai?: string | null
   /** the délai is past: the partner must be chased (the step is « if it delivers today ») */
   depasse?: boolean
+  /** YYYYMMDD the partner's FIRST délai on that order, its engagement (LIVA #1364) */
+  engagement?: string | null
+  /** working days the current délai is behind that engagement (« retard MATEL 3 j »), in the partner's
+   *  calendar; absent / 0 = on time */
+  retard?: number
 }
 
 export interface DelaiAuPlusTot {
@@ -102,14 +107,14 @@ export interface EntreeDelai {
   /** of `ecru`, the pieces already at a dyer on a launched order: its délai, not a standard from today */
   ecruChezEnnoblisseur?: MatiereChezPartenaire[]
   /** the knitting order(s) already launched for `tricotage`: their latest délai */
-  tricotageLance?: { partenaire: string | null; delai: string | null } | null
+  tricotageLance?: { partenaire: string | null; delai: string | null; engagement?: string | null } | null
   /** the order is validated (« En cours »): no Malterre reserve, the line reads in margin / delay against
    *  its engagement (Vincent 2026-11-02: the reserve is a préparation concept) */
   enCours?: boolean
 }
 
 /** Matter at a partner on a launched order, in the line's unit. */
-export interface MatiereChezPartenaire { quantite: number; partenaire: string | null; delai: string | null }
+export interface MatiereChezPartenaire { quantite: number; partenaire: string | null; delai: string | null; engagement?: string | null }
 
 const pos = (x: number) => (Number.isFinite(x) && x > 0 ? x : 0)
 
@@ -154,14 +159,20 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
   /** A step at a partner on a launched order: ends on its délai, or today when the délai is past (« if it
    *  delivers today », Vincent 2026-11-02) — the user then gets a new délai and the date follows. Without
    *  a délai: the partner's standard from today, as an estimate. */
-  const chezPartenaire = (libelle: string, m: { partenaire: string | null; delai: string | null }, standard: number, ferm: Periode[]): EtapeDelai => {
+  const chezPartenaire = (libelle: string, m: { partenaire: string | null; delai: string | null; engagement?: string | null }, standard: number, ferm: Periode[]): EtapeDelai => {
     const delai = m.delai && /^\d{8}$/.test(m.delai) ? m.delai : null
     if (!delai) {
       const au = ajouterJoursOuvres(e.aujourdhui, standard, ferm)
       return { libelle, du: e.aujourdhui, au, jours: standard, estime: true, partenaire: m.partenaire, delai: null }
     }
     const au = delai > e.aujourdhui ? delai : e.aujourdhui
-    return { libelle, du: e.aujourdhui, au, jours: joursOuvresEntre(e.aujourdhui, au, ferm), partenaire: m.partenaire, delai, depasse: delai < e.aujourdhui }
+    // How late the partner already is on its own engagement (its reports, LIVA #1364).
+    const engagement = m.engagement && /^\d{8}$/.test(m.engagement) ? m.engagement : null
+    const retard = engagement && delai > engagement ? joursOuvresEntre(engagement, delai, ferm) : 0
+    return {
+      libelle, du: e.aujourdhui, au, jours: joursOuvresEntre(e.aujourdhui, au, ferm), partenaire: m.partenaire, delai, depasse: delai < e.aujourdhui,
+      ...(engagement ? { engagement } : {}), ...(retard > 0 ? { retard } : {}),
+    }
   }
   const suite = (depart: string, avecTricot: boolean, tricotLance?: EtapeDelai): EtapeDelai[] => {
     const out: EtapeDelai[] = []

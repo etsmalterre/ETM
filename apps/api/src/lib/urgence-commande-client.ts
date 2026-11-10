@@ -105,6 +105,10 @@ export interface LigneUrgence {
   /** the earliest ready date if the line is launched on lancementLe (lib/delai-au-plus-tot.ts from that
    *  day, YYYYMMDD); after dateLivraison = planned too late */
   preteSiLanceLe?: string | null
+  /** état tricotage / ennoblisseur: the earliest ready date from where the matter is now, the partners'
+   *  current délais included (lib/delai-au-plus-tot.ts, YYYYMMDD); after dateLivraison = the client's date
+   *  can no longer be held (LIVA #1364) */
+  preteAuPlusTot?: string | null
 }
 
 /** client.relance_sur_appel → the delay the rule uses: 0, empty or invalid = the default. */
@@ -123,7 +127,7 @@ export function commandeIncomplete(lignes: readonly Pick<LigneUrgence, 'etat' | 
   return lignes.some(enProduction)
 }
 
-type Action = 'planif_tardive' | 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
+type Action = 'intenable' | 'planif_tardive' | 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
   | 'relancer_fournisseur' | 'fil_sans_date'
   | 'etude_labo' | 'etude_client' | 'etude_acceptee' | 'etude_annulee'
 
@@ -222,10 +226,18 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     return { niveau: 'rouge', action: 'lancer', jours: j, date }
   }
   // tricotage / ennoblisseur: someone else acts; only a passed délai is ours to chase.
-  return j < 0 ? { niveau: 'rouge', action: l.etat, jours: j, date } : null
+  if (j < 0) return { niveau: 'rouge', action: l.etat, jours: j, date }
+  // …or a partner's délai (its reports, LIVA #1364) that leaves no margin: the client's date cannot be held,
+  // ours to tell the client and move the line's date (a report, imputable to the partner).
+  const prete = ymd(l.preteAuPlusTot)
+  if ((l.etat === 'tricotage' || l.etat === 'ennoblisseur') && prete && prete > date) {
+    return { niveau: 'rouge', action: 'intenable', jours: j, date }
+  }
+  return null
 }
 
 const LIBELLE: Record<Action, [string, string]> = {
+  intenable: ['ligne : date client intenable, prévenir le client', 'lignes : date client intenable, prévenir le client'],
   planif_tardive: ['ligne planifiée trop tard', 'lignes planifiées trop tard'],
   lancer: ['ligne à lancer', 'lignes à lancer'],
   commander_fil: ['ligne : fil à commander', 'lignes : fil à commander'],

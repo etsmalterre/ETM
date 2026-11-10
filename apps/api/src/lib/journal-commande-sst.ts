@@ -14,7 +14,7 @@
 
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
-import { lireJournalLot, type EntreeJournal } from './journal-lot.js'
+import { lireJournalLot, type AuteurType, type EntreeJournal } from './journal-lot.js'
 
 export type EvenementCommandeSst = 'creation' | 'bon_commande' | 'etat'
 
@@ -61,9 +61,9 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
     sql<{ le: Date; type_doc: number; adresse: string | null; notes: string | null }[]>`
       SELECT date AS le, idtype_doc AS type_doc, adresse, notes FROM envoi_email
       WHERE idreference = ${idcommande} AND idtype_doc IN (${TYPE_DOC_BON}, ${TYPE_DOC_SOUMISSION}) ORDER BY date`,
-    sql<{ type: string; le: Date; canal: string | null; note: string | null; echeance: string | null; motif: string | null; imputable: string | null; delai: string | null; par: string | null; ref: string | null }[]>`
+    sql<{ type: string; le: Date; canal: string | null; note: string | null; echeance: string | null; motif: string | null; imputable: string | null; delai: string | null; ancien: string | null; par: string | null; ref: string | null }[]>`
       SELECT e.type, e.le, e.canal, e.note, to_char(e.echeance, 'YYYY-MM-DD') AS echeance, e.motif, e.imputable,
-             to_char(e.delai_donne, 'YYYY-MM-DD') AS delai, e.par, rf.reference AS ref
+             to_char(e.delai_donne, 'YYYY-MM-DD') AS delai, to_char(e.ancien_delai, 'YYYY-MM-DD') AS ancien, e.par, rf.reference AS ref
       FROM delai_sst_evenement e
       LEFT JOIN ligne_commande_sous_traitant l ON l.idligne_commande_sous_traitant = e.idligne_commande_sous_traitant
       LEFT JOIN ref_fini rf ON rf.idref_fini = l.idreference AND l.type = 2
@@ -80,7 +80,7 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
   const out: EntreeJournalCommande[] = []
   const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : new Date(d).toISOString())
   const t = (d: Date | string) => new Date(d).getTime()
-  const qui = (par: string | null) => (par ? 'personne' as const : 'inconnu' as const)
+  const qui = (par: string | null): AuteurType => (par ? 'personne' : 'inconnu')
   const commande = (e: Omit<EntreeJournalCommande, 'lot' | 'idsuivilot'>): EntreeJournalCommande => ({ ...e, lot: null, idsuivilot: null })
 
   // The order's own gestures; a bon de commande row only lends its author to
@@ -137,6 +137,13 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
       out.push(commande({
         le: iso(d.le), type: 'relance', titre: `Délai relancé ${d.canal === 'telephone' ? 'par téléphone' : 'par e-mail'}`,
         detail: d.note, par: d.par, auteur: qui(d.par),
+      }))
+    } else if (d.type === 'report_delai') {
+      // A délai pushed back after it was given (LIVA #1364).
+      out.push(commande({
+        le: iso(d.le), type: 'report', titre: `Délai repoussé du ${d.ancien ? jjmm(d.ancien) : '—'} au ${d.delai ? jjmm(d.delai) : '—'}`,
+        detail: [d.ref?.trim() || null, d.imputable === 'malterre' ? 'De notre fait' : 'Du fait du sous-traitant', d.motif].filter(Boolean).join(' — '),
+        par: d.par, auteur: d.par === 'Tricobot' ? 'tricobot' : qui(d.par),
       }))
     } else if (d.type === 'report') {
       out.push(commande({

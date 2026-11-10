@@ -301,6 +301,18 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
       coloriId: Number(l.IDcolori) || 0, unite: Number(l.unite) || 0, quantite: Number(l.quantite) || 0,
       lancementLe: lancements.get(Number(l.IDligne_commande_client))?.date,
     })))
+  // A line at a partner whose délai leaves no margin is red now (LIVA #1364): its earliest date from
+  // where the matter is, the partners' current délais included. Only lines in production: a partner
+  // order exists only on a validated order, so no Malterre reserve is counted.
+  const enProd = lignes.filter((l) => {
+    const f = faits.get(Number(l.IDligne_commande_client))
+    const etat = f ? statutLigneClient(f, '').etat : null
+    return etat === 'tricotage' || etat === 'ennoblisseur'
+  })
+  const auPlusTot = enProd.length === 0 ? new Map<number, DelaiAuPlusTot | null>() : await auPlusTotLignes(enProd.map((l) => ({
+    id: Number(l.IDligne_commande_client) || 0, typeKind: Number(l.type_kind) || 0, refId: Number(l.IDreference) || 0,
+    coloriId: Number(l.IDcolori) || 0, unite: Number(l.unite) || 0, quantite: Number(l.quantite) || 0,
+  })))
   const parCommande = new Map<number, LigneUrgence[]>()
   for (const l of lignes) {
     const f = faits.get(Number(l.IDligne_commande_client))
@@ -318,6 +330,7 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
       lancementLe: lancements.get(Number(l.IDligne_commande_client))?.date ?? null,
       lancementEtape: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
       preteSiLanceLe: pretes.get(Number(l.IDligne_commande_client)) ?? null,
+      preteAuPlusTot: auPlusTot.get(Number(l.IDligne_commande_client))?.date ?? null,
     })
     parCommande.set(cid, arr)
   }
@@ -1811,6 +1824,14 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
           agg, filParLigne.get(Number(l.IDligne_commande_client)) ?? 0, f, rouleaux.get(Number(l.IDligne_commande_client)), partenaires, lance,
           null, ordresParLigne.get(Number(l.IDligne_commande_client)), commandeEnCours)?.date ?? null
         : null
+      // The earliest date from where the matter is now (the hover of the line's date, and its colour: a
+      // partner's délai that leaves no margin is red, LIVA #1364).
+      const dateLigne = typeof l.date_livraison === 'string' && /^\d{8}$/.test(l.date_livraison) ? l.date_livraison : null
+      const auPlusTotLigne = partenaires
+        ? auPlusTotDe({ id: Number(l.IDligne_commande_client), typeKind, refId, coloriId: colId, unite: Number(l.unite) || 0, quantite: qty },
+          agg, filParLigne.get(Number(l.IDligne_commande_client)) ?? 0, f, rouleaux.get(Number(l.IDligne_commande_client)), partenaires, today,
+          dateLigne, ordresParLigne.get(Number(l.IDligne_commande_client)), commandeEnCours)
+        : null
       return {
         IDligne_commande_client: Number(l.IDligne_commande_client),
         IDcommande_client: Number(l.IDcommande_client),
@@ -1846,19 +1867,8 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
           : null,
         montant: qty * prix,
         rouleaux_estimes: rouleaux.get(Number(l.IDligne_commande_client)) ?? null,
-        au_plus_tot: partenaires
-          ? (() => {
-            const a = auPlusTotDe({ id: Number(l.IDligne_commande_client), typeKind, refId, coloriId: colId, unite: Number(l.unite) || 0, quantite: qty },
-              agg, filParLigne.get(Number(l.IDligne_commande_client)) ?? 0, f, rouleaux.get(Number(l.IDligne_commande_client)), partenaires, today,
-              typeof l.date_livraison === 'string' && /^\d{8}$/.test(l.date_livraison) ? l.date_livraison : null,
-              ordresParLigne.get(Number(l.IDligne_commande_client)), commandeEnCours)
-            const d = typeof l.date_livraison === 'string' && /^\d{8}$/.test(l.date_livraison) ? l.date_livraison : null
-            return a ? {
-              ...a,
-              marge: margeJours(a, d),
-              en_cours: commandeEnCours,
-            } : null
-          })()
+        au_plus_tot: auPlusTotLigne
+          ? { ...auPlusTotLigne, marge: margeJours(auPlusTotLigne, dateLigne), en_cours: commandeEnCours }
           : null,
         // affectation aggregates + the gauge basis (poids for Kg, metrage for Ml)
         nb_rolls: agg.nb_rolls,
@@ -1899,6 +1909,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
             lancementLe: lancements.get(Number(l.IDligne_commande_client))?.date ?? null,
             lancementEtape: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
             preteSiLanceLe: preteSiLance,
+            preteAuPlusTot: auPlusTotLigne?.date ?? null,
           }, new Date())?.niveau ?? null
           : null,
       }
@@ -5116,8 +5127,8 @@ function arriveeFil(f: FaitsLigneClient | undefined, today: string): string | nu
 /** Matter of a client line already at a partner on a launched order (lib/delai-au-plus-tot.ts): the écru
  *  at a dyer (per dyer line, with its délai) and the knitting launched (its latest délai). Flat queries. */
 interface OrdresLigne {
-  enno: { metrage: number; poids: number; partenaire: string | null; delai: string | null }[]
-  tricotage: { partenaire: string | null; delai: string | null } | null
+  enno: { metrage: number; poids: number; partenaire: string | null; delai: string | null; engagement: string | null }[]
+  tricotage: { partenaire: string | null; delai: string | null; engagement: string | null } | null
 }
 async function ordresEnCoursParLigne(lineIds: readonly number[], agg: Map<number, AgregatLigne>): Promise<Map<number, OrdresLigne>> {
   const out = new Map<number, OrdresLigne>()
@@ -5131,8 +5142,9 @@ async function ordresEnCoursParLigne(lineIds: readonly number[], agg: Map<number
   const sstIds = new Set<number>(alloc.map((r) => Number(r.lsst)))
   for (const id of ids) for (const k of Object.keys(agg.get(id)?.ecru_chez_sst ?? {})) sstIds.add(Number(k))
   if (sstIds.size === 0) return out
-  const lignes = await sql<{ id: number; delai: string | null; sstatut: string | null; soldee: number | null; nom: string | null }[]>`
-    SELECT l.idligne_commande_sous_traitant AS id, to_char(l.date_livraison, 'YYYYMMDD') AS delai, l.sstatut,
+  const lignes = await sql<{ id: number; delai: string | null; engagement: string | null; sstatut: string | null; soldee: number | null; nom: string | null }[]>`
+    SELECT l.idligne_commande_sous_traitant AS id, to_char(l.date_livraison, 'YYYYMMDD') AS delai,
+           to_char(l.date_delai, 'YYYYMMDD') AS engagement, l.sstatut,
            c.est_soldee AS soldee, st.nom
       FROM ligne_commande_sous_traitant l
       LEFT JOIN commande_sous_traitant c ON c.idcommande_sous_traitant = l.idcommande_sous_traitant
@@ -5145,12 +5157,12 @@ async function ordresEnCoursParLigne(lineIds: readonly number[], agg: Map<number
   for (const id of ids) {
     const enno = Object.entries(agg.get(id)?.ecru_chez_sst ?? {}).map(([k, v]) => {
       const l = parId.get(Number(k))
-      return { ...v, partenaire: nom(l), delai: l?.delai ?? null }
+      return { ...v, partenaire: nom(l), delai: l?.delai ?? null, engagement: l?.engagement ?? null }
     })
     // The knitting launched: the latest délai of its open knitting lines (one knitting order in practice).
     const trico = alloc.filter((a) => Number(a.lcc) === id).map((a) => parId.get(Number(a.lsst))).filter(ouverte)
     const tard = trico.sort((x, y) => String(y!.delai ?? '99999999').localeCompare(String(x!.delai ?? '99999999')))[0]
-    out.set(id, { enno, tricotage: tard ? { partenaire: nom(tard), delai: tard.delai ?? null } : null })
+    out.set(id, { enno, tricotage: tard ? { partenaire: nom(tard), delai: tard.delai ?? null, engagement: tard.engagement ?? null } : null })
   }
   return out
 }
@@ -5168,7 +5180,7 @@ function auPlusTotDe(l: LigneAuPlusTot, agg: AgregatLigne, fil: number, f: Faits
     fini: m ? agg.fini_metrage : agg.fini_poids,
     finiEnControle: m ? agg.controle_metrage : agg.controle_poids,
     finiRecuLe: agg.controle_recu_le,
-    ecruChezEnnoblisseur: (ordres?.enno ?? []).map((o) => ({ quantite: m ? o.metrage : o.poids, partenaire: o.partenaire, delai: o.delai })),
+    ecruChezEnnoblisseur: (ordres?.enno ?? []).map((o) => ({ quantite: m ? o.metrage : o.poids, partenaire: o.partenaire, delai: o.delai, engagement: o.engagement })),
     tricotageLance: ordres?.tricotage ?? null,
     enCours,
     ecru: m ? agg.ecru_metrage : agg.ecru_poids,

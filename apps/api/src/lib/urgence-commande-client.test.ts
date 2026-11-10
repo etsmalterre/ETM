@@ -34,6 +34,14 @@ describe('urgenceLigne', () => {
     expect(niveau(l('ennoblisseur', -1))).toBe('rouge')
     expect(niveau(l('tricotage', -1, 1))).toBe('rouge')
   })
+  it('a partner délai that leaves no margin is rouge now: the client date cannot be held (LIVA #1364)', () => {
+    const enno = (j: number, prete: number): LigneUrgence => ({ ...l('ennoblisseur', j), preteAuPlusTot: dans(prete) })
+    expect(urgenceLigne(enno(10, 12), today)).toMatchObject({ niveau: 'rouge', action: 'intenable' })
+    expect(niveau(enno(10, 10))).toBe(null)
+    expect(urgenceLigne({ ...l('tricotage', 10, 1), preteAuPlusTot: dans(11) }, today)?.action).toBe('intenable')
+    expect(urgenceLigne(enno(-1, 5), today)?.action).toBe('ennoblisseur') // already late: chase first
+    expect(urgenceCommande([enno(10, 12), enno(20, 25)], today)?.raison).toBe('2 lignes : date client intenable, prévenir le client')
+  })
   it('shipped or closed lines are always neutral, even late or without délai', () => {
     expect(niveau(l('expediee', -100))).toBe(null)
     expect(niveau(l('soldee', null))).toBe(null)

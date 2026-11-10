@@ -132,9 +132,13 @@ export function lineStatutRank(sstatut: string | null | undefined): 0 | 1 | 2 {
 // FI_Commande_TRMV2 window did. Both apply the same two rules, so they live
 // here once:
 //
-//   1. Capture-once: `date_delai` freezes the ORIGINAL date. It is promoted
-//      from the previous `date_livraison` on the first reschedule only (while
-//      it still equals the current date), and never touched again.
+//   1. Capture-once: `date_delai` freezes the FIRST date the line ever got —
+//      the sous-traitant's engagement (LIVA #1364) — and is never touched
+//      again. Until 2026-11-10 it was promoted from `date_livraison` only when
+//      a line born WITH a date was rescheduled, so a line born without one
+//      (every dyer line: the date comes after the bon de commande) never had
+//      it; migration 0073 backfilled them. Moving the date later afterwards is
+//      a report (lib/report-delai-sst.ts), checked by the caller.
 //   2. State machine: a date given on an `Attente_Delai` line means the
 //      sous-traitant has confirmed a délai → `En_Cours`. `Non_Envoye` keeps
 //      its status (the bon de commande is not out yet, the date is
@@ -170,9 +174,12 @@ export function sstDelaiSets(cur: SstDelaiCurrent, next: unknown, explicitStatut
   const sets: string[] = []
   let dateDelai = prevDelai
   let statut = curStatut
-  if (nextLiv !== prevLiv && prevDelai === prevLiv && prevLiv) {
-    sets.push(`date_delai = '${prevLiv}'`)
-    dateDelai = prevLiv
+  if (!prevDelai) {
+    const premiere = prevLiv || nextLiv
+    if (premiere) {
+      sets.push(`date_delai = '${premiere}'`)
+      dateDelai = premiere
+    }
   }
   sets.push(`date_livraison = '${nextLiv}'`)
   if (explicitStatut !== undefined) {

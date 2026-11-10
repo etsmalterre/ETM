@@ -28,6 +28,7 @@ import {
   ShoppingCart,
   Building2,
   Search,
+  Layers,
   Loader2,
   AlertCircle,
   MapPin,
@@ -198,7 +199,12 @@ interface LigneCommande {
   unite: number | null
   prix: number | null
   date_livraison: string | null
+  /** the sous-traitant's engagement: the FIRST délai the line got, frozen (LIVA #1364) */
   date_delai: string | null
+  /** working days the current délai is behind the engagement, in the sous-traitant's calendar */
+  retard_jours?: number | null
+  /** every time the délai was pushed back, oldest first (motif + who it is due to) */
+  reports_delai?: { le: string; ancien: string; nouveau: string; motif: string; imputable: 'sous_traitant' | 'malterre'; par: string | null }[]
   /** YYYYMMDD the date we asked for (proposed at the launch from the doctrine, migration 0048); the
    *  partner's own délai stays date_livraison */
   date_demandee?: string | null
@@ -1883,6 +1889,8 @@ function LignesSection({
     prix: '',
     date_livraison: '',
   })
+  // A délai pushed later than the one given is a report (LIVA #1364): why, and who it is due to.
+  const [reportForm, setReportForm] = useState<{ motif: string; imputable: ImputableDelai | null }>({ motif: '', imputable: null })
   // Circulaire (écru, type 1) or rectiligne (cols / bandes, type 4) — the
   // legacy line editor's SEL_TypeRef, offered only on a Tricotage Malterre
   // order. Fixed by the line once it exists (a line never changes catalog).
@@ -1998,6 +2006,7 @@ function LignesSection({
         quantite: Number(lineForm.quantite) || 0,
         prix: Number(lineForm.prix) || 0,
         date_livraison: inputDateToHfsql(lineForm.date_livraison),
+        ...(reportEnCours ? { report: { motif: reportForm.motif.trim(), imputable: reportForm.imputable } } : {}),
       }),
     }),
     onSuccess: () => { onMutationSuccess(); setEditingLineId(null); resetLineForm() },
@@ -2016,11 +2025,19 @@ function LignesSection({
 
   const resetLineForm = () => {
     setLineForm({ IDreference: 0, IDColoris: 0, quantite: '', prix: '', date_livraison: '' })
+    setReportForm({ motif: '', imputable: null })
     setChoixLots({})
     setShowLineForm(false)
     createLineMut.reset()
     updateLineMut.reset()
   }
+
+  // The line being edited and the date it already holds (its délai, else its engagement):
+  // a later date is a report (LIVA #1364).
+  const editingLine = editingLineId !== null ? commande.lignes.find((x) => x.IDligne_commande_sous_traitant === editingLineId) ?? null : null
+  const delaiDonne = editingLine ? dateDonnee(editingLine) : ''
+  const nouveauDelai = inputDateToHfsql(lineForm.date_livraison)
+  const reportEnCours = !!delaiDonne && /^\d{8}$/.test(nouveauDelai) && nouveauDelai > delaiDonne
 
   // Every line names a reference and a coloris (LIVA #1215) — the server
   // refuses otherwise; the button says why before the user tries.
@@ -2029,6 +2046,10 @@ function LignesSection({
     : lineForm.IDColoris === 0
       ? 'Choisissez un coloris'
       : null
+  const editLineBlockedReason = lineSaveBlockedReason
+    ?? (reportEnCours && (!reportForm.imputable || !reportForm.motif.trim())
+      ? 'Indiquez pourquoi le délai est repoussé et à qui c’est dû'
+      : null)
   // A new knit line at Tricotage Malterre also needs all its yarn.
   const newLineBlockedReason = lineSaveBlockedReason
     ?? (filALancer && !(quantiteForm > 0)
@@ -2130,30 +2151,6 @@ function LignesSection({
             </div>
           ) : (
             commande.lignes.map((l) => {
-              if (isEditing && editingLineId === l.IDligne_commande_sous_traitant) {
-                return (
-                  <InlineForm
-                    key={l.IDligne_commande_sous_traitant}
-                    title="Modifier la ligne"
-                    onSave={() => updateLineMut.mutate(l.IDligne_commande_sous_traitant)}
-                    onCancel={() => { setEditingLineId(null); resetLineForm() }}
-                    isSaving={updateLineMut.isPending}
-                    saveBlockedReason={lineSaveBlockedReason}
-                    error={mutationMessage(updateLineMut.error)}
-                  >
-                    <LineFormFields
-                      form={lineForm}
-                      setForm={setLineForm}
-                      kind={formKind}
-                      refsFini={refFiniLookup ?? []}
-                      refsEcru={refEcruLookup ?? []}
-                      refsRectiligne={refRectiligneLookup ?? []}
-                      editable={linesEditable}
-                      autoPricing={isTricoteur ? false : commande.auto_pricing_enabled}
-                    />
-                  </InlineForm>
-                )
-              }
               const parTricobot = lignesTricobot.has(l.IDligne_commande_sous_traitant)
               return (
                 <div
@@ -2183,15 +2180,18 @@ function LignesSection({
             })
           )}
 
-          {isEditing && !linesLocked && linesEditable && showLineForm && (
-            <InlineForm
-              title="Nouvelle ligne"
-              onSave={() => createLineMut.mutate()}
-              onCancel={resetLineForm}
-              isSaving={createLineMut.isPending}
-              saveBlockedReason={newLineBlockedReason}
-              error={mutationMessage(createLineMut.error)}
-            >
+          {/* Add / edit a line: a dialog, like Clients › Commandes (Vincent 2026-11-10 — the inline
+              form in the list was « moche et non standard »). */}
+          <LigneSstDialog
+            open={isEditing && !linesLocked && linesEditable && showLineForm}
+            titre="Nouvelle ligne"
+            large={filALancer}
+            onSave={() => createLineMut.mutate()}
+            onCancel={resetLineForm}
+            isSaving={createLineMut.isPending}
+            saveBlockedReason={newLineBlockedReason}
+            error={mutationMessage(createLineMut.error)}
+          >
               {isTrm && (
                 <LineKindSwitch
                   value={lineKind}
@@ -2212,6 +2212,7 @@ function LignesSection({
                 editable={true}
                 autoPricing={isTricoteur ? false : commande.auto_pricing_enabled}
               />
+              <EngagementDelai delaiDonne="" nouveau={nouveauDelai} engagement={null} report={reportForm} setReport={setReportForm} />
               {filALancer && lineForm.IDreference > 0 && lineForm.IDColoris > 0 && (
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-muted-foreground">
@@ -2232,8 +2233,36 @@ function LignesSection({
                   )}
                 </div>
               )}
-            </InlineForm>
-          )}
+          </LigneSstDialog>
+          <LigneSstDialog
+            open={isEditing && editingLine !== null}
+            titre="Modifier la ligne"
+            sousTitre={editingLine ? [editingLine.ref_label, editingLine.colori_reference].filter(Boolean).join(' - ') : undefined}
+            onSave={() => { if (editingLine) updateLineMut.mutate(editingLine.IDligne_commande_sous_traitant) }}
+            onCancel={() => { setEditingLineId(null); resetLineForm() }}
+            isSaving={updateLineMut.isPending}
+            saveBlockedReason={editLineBlockedReason}
+            error={mutationMessage(updateLineMut.error)}
+          >
+            <LineFormFields
+              form={lineForm}
+              setForm={setLineForm}
+              kind={formKind}
+              refsFini={refFiniLookup ?? []}
+              refsEcru={refEcruLookup ?? []}
+              refsRectiligne={refRectiligneLookup ?? []}
+              editable={linesEditable}
+              autoPricing={isTricoteur ? false : commande.auto_pricing_enabled}
+              engagement={editingLine?.date_delai}
+            />
+            <EngagementDelai
+              delaiDonne={delaiDonne}
+              nouveau={nouveauDelai}
+              engagement={editingLine?.date_delai}
+              report={reportForm}
+              setReport={setReportForm}
+            />
+          </LigneSstDialog>
 
           {isEditing && !linesLocked && linesEditable && commande.lignes.length > 0 && !showLineForm && editingLineId === null && (
             <Button
@@ -2523,12 +2552,19 @@ function LineCard({
                 >
                   <span className="flex items-baseline gap-2">
                     <span className="font-medium">Livraison {formatHfsqlDate(dateLivRaw)}</span>
-                    {showDelaiInitial && (
+                    {showDelaiInitial && !(Number(line.retard_jours) > 0) && (
                       <span className="text-xs italic text-muted-foreground">
-                        (initial: {formatHfsqlDate(dateDelaiRaw)})
+                        (engagement : {formatHfsqlDate(dateDelaiRaw)})
                       </span>
                     )}
                   </span>
+                  {/* The délai pushed back after the engagement (LIVA #1364): its delay, the reports on hover. */}
+                  {Number(line.retard_jours) > 0 && (
+                    <span className="text-xs font-medium text-red-600 cursor-default"
+                      title={(line.reports_delai ?? []).map((r) => `${formatHfsqlDate(r.ancien)} → ${formatHfsqlDate(r.nouveau)} · ${r.imputable === 'malterre' ? 'Malterre' : 'sous-traitant'} · ${r.motif}${r.par ? ` (${r.par})` : ''}`).join('\n') || undefined}>
+                      Retard {line.retard_jours} j sur l’engagement du {formatHfsqlDate(dateDelaiRaw)}
+                    </span>
+                  )}
                   {livreeLe && (
                     <span className="text-xs text-muted-foreground">Livrée le {formatHfsqlDate(livreeLe)}</span>
                   )}
@@ -6489,10 +6525,124 @@ function LineKindSwitch({ value, onChange }: {
   )
 }
 
+// ── The sous-traitant's délai is an engagement (LIVA #1364) ──────────────
+
+type ImputableDelai = 'sous_traitant' | 'malterre'
+const IMPUTABLES_DELAI: { id: ImputableDelai; label: string }[] = [
+  { id: 'sous_traitant', label: 'Sous-traitant' },
+  { id: 'malterre', label: 'Malterre' },
+]
+
+/** The date a line already holds: its délai, else its engagement (a cleared date). YYYYMMDD or ''. */
+function dateDonnee(l: Pick<LigneCommande, 'date_livraison' | 'date_delai'>): string {
+  const ok = (v: string | null | undefined) => (v && /^\d{8}$/.test(v) ? v : '')
+  return ok(l.date_livraison) || ok(l.date_delai)
+}
+
+/** Under the line form's date: the first délai given is an engagement (said once, when it is
+ *  being given); a later one is a report — why, and who it is due to (same shape as a client
+ *  line's report, ClientsCommandes). An earlier date needs nothing. */
+function EngagementDelai({ delaiDonne, nouveau, engagement, report, setReport }: {
+  /** YYYYMMDD the date the line holds, '' for none (a new line) */
+  delaiDonne: string
+  /** YYYYMMDD the date typed, '' for none */
+  nouveau: string
+  /** YYYYMMDD the engagement, when it differs from the current délai */
+  engagement: string | null | undefined
+  report: { motif: string; imputable: ImputableDelai | null }
+  setReport: (r: { motif: string; imputable: ImputableDelai | null }) => void
+}) {
+  const saisi = /^\d{8}$/.test(nouveau)
+  if (!delaiDonne) {
+    return saisi ? (
+      <p className="flex items-start gap-1.5 text-xs font-medium text-amber-700">
+        <Info className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+        Ce délai est un engagement du sous-traitant : le repousser ensuite demandera un motif.
+      </p>
+    ) : null
+  }
+  if (!saisi || nouveau <= delaiDonne) return null
+  return (
+    <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-3 space-y-2">
+      <p className="text-xs text-amber-800">
+        Le délai du {formatHfsqlDate(delaiDonne)} était donné : pourquoi est-il repoussé, et à qui le report est-il dû ?
+      </p>
+      <div className="flex gap-1">
+        {IMPUTABLES_DELAI.map((i) => (
+          <button key={i.id} type="button" onClick={() => setReport({ ...report, imputable: i.id })}
+            className={cn('px-3 py-1 rounded-md text-xs font-medium border transition-colors',
+              report.imputable === i.id ? 'bg-accent text-accent-foreground border-accent' : 'bg-white border-input text-muted-foreground hover:text-foreground')}>
+            {i.label}
+          </button>
+        ))}
+      </div>
+      <input value={report.motif} onChange={(e) => setReport({ ...report, motif: e.target.value })}
+        placeholder="Motif du report (ex. : retard teinture, fil arrivé en retard…)"
+        className="w-full h-8 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+    </div>
+  )
+}
+
+const PICKER_DATE = typeof HTMLInputElement !== 'undefined' && 'showPicker' in HTMLInputElement.prototype
+
+/** The line's délai, framed like a client line's « Prête le » (Vincent 2026-11-10): the date is
+ *  read, « Changer » opens the calendar straight away, the engagement sits under it (amber once the
+ *  délai slipped past it). Without showPicker (old browser) a plain date field. */
+function DelaiField({ value, engagement, onChange }: {
+  /** YYYY-MM-DD, '' = none */
+  value: string
+  engagement?: string | null
+  onChange: (v: string) => void
+}) {
+  const ref = useRef<HTMLInputElement>(null)
+  const date = inputDateToHfsql(value)
+  const saisie = /^\d{8}$/.test(date) ? date : ''
+  const eng = engagement && /^\d{8}$/.test(engagement) ? engagement : null
+  const glisse = !!eng && !!saisie && saisie > eng
+  const ligneEngagement = eng && (
+    <div className={cn('text-xs truncate', glisse ? 'text-amber-700' : 'text-muted-foreground')}>
+      Engagement {formatHfsqlDate(eng)}
+    </div>
+  )
+  return (
+    <div className="space-y-1">
+      <label className="text-xs font-medium text-muted-foreground cursor-help" title="Le délai donné par le sous-traitant : le premier est son engagement">Délai</label>
+      {PICKER_DATE ? (
+        <div className={cn('px-3 flex items-center gap-2 rounded-md border border-dashed border-input bg-muted/40 text-sm', eng ? 'py-1.5' : 'h-9')}>
+          <div className="min-w-0 leading-tight">
+            {saisie
+              ? <div>Le <span className="font-semibold tabular-nums">{formatHfsqlDate(saisie)}</span></div>
+              : <div className="text-muted-foreground italic">Pas encore de délai</div>}
+            {ligneEngagement}
+          </div>
+          <span className="ml-auto relative flex items-center flex-shrink-0">
+            <input ref={ref} type="date" tabIndex={-1} aria-hidden value={value}
+              className="absolute inset-0 w-full h-full opacity-0 pointer-events-none"
+              onChange={(e) => { if (e.target.value) onChange(e.target.value) }} />
+            <button type="button"
+              onClick={() => { try { ref.current?.showPicker() } catch { /* no picker */ } }}
+              className="relative text-xs font-medium text-accent-blue hover:underline">
+              {saisie ? 'Changer' : 'Choisir la date'}
+            </button>
+          </span>
+        </div>
+      ) : (
+        <>
+          <input type="date" value={value} onChange={(e) => onChange(e.target.value)} autoComplete="off"
+            className="w-full h-9 px-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
+          {ligneEngagement}
+        </>
+      )}
+    </div>
+  )
+}
+
 function LineFormFields({
-  form, setForm, kind, refsFini, refsEcru, refsRectiligne = [], editable, autoPricing,
+  form, setForm, kind, refsFini, refsEcru, refsRectiligne = [], editable, autoPricing, engagement,
 }: {
   form: { IDreference: number; IDColoris: number; quantite: string; prix: string; date_livraison: string }
+  /** YYYYMMDD the sous-traitant's engagement on the line being edited (LIVA #1364) */
+  engagement?: string | null
   setForm: (f: typeof form) => void
   /** Which catalog the line uses:
    *  - 'fini' → ref_fini + ref_fini_colori (ennoblisseur)
@@ -6643,7 +6793,7 @@ function LineFormFields({
           helper={prixDisabled ? 'Calculé automatiquement à partir des rouleaux affectés.' : undefined}
         />
       </div>
-      <LabeledInput label="Date livraison" type="date" value={form.date_livraison} onChange={(v) => setForm({ ...form, date_livraison: v })} />
+      <DelaiField value={form.date_livraison} engagement={engagement} onChange={(v) => setForm({ ...form, date_livraison: v })} />
     </>
   )
 }
@@ -7972,10 +8122,16 @@ function mutationMessage(err: unknown): string | null {
   return body?.message ?? "L'enregistrement a échoué (erreur serveur)."
 }
 
-function InlineForm({
-  title, children, onSave, onCancel, isSaving, saveBlockedReason, error,
+/** The line form, add or edit: a §18.A dialog like the client order's line dialog. */
+function LigneSstDialog({
+  open, titre, sousTitre, large, children, onSave, onCancel, isSaving, saveBlockedReason, error,
 }: {
-  title: string
+  open: boolean
+  titre: string
+  /** « REF - coloris » of the line being edited */
+  sousTitre?: string
+  /** wider: the yarn lots picker of a new Tricotage Malterre line */
+  large?: boolean
   children: React.ReactNode
   onSave: () => void
   onCancel: () => void
@@ -7986,21 +8142,32 @@ function InlineForm({
   error?: string | null
 }) {
   return (
-    <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-4 space-y-3">
-      <p className="text-xs font-semibold text-accent uppercase tracking-wide">{title}</p>
-      {children}
-      {error && (
-        <div className="flex items-center gap-1.5 text-xs text-destructive">
-          <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
-          <span>{error}</span>
+    <Dialog open={open} onOpenChange={(o) => { if (!o && !isSaving) onCancel() }}>
+      <DialogContent className={cn(large ? 'max-w-2xl' : 'max-w-lg', 'max-h-[90dvh] overflow-y-auto')} onClose={onCancel}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Layers className="h-5 w-5 text-accent" />
+            {titre}
+          </DialogTitle>
+          {sousTitre && <p className="text-xs text-muted-foreground pl-7">{sousTitre}</p>}
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          {children}
+          {error && (
+            <div className="flex items-start gap-1.5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
         </div>
-      )}
-      <div className="flex justify-end gap-2 pt-1">
-        <Button variant="outline" size="sm" onClick={onCancel}>Annuler</Button>
-        <Button size="sm" onClick={onSave} disabled={isSaving || !!saveBlockedReason} title={saveBlockedReason ?? undefined}>
-          {isSaving ? 'Enregistrement...' : 'Enregistrer'}
-        </Button>
-      </div>
-    </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onCancel} disabled={isSaving}>Annuler</Button>
+          <Button onClick={onSave} disabled={isSaving || !!saveBlockedReason} title={saveBlockedReason ?? undefined}>
+            {isSaving ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
+            Enregistrer
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

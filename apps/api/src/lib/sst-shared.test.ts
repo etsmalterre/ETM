@@ -80,14 +80,20 @@ describe('lineStatutRank', () => {
 import { sstDelaiSets, STATUT_OPEN, STATUT_ATTENTE_DELAI, STATUT_NON_ENVOYE } from './sst-shared.js'
 
 describe('sstDelaiSets', () => {
-  it('first date on an Attente_Delai line: writes the date, flips to En_Cours, freezes nothing', () => {
+  it('first date on an Attente_Delai line: writes the date, flips to En_Cours, freezes it as the engagement (#1364)', () => {
     const r = sstDelaiSets({ date_livraison: '', date_delai: '', sstatut: STATUT_ATTENTE_DELAI }, '2026-10-15')
-    expect(r.sets).toEqual([`date_livraison = '20261015'`, `sstatut = '${STATUT_OPEN}'`])
-    expect(r).toMatchObject({ date_livraison: '20261015', date_delai: '', sstatut: STATUT_OPEN })
+    expect(r.sets).toEqual([`date_delai = '20261015'`, `date_livraison = '20261015'`, `sstatut = '${STATUT_OPEN}'`])
+    expect(r).toMatchObject({ date_livraison: '20261015', date_delai: '20261015', sstatut: STATUT_OPEN })
   })
 
-  it('first reschedule freezes the original date into date_delai (capture-once)', () => {
+  it('a reschedule leaves the engagement frozen at creation alone', () => {
     const r = sstDelaiSets({ date_livraison: '20261015', date_delai: '20261015', sstatut: STATUT_OPEN }, '20261101')
+    expect(r.sets).toEqual([`date_livraison = '20261101'`])
+    expect(r.date_delai).toBe('20261015')
+  })
+
+  it('a dated line without an engagement (before 0073) freezes its current date on the reschedule', () => {
+    const r = sstDelaiSets({ date_livraison: '20261015', date_delai: '', sstatut: STATUT_OPEN }, '20261101')
     expect(r.sets).toEqual([`date_delai = '20261015'`, `date_livraison = '20261101'`])
     expect(r.date_delai).toBe('20261015')
   })
@@ -105,19 +111,20 @@ describe('sstDelaiSets', () => {
 
   it('Non_Envoye keeps its status: the bon de commande is not out yet', () => {
     const r = sstDelaiSets({ date_livraison: '', date_delai: '', sstatut: STATUT_NON_ENVOYE }, '20261015')
-    expect(r.sets).toEqual([`date_livraison = '20261015'`])
+    expect(r.sets).toEqual([`date_delai = '20261015'`, `date_livraison = '20261015'`])
     expect(r.sstatut).toBe(STATUT_NON_ENVOYE)
   })
 
   it('an explicit statut in the patch wins over the auto-flip', () => {
     const r = sstDelaiSets({ date_livraison: '', date_delai: '', sstatut: STATUT_ATTENTE_DELAI }, '20261015', 'Notification')
-    expect(r.sets).toEqual([`date_livraison = '20261015'`, `sstatut = 'Notification'`])
+    expect(r.sets).toEqual([`date_delai = '20261015'`, `date_livraison = '20261015'`, `sstatut = 'Notification'`])
     expect(r.sstatut).toBe('Notification')
   })
 
-  it('clearing the date is allowed and freezes the previous one', () => {
+  it('clearing the date is allowed and keeps the engagement', () => {
     const r = sstDelaiSets({ date_livraison: '20261015', date_delai: '20261015', sstatut: STATUT_OPEN }, '')
-    expect(r.sets).toEqual([`date_delai = '20261015'`, `date_livraison = ''`])
+    expect(r.sets).toEqual([`date_livraison = ''`])
+    expect(r.date_delai).toBe('20261015')
     expect(r.date_livraison).toBe('')
   })
 

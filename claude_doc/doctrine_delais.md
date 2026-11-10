@@ -102,6 +102,16 @@ Décidé avec Vincent le 2026-10-28, **codé le même jour** (migration 0041, `l
 - **L'engagement** : la D d'une ligne devient un engagement **à la validation de la commande** (§5 ter) — copiée dans `delai_annonce`, jamais modifiée, jamais rétro-remplie. **Déplacer D ensuite est un report** : motif et imputable obligatoires (Malterre / client / partenaire), journal append-only `report_ligne_client`. Un client qui déplace sa date ne compte pas contre nous. Avant la validation, D bouge librement.
 - **Qualité de service** (à construire sur ce journal) : engagement contre date réelle d'expédition (dès que prête, date convenue) ou **date où la ligne est devenue prête** (sur appel, commande complète).
 
+## 5 quater. Le délai d'un sous-traitant est un engagement
+
+Décidé avec Vincent le 2026-11-10, **codé le même jour** (LIVA #1364, migration 0073, `lib/report-delai-sst.ts`).
+
+- **Le premier délai d'une ligne de commande sous-traitant est l'engagement du sous-traitant**, figé dans `ligne_commande_sous_traitant.date_delai` (`sstDelaiSets`). « Nous ne tapons jamais de date nous-mêmes, sauf un délai donné par téléphone » : une date tapée à la création compte aussi. Avant le 10/11 la colonne n'était remplie que sur une ligne née AVEC une date (aucune ligne ennoblisseur) ; la migration l'a remplie avec le premier délai reçu (#1314), sinon la date actuelle.
+- **Le repousser est un report** : motif et imputable obligatoires (sous-traitant / Malterre), 400 `report_requis` sinon ; un fait `report_delai` de `delai_sst_evenement` (append-only, ancien et nouveau délai), lu par le Journal de la commande. L'avancer, ou le premier délai, ne demande rien. Tricobot (compétence Délais) qui écrit un délai plus tardif lu dans un mail dépose le report lui-même, imputable au sous-traitant, le mail en motif.
+- **Le retard d'une ligne** = jours ouvrés du sous-traitant entre l'engagement et le délai actuel. La carte de la ligne l'affiche (« Retard 2 j sur l'engagement du 10/11 », les reports au survol).
+- **Côté client**, la date au plus tôt lit déjà le délai actuel du partenaire (§5 ter) ; l'étape porte maintenant son engagement et son retard (« Retard ennoblisseur MATEL : 2 j » au survol de « Prête le »). **Une ligne en tricotage / en ennoblissement dont la date au plus tôt dépasse D est rouge tout de suite** : « date client intenable, prévenir le client » (`intenable`, `lib/urgence-commande-client.ts`) — à nous d'avertir le client et de reporter D (imputable : partenaire). Sans attendre que D soit passée.
+- Pas encore : le délai écrit par TRM sur une ligne miroir (`PUT /commandes-trm/lignes/:id/delai`) ne demande pas de motif (son retard se lit quand même, engagement figé) ; la Qualité de service ne compte pas encore les reports de délai.
+
 ## 5 ter. Préparer une commande, puis la valider
 
 Décidé avec Vincent le 2026-10-28 (déroulé, statut, calcul, ajustement) ; le statut et la validation sont codés le 2026-10-29 (migration 0045, `lib/preparation-commande.ts`), le calcul au plus tôt le même jour (`lib/delai-au-plus-tot.ts`, jours ouvrés `lib/jours-ouvres.ts`) ; l'ajustement (date retenue, « livrer en une fois ») vient ensuite.

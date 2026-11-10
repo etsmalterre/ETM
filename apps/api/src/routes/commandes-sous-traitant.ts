@@ -95,6 +95,8 @@ import { adressesDuClient, clientEnCopie, nomFichierRc, PHRASE_RC_SOUMISSION, PI
 import { compteursParCommande, ligneModifiee } from '../lib/agents/flux-ennoblisseur/saisies.js'
 import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
+import { fermetures } from '../lib/delais-standards.js'
+import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, reportsDelaiParLigne, retardDelai } from '../lib/report-delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { normaliserLot, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
@@ -2051,6 +2053,13 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
       }
     }
 
+    // The délai engagement and its reports (LIVA #1364, lib/report-delai-sst.ts).
+    const [fermeturesSst, reportsDelai] = await Promise.all([
+      fermetures([Number(header.IDsous_traitant) || 0], true),
+      reportsDelaiParLigne(fixedLignes.map((l) => Number(l.IDligne_commande_sous_traitant) || 0)),
+    ])
+    const fermSst = (fermeturesSst.get(Number(header.IDsous_traitant) || 0) ?? []).map(({ du, au }) => ({ du, au }))
+
     const lignesEnriched = fixedLignes.map((l) => {
       const refId = Number(l.IDreference) || 0
       const colId = Number(l.IDColoris) || 0
@@ -2073,6 +2082,9 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
         ref_rendement: refRendement,
         colori_reference: resolveColoris(colId, typeKind, refId) || null,
         ...agg,
+        /** working days the current délai is behind the engagement (date_delai) */
+        retard_jours: retardDelai(l.date_delai, l.date_livraison, fermSst),
+        reports_delai: reportsDelai.get(Number(l.IDligne_commande_sous_traitant)) ?? [],
       }
     })
 
@@ -5074,6 +5086,19 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     if (d.commentaire !== undefined) sets.push(`commentaire = '${esc(d.commentaire)}'`)
     let statutApres = (cur.sstatut ?? '').trim()
     let delaiApres: string | null = null
+    // A date pushed later than the one given is a report (LIVA #1364): motif +
+    // who it is due to, or refused. The first date and an earlier one are free.
+    const reportAvant = dateDeReference(cur.date_livraison, cur.date_delai)
+    const report = d.date_livraison !== undefined && estUnReportDelai(cur.date_livraison, cur.date_delai, d.date_livraison)
+      ? lireReport((req.body as Record<string, unknown>)?.report)
+      : null
+    if (d.date_livraison !== undefined && estUnReportDelai(cur.date_livraison, cur.date_delai, d.date_livraison) && !report) {
+      res.status(400).json({
+        error: 'report_requis',
+        message: `Le délai du ${reportAvant.slice(6, 8)}/${reportAvant.slice(4, 6)}/${reportAvant.slice(0, 4)} est un engagement du sous-traitant : indiquez pourquoi il est repoussé et à qui c’est dû.`,
+      })
+      return
+    }
     if (d.date_livraison !== undefined) {
       // Capture-once rule for date_delai + the Attente_Delai → En_Cours flip.
       // Shared with TRM's `PUT /commandes-trm/lignes/:id/delai` (the sister
@@ -5112,6 +5137,12 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     // The dyer answered the délai question (LIVA #1314: Qualité de service).
     if ((cur.sstatut ?? '').trim() === STATUT_ATTENTE_DELAI && statutApres !== STATUT_ATTENTE_DELAI && statutApres !== STATUT_NON_ENVOYE) {
       await noterDelaiRecu(lineId, delaiApres, req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
+    }
+    if (report && delaiApres) {
+      await enregistrerReportDelai({
+        idligne: lineId, ancien: reportAvant, nouveau: delaiApres, motif: report.motif, imputable: report.imputable,
+        par: req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null,
+      })
     }
     // A délai Tricobot wrote on this line and nobody judged yet: the hand-typed
     // value judges it (same = validée, another = corrigée — claude_doc/agents_autonomie.md §4).

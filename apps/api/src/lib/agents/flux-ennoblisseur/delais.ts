@@ -385,7 +385,7 @@ async function delais(
         // Supervisé: nothing is written until a person validates (doctrine §2,
         // Vincent 2026-11-05) — only a point done alone writes now.
         let etatAvant: EtatLigne | null = null
-        if (p.decision === 'saisie' && seul) etatAvant = await ecrireDelai(p.idligne, p.delai!, TRICOBOT)
+        if (p.decision === 'saisie' && seul) etatAvant = await ecrireDelai(p.idligne, p.delai!, TRICOBOT, p.reponse)
         const avantLigne = etatAvant ?? (p.idligne > 0 ? await lireEtatLigne(p.idligne) : null)
         p.saisieId = await enregistrerSaisie({
           agent: b.slug, competence: 'delais', version: b.version, runId: b.id, messageId: m.id, threadId: m.threadId,

@@ -19,6 +19,7 @@ import { valeurStab } from '../../stabilites.js'
 import { query } from '../../hfsql-auto.js'
 import { esc, sstDelaiSets, STATUT_ATTENTE_DELAI, STATUT_NON_ENVOYE } from '../../sst-shared.js'
 import { noterDelaiRecu } from '../../delai-sst.js'
+import { dateDeReference, enregistrerReportDelai, estUnReportDelai } from '../../report-delai-sst.js'
 import type { Decision, PointMesure, StatutPoint } from '../competences.js'
 
 export interface Auteur { id: number; nom: string }
@@ -246,14 +247,28 @@ export async function lireEtatLigne(idligne: number): Promise<EtatLigne | null> 
 
 /** Write a délai ('YYYY-MM-DD') on a sst line by the screen's rules
  *  (sstDelaiSets: capture-once date_delai, Attente_Delai → En_Cours) and
- *  record the « délai reçu » fact (Qualité de service). Returns the line before. */
-export async function ecrireDelai(idligne: number, delai: string, par: Auteur): Promise<EtatLigne> {
+ *  record the « délai reçu » fact (Qualité de service). A date later than the
+ *  one given is a report (LIVA #1364): read in the dyer's mail, so due to the
+ *  sous-traitant, its motif quoting the mail. Returns the line before. */
+export async function ecrireDelai(idligne: number, delai: string, par: Auteur, citation?: string | null): Promise<EtatLigne> {
   const avant = await lireEtatLigne(idligne)
   if (!avant) throw new Error(`ligne ${idligne} introuvable`)
   const r = sstDelaiSets({ date_livraison: avant.dateLivraison, date_delai: avant.dateDelai, sstatut: avant.sstatut }, delai)
   await query(`UPDATE ligne_commande_sous_traitant SET ${r.sets.join(', ')} WHERE IDligne_commande_sous_traitant = ${Math.trunc(idligne)}`)
   if (avant.sstatut === STATUT_ATTENTE_DELAI && r.sstatut !== STATUT_ATTENTE_DELAI && r.sstatut !== STATUT_NON_ENVOYE) {
     await noterDelaiRecu(idligne, r.date_livraison || null, par)
+  }
+  if (estUnReportDelai(avant.dateLivraison, avant.dateDelai, r.date_livraison)) {
+    const cite = (citation ?? '').replace(/\s+/g, ' ').trim()
+    try {
+      await enregistrerReportDelai({
+        idligne: Math.trunc(idligne), ancien: dateDeReference(avant.dateLivraison, avant.dateDelai), nouveau: r.date_livraison,
+        motif: cite ? `Nouveau délai annoncé par l’ennoblisseur : « ${cite.slice(0, 400)} »` : 'Nouveau délai annoncé par l’ennoblisseur',
+        imputable: 'sous_traitant', par,
+      })
+    } catch (e) {
+      console.error('[flux-ennoblisseur] report de délai non enregistré, ligne', idligne, e)
+    }
   }
   return avant
 }
@@ -362,7 +377,7 @@ async function ecrireValeur(s: Saisie, valeur: string, par: Auteur): Promise<str
     return texteMesures(m)
   }
   if (!isoDate.test(valeur)) throw new GesteRefuse('date_invalide', 'Indiquez le bon délai.')
-  if (s.idligne > 0) await ecrireDelai(s.idligne, valeur, par)
+  if (s.idligne > 0) await ecrireDelai(s.idligne, valeur, par, s.citation)
   return valeur
 }
 
