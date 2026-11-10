@@ -82,7 +82,7 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 22,
+    minHeight: 20,
     paddingVertical: 3,
     paddingHorizontal: 8,
     borderBottomWidth: 0.75,
@@ -143,6 +143,9 @@ export function PointageFilPdf({ data }: { data: PointageFilData }) {
       orientation="landscape"
       title={`Pointage stock de fil - ${data.date_edition}`}
       issuer={companyTrm}
+      // Page 1 starts as close under the band as the continuation pages do:
+      // more rows per sheet (Vincent 2026-11-10, same as the fiches techniques).
+      contentPaddingTop={0}
     >
       {data.lignes.length === 0 ? (
         <Text style={styles.empty}>Aucun lot à pointer.</Text>
