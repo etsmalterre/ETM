@@ -1936,6 +1936,65 @@ UPDATE ligne_commande_sous_traitant l
  WHERE l.date_delai IS NULL AND l.date_livraison IS NOT NULL;
 `,
   },
+  {
+    // Tâches ponctuelles (decision Vincent 2026-11-10, lib/taches-atelier.ts):
+    // beside the standing tasks, one-off requests addressed to a group
+    // (« bonnetiers » or « régleurs »), with a due date (NULL = a bonnetier's
+    // request to the régleurs, not dated yet), closed by « Fait » or
+    // « Abandonner ». Every dating, postponement and abandonment is an event
+    // with its motif, kept to improve the system later.
+    name: '0072_taches_ponctuelles',
+    sql: `
+ALTER TABLE tache_atelier
+  ADD COLUMN categorie text NOT NULL DEFAULT 'recurrente' CHECK (categorie IN ('recurrente', 'ponctuelle')),
+  ADD COLUMN groupe text CHECK (groupe IN ('bonnetiers', 'regleurs')),
+  ADD COLUMN echeance date,
+  ADD COLUMN cloture text CHECK (cloture IN ('faite', 'abandonnee')),
+  ADD COLUMN cloturee_le timestamptz,
+  ADD COLUMN cloturee_par bigint,
+  ADD CONSTRAINT tache_atelier_ponctuelle_groupe CHECK ((categorie = 'ponctuelle') = (groupe IS NOT NULL));
+CREATE TABLE tache_atelier_evenement (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idtache bigint NOT NULL REFERENCES tache_atelier(id),
+  le timestamptz NOT NULL DEFAULT now(),
+  par bigint NOT NULL,
+  type text NOT NULL CHECK (type IN ('echeance', 'report', 'abandon')),
+  echeance_avant date,
+  echeance_apres date,
+  motif_code text,
+  motif text NOT NULL DEFAULT ''
+);
+CREATE INDEX tache_atelier_evenement_tache ON tache_atelier_evenement (idtache, le);
+${grantApi('SELECT, INSERT', 'tache_atelier_evenement')}
+${grantApi('USAGE, SELECT', 'SEQUENCE tache_atelier_evenement_id_seq')}
+`,
+  },
+  {
+    // « Supprimer ma dernière action » on the atelier poste (Vincent
+    // 2026-11-10, lib/annulation-atelier.ts). One row per deletion: who, what,
+    // and the highest evenement / defaut ids the piece held at that moment —
+    // an action at or under them is never deletable again, which is what stops
+    // « the last, then the new last, then… ». Also the trace of who undoes what.
+    name: '0073_atelier_annulation',
+    sql: `
+CREATE TABLE atelier_annulation (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  le timestamptz NOT NULL DEFAULT now(),
+  idbonnetier bigint NOT NULL,
+  idordre_fabrication bigint NOT NULL,
+  idpiece_production bigint NOT NULL,
+  source text NOT NULL CHECK (source IN ('evenement', 'defaut')),
+  ref_id bigint NOT NULL,
+  evenement text NOT NULL,
+  detail text NOT NULL DEFAULT '',
+  max_evenement bigint NOT NULL,
+  max_defaut bigint NOT NULL
+);
+CREATE INDEX atelier_annulation_piece ON atelier_annulation (idpiece_production, le DESC);
+${grantApi('SELECT, INSERT', 'atelier_annulation')}
+${grantApi('USAGE, SELECT', 'SEQUENCE atelier_annulation_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

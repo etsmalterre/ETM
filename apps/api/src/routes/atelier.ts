@@ -24,6 +24,8 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { query, fixEncoding } from '../lib/hfsql-auto.js'
+import { mpsPg } from '../lib/mps-pg.js'
+import { annulablePar, type ActionCandidate, type DerniereAnnulation } from '../lib/annulation-atelier.js'
 import {
   selectMachines,
   selectBonnetiers,
@@ -1424,6 +1426,14 @@ async function chargerContexte(id: number) {
       lastPieceId > 0 ? lastAction(lastPieceId) : Promise.resolve(null),
     ])
 
+    if (derniere) {
+      derniere.annulable_par = annulablePar(
+        derniere as ActionCandidate,
+        !lastClosed,
+        lastClosed ? null : await derniereAnnulation(lastPieceId),
+      )
+    }
+
     const total = produites.get(id) ?? 0
     const poidsPiece = round2(n(of.poids_piece))
 
@@ -1462,6 +1472,14 @@ async function chargerContexte(id: number) {
 }
 
 type Contexte = NonNullable<Awaited<ReturnType<typeof chargerContexte>>>
+
+/** The piece's latest deletion (its id ceilings), or null — PostgreSQL. */
+async function derniereAnnulation(pieceId: number): Promise<DerniereAnnulation | null> {
+  const [r] = await mpsPg()<{ max_evenement: string; max_defaut: string }[]>`
+    SELECT max_evenement, max_defaut FROM atelier_annulation
+    WHERE idpiece_production = ${pieceId} ORDER BY le DESC, id DESC LIMIT 1`
+  return r ? { max_evenement: Number(r.max_evenement), max_defaut: Number(r.max_defaut) } : null
+}
 
 async function countNettoyages(pieceId: number): Promise<number> {
   const rows = await query<{ total: number | null }>(
@@ -1512,6 +1530,11 @@ export interface DerniereAction {
   detail: string
   date_ms: number | null
   IDbonnetier: number
+  /** Which row it is — what « Supprimer ma dernière action » deletes. */
+  source: 'evenement' | 'defaut'
+  ref_id: number
+  /** Who may delete it right now (its author), or null — lib/annulation-atelier.ts. */
+  annulable_par: number | null
 }
 
 /** The « Dernière action » footer card.
@@ -1554,6 +1577,9 @@ async function lastAction(pieceId: number): Promise<DerniereAction | null> {
       detail: '',
       date_ms: parseDtMs(r.date_ev),
       IDbonnetier: n(r.IDbonnetier),
+      source: 'evenement',
+      ref_id: n(r.IDevenement_piece),
+      annulable_par: null,
     })
   }
   for (const r of fixedDf as Record<string, unknown>[]) {
@@ -1563,6 +1589,9 @@ async function lastAction(pieceId: number): Promise<DerniereAction | null> {
       detail: String(r.description ?? '').replace(/\s+/g, ' ').trim(),
       date_ms: parseDtMs(r.date_ev),
       IDbonnetier: n(r.IDSpotteur),
+      source: 'defaut',
+      ref_id: n(r.IDdefaut_qualite),
+      annulable_par: null,
     })
   }
 
@@ -1914,6 +1943,77 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
     res.json({ ok: true, ecrits, contexte: apres })
   } catch (err) {
     console.error('Error saving atelier evenement:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── DELETE /api/atelier/of/:id/derniere-action ────────────
+// « Supprimer ma dernière action » (Vincent 2026-11-10). The rule lives in
+// lib/annulation-atelier.ts and is re-derived here from the same context the
+// phone was shown: the client only says who is asking.
+const annulationBody = z.object({ IDbonnetier: z.number().int().positive() }).strict()
+
+atelierRouter.delete('/of/:id/derniere-action', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(String(req.params.id), 10)
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Invalid id' })
+      return
+    }
+    const parsed = annulationBody.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
+      return
+    }
+    const who = await gateSaisie(req, res, parsed.data.IDbonnetier)
+    if (!who) return
+
+    const ctx = await chargerContexte(id)
+    if (!ctx) {
+      res.status(404).json({ error: 'OF not found' })
+      return
+    }
+    const d = ctx.derniere_action
+    if (!d || d.annulable_par !== who.id) {
+      res.status(409).json({
+        error: 'annulation_impossible',
+        message: 'Seule votre dernière action sur ce métier (un défaut ou un nettoyage) peut être supprimée, une fois.',
+      })
+      return
+    }
+    const pieceId = ctx.piece_en_cours.IDpiece_production
+
+    // The ceilings first: everything the piece holds now, the deleted row
+    // included, can never be deleted afterwards.
+    const [[ev], [df]] = await Promise.all([
+      query<{ m: number | null }>(
+        `SELECT MAX(IDevenement_piece) AS m FROM evenement_piece WHERE IDpiece_production = ${pieceId}`,
+      ),
+      query<{ m: number | null }>(
+        `SELECT MAX(IDdefaut_qualite) AS m FROM defaut_qualite
+         WHERE Type_Spotteur = 1 AND Type_Reference = 1 AND reference = '${pieceId}'`,
+      ),
+    ])
+
+    if (d.source === 'defaut') {
+      await query(`DELETE FROM defaut_qualite WHERE IDdefaut_qualite = ${d.ref_id}`)
+    } else {
+      await query(`DELETE FROM evenement_piece WHERE IDevenement_piece = ${d.ref_id}`)
+      // A Nettoyage marks the piece half-knitted by weight; without one left
+      // the piece goes back to 0 (its weight on creation).
+      if ((await countNettoyages(pieceId)) === 0) {
+        await query(`UPDATE piece_production SET poids = 0 WHERE IDpiece_production = ${pieceId}`)
+      }
+    }
+    await mpsPg()`
+      INSERT INTO atelier_annulation (idbonnetier, idordre_fabrication, idpiece_production, source, ref_id,
+                                      evenement, detail, max_evenement, max_defaut)
+      VALUES (${who.id}, ${id}, ${pieceId}, ${d.source}, ${d.ref_id}, ${d.evenement}, ${d.detail},
+              ${n(ev?.m)}, ${n(df?.m)})`
+
+    res.json({ ok: true, contexte: await chargerContexte(id) })
+  } catch (err) {
+    console.error('Error deleting atelier last action:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
