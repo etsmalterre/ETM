@@ -2412,7 +2412,8 @@ function LineCard({
               tropTard={line.prete_si_lance_le && line.date_livraison && line.prete_si_lance_le > line.date_livraison
                 ? { preteLe: line.prete_si_lance_le, delai: line.date_livraison } : null} />
           )}
-          {line.statut && <StatutLignePill statut={line.statut} />}
+          {/* A divers line has nothing to launch (#1362): « À lancer » there only meant « not shipped yet ». */}
+          {line.statut && !(line.type === 3 && line.statut.etat === 'a_lancer') && <StatutLignePill statut={line.statut} />}
           {isEditing && !linesLocked && (
             <div className="flex gap-0.5">
               <Button variant="ghost" size="icon" className="h-6 w-6" onClick={(e) => { e.stopPropagation(); onEdit() }}>
@@ -2474,7 +2475,9 @@ function LineCard({
                 const stat = (
                   <LineStat
                     label={`Prête le${retard > 0 ? ` · +${retard} j` : ''}`}
-                    value={line.date_livraison ? formatHfsqlDate(line.date_livraison) : partie ? '—' : 'À obtenir'}
+                    // A divers line has no earliest date: its date is ours to choose (#1362), not to obtain.
+                    value={line.date_livraison ? formatHfsqlDate(line.date_livraison) : partie ? '—' : line.type === 3 ? 'Date à choisir' : 'À obtenir'}
+                    title={!line.date_livraison && !partie && line.type === 3 ? 'Modifier la ligne pour choisir sa date « Prête le »' : undefined}
                     valueClass={!line.date_livraison ? (partie ? 'text-muted-foreground' : 'text-red-600') : cn(SOULIGNE_INFO, !(parLancement || enPreparation) && tint)}
                   />
                 )
@@ -6360,8 +6363,9 @@ function LineFormDialog({
         quantite: Number(form.quantite) || 0,
         unite: form.unite,
         prix: Number(form.prix) || 0,
-        // In préparation the computed date is never stored: only a date the person picked.
-        date_livraison: form.date_livraison && (!commande.en_preparation || autreDate) ? inputDateToHfsql(form.date_livraison) : '',
+        // In préparation the computed date is never stored: only a date the person picked. A divers line has
+        // no computed date (#1362): whatever is in its field was typed.
+        date_livraison: form.date_livraison && (!commande.en_preparation || autreDate || form.type === 3) ? inputDateToHfsql(form.date_livraison) : '',
         ...(estReport ? { report: { motif: form.report_motif.trim(), imputable: form.report_imputable } } : {}),
         commentaire: form.commentaire,
         mode_livraison: form.mode_livraison,
@@ -6894,6 +6898,40 @@ function LineFormDialog({
               </div>
             )
           })()}
+          {/* A divers line in préparation (#1362): no computed date, the person commits to one by hand. Same dashed
+              box as the computed branch; never in the past (the API answers 409 date_passee too). */}
+          {!valide && form.type === 3 && (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground" title="Prête à expédier à cette date : la validation en fait notre engagement">Prête le</label>
+              {PICKER_DATE ? (
+                <div className="h-9 px-3 flex items-center gap-2 rounded-md border border-dashed border-input bg-muted/40 text-sm">
+                  {dateSaisie
+                    ? <div>Le <span className="font-semibold tabular-nums">{formatHfsqlDate(dateSaisie)}</span></div>
+                    : <span className="text-muted-foreground italic">Date à choisir</span>}
+                  <span className="ml-auto relative flex items-center gap-1 flex-shrink-0">
+                    <input ref={preteLeRef} type="date" tabIndex={-1} aria-hidden min={aujourdhuiIso()} value={form.date_livraison}
+                      className="absolute inset-0 w-full h-full opacity-0 pointer-events-none"
+                      onChange={(e) => { if (e.target.value) setForm({ ...form, date_livraison: e.target.value }) }} />
+                    <button type="button"
+                      onClick={() => { try { preteLeRef.current?.showPicker() } catch { /* no picker */ } }}
+                      className="relative text-xs font-medium text-accent-blue hover:underline">
+                      {dateSaisie ? 'Changer' : 'Choisir la date'}
+                    </button>
+                    {dateSaisie && (
+                      <button type="button" title="Retirer la date"
+                        onClick={() => setForm({ ...form, date_livraison: '' })}
+                        className="relative h-6 w-6 inline-flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-zinc-200/70">
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </span>
+                </div>
+              ) : (
+                <input type="date" min={aujourdhuiIso()} value={form.date_livraison} autoComplete="off" className={cn(inputClass, 'sm:w-1/2')}
+                  onChange={(e) => setForm({ ...form, date_livraison: e.target.value })} />
+              )}
+            </div>
+          )}
           {/* The line's départ (Vincent 2026-10-30, date exacte #1354): dès que prête by default, exactly on
               its date (an expedition date, never earlier), or when the client calls. */}
           <div className="space-y-1">
