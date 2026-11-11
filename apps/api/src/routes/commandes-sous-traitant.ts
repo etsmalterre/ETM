@@ -6933,6 +6933,240 @@ const finiBody = z.object({
   numero_coupe_de: z.number().int().positive().optional(),
 })
 
+/** A réception refused: the status and the body the route answers with. */
+export class RefusReception extends Error {
+  constructor(public status: number, public corps: Record<string, unknown>) {
+    super(String(corps.message ?? corps.error ?? 'réception refusée'))
+  }
+}
+
+export type PieceFini = z.infer<typeof finiBody>
+
+/** Receive ONE dyed roll on an ennoblisseur line: the checks (lot, piece
+ *  received once, écru affected to the line, grouped roll) and the writes
+ *  (stock_fini « En contrôle », its sources, Ml non facturés, the lot in
+ *  suivilot and its Journal). The route below and Tricobot's BL
+ *  (lib/agents/flux-ennoblisseur/reception-bl.ts) both go through it, so a
+ *  roll is received by one rule whoever validates it. Throws RefusReception. */
+async function recevoirPieceFini(
+  commandeId: number,
+  ligneId: number,
+  ctx: LineContext,
+  d: PieceFini,
+  par: { id: number; nom: string } | null,
+  peutMlNf: () => Promise<boolean>,
+): Promise<void> {
+  if (d.lot !== undefined) d.lot = normaliserLot(d.lot)
+  const refusLot = refusLotSuffixe(d.lot)
+  if (refusLot) { throw new RefusReception(400, { error: 'lot_suffixe_reprise', message: refusLot }) }
+
+  // Reprise « Couper »: the piece takes the next free suffix of the cut
+  // roll's base (`3571/1-2` cut → `3571/1-3`), never the preview's guess.
+  if (d.numero_coupe_de) {
+    const src = await query<{ numero: string | null; IDref_commande_source: number | null }>(
+      `SELECT numero, IDref_commande_source FROM stock_fini WHERE IDstock_fini = ${d.numero_coupe_de}`,
+    )
+    if (src.length === 0 || (Number(src[0].IDref_commande_source) || 0) !== ligneId) {
+      throw new RefusReception(400, { error: 'numero_coupe_de must be a roll of this line' })
+    }
+    const base = cutBase((src[0].numero ?? '').trim() || `#${d.numero_coupe_de}`)
+    const siblings = await query<{ numero: string | null }>(
+      `SELECT numero FROM stock_fini WHERE numero LIKE ${sqlText(`${base}-%`)}`,
+    )
+    d.numero = childNumero(base, nextCutIndex(base, siblings.map((r) => r.numero ?? '')))
+  }
+
+  // « Ml non facturés »: checked BEFORE the roll is created, so a refusal
+  // leaves nothing half-written.
+  const mlNf = d.ml_non_factures ?? 0
+  if (mlNf > 0) {
+    if (!par) throw new RefusReception(401, { error: 'not authenticated' })
+    if (!(await peutMlNf())) throw new RefusReception(403, { error: 'permission denied: edit_ml_non_factures' })
+    const v = validerSaisie(mlNf, d.ml_non_factures_motif, d.metrage ?? 0)
+    if (!v.ok) { throw new RefusReception(400, { error: 'ml_non_factures_saisie', message: `${d.numero} : ${v.message}` }) }
+  }
+
+  // stock_fini.IDColoris is the produced fini's coloris (a ref_fini_colori).
+  // The authoritative source is the LINE's IDColoris (the ennoblisseur was
+  // ordered to dye into that coloris) — NOT the source écru's IDcolori_ecru,
+  // which lives in a different id space (colori_ecru). The old code inherited
+  // IDcolori_ecru here, producing rows whose IDColoris resolved to a bogus
+  // cross-referenced ref_fini_colori (wrong coloris in Stock Finis + the
+  // Soumission Lot picker). A body-supplied IDColoris (>0) still wins as an
+  // explicit override; otherwise default to the line's coloris.
+  const inheritedIDColoris = (d.IDColoris && d.IDColoris > 0) ? d.IDColoris : ctx.IDColoris
+  // Inherit the source écru's client reservation. When the écru was
+  // affected with `IDligne_commande_client > 0` (e.g. reserved for
+  // "BONNE NOUVELLE"), the dyed roll keeps the same reservation so
+  // the client tag flows downstream into the Réception tab.
+  let inheritedLcc = 0
+  if (d.IDstock_ecru && d.IDstock_ecru > 0) {
+    const verify = await query<{
+      IDref_commande_affectation: number | null
+      IDligne_commande_client: number | null
+    }>(
+      `SELECT IDref_commande_affectation, IDligne_commande_client
+       FROM stock_ecru WHERE IDstock_ecru = ${d.IDstock_ecru}`,
+    )
+    if (verify.length === 0) {
+      throw new RefusReception(400, { error: 'Source ecru not found' })
+    }
+    const aff = Number((verify[0] as any).IDref_commande_affectation) || 0
+    if (aff !== ligneId) {
+      throw new RefusReception(400, { error: 'Source ecru is not affected to this line' })
+    }
+    inheritedLcc = Number((verify[0] as any).IDligne_commande_client) || 0
+  }
+
+  // Grouped roll: every component must be affected to this line and not
+  // already consumed into a fini (its own or as a component of another
+  // grouped roll). The first component is the roll's IDstock_ecru.
+  const sources = d.IDstock_ecru_sources ?? []
+  if (sources.length > 0) {
+    if (!(await probeFiniSourceTable())) {
+      throw new RefusReception(503, { error: 'fusion_indisponible', message: new FiniSourceUnavailableError().message })
+    }
+    if (!(d.IDstock_ecru && d.IDstock_ecru > 0) || sources[0] !== d.IDstock_ecru) {
+      throw new RefusReception(400, { error: 'IDstock_ecru_sources must start with IDstock_ecru' })
+    }
+    if (new Set(sources).size !== sources.length) {
+      throw new RefusReception(400, { error: 'IDstock_ecru_sources holds a duplicate' })
+    }
+    const compRows = await query<{ IDstock_ecru: number; IDref_commande_affectation: number | null }>(
+      `SELECT IDstock_ecru, IDref_commande_affectation FROM stock_ecru WHERE IDstock_ecru IN (${sources.join(',')})`,
+    )
+    const affById = new Map(compRows.map((r) => [Number(r.IDstock_ecru), Number(r.IDref_commande_affectation) || 0]))
+    const notAffected = sources.filter((id) => affById.get(id) !== ligneId)
+    if (notAffected.length > 0) {
+      throw new RefusReception(400, { error: 'Every component must be affected to this line', ids: notAffected })
+    }
+    const consumed = await consumedEcruIds(sources)
+    if (consumed.size > 0) {
+      throw new RefusReception(409, {
+        error: 'ecru_deja_recu',
+        message: 'Une des pièces à fusionner a déjà été réceptionnée.',
+        ids: Array.from(consumed),
+      })
+    }
+  }
+
+  // A piece number is received once per line (2026-10-06, lot MA109269:
+  // « 3550/2 », back on 21/09 and en reprise, was received a second time on
+  // 01/10 in place of 3550/16 — stock and invoice check counted it twice).
+  // A piece back from reprise is re-received by updating its roll (PATCH
+  // below), never by a new one; a split at the dyer gets « -1 » / « -2 ».
+  const deja = await query<{ IDstock_fini: number; IDetat_stock_fini: number | null; date_saisie: string | null }>(
+    `SELECT IDstock_fini, IDetat_stock_fini, DATE_SAISIE AS date_saisie FROM stock_fini
+     WHERE IDref_commande_source = ${ligneId} AND numero = '${esc(d.numero.trim())}'`,
+  )
+  if (deja.length > 0) {
+    const enReprise = Number(deja[0].IDetat_stock_fini) === 2
+    throw new RefusReception(409, {
+      error: 'piece_deja_recue',
+      message: `La pièce ${d.numero.trim()} est déjà réceptionnée sur cette ligne${enReprise ? ' (en reprise) : sélectionnez ce rouleau dans l’onglet Réception et « Réceptionner la reprise »' : ''}. Vérifiez le numéro sur le bordereau.`,
+      IDstock_fini: Number(deja[0].IDstock_fini),
+    })
+  }
+
+  const today = new Date()
+  const yyyy = String(today.getFullYear())
+  const mm = String(today.getMonth() + 1).padStart(2, '0')
+  const dd = String(today.getDate()).padStart(2, '0')
+  const dateSaisie = `${yyyy}${mm}${dd}`
+
+  // Resolve the parent commande's sous-traitant. New receptions are
+  // stored in the magasin keyed on that sst id (matches legacy: 86%
+  // of legacy stock_fini rows have IDmagasin = IDsous_traitant; the
+  // mismatched ones are mostly the IDmagasin=0 rows previously
+  // inserted by ETM before this fix). Body-supplied IDmagasin
+  // (non-zero) still wins so a user can override later.
+  const cmdInfo = await query<{ IDsous_traitant: number | null }>(
+    `SELECT IDsous_traitant FROM commande_sous_traitant WHERE IDcommande_sous_traitant = ${commandeId}`,
+  )
+  const sstId = Number(cmdInfo[0]?.IDsous_traitant) || 0
+  const idMagasin = (d.IDmagasin && d.IDmagasin > 0) ? d.IDmagasin : sstId
+
+  // IDetat_stock_fini = 1 → "En Contrôle" (per etat_stock_fini
+  // label table). New receptions need inspection before being
+  // validated/shipped, so they enter at state 1.
+  const beforeRows = sources.length > 0 || mlNf > 0
+    ? await query<{ m: number | null }>(`SELECT MAX(IDstock_fini) AS m FROM stock_fini`)
+    : []
+  await query(
+    `INSERT INTO stock_fini
+     (numero, lot, poids, metrage, IDref_fini, IDColoris, IDstock_ecru,
+      IDmagasin, IDref_commande_source, observations, observation_sst, date_saisie,
+      second_choix, destockage, don, IDProprietaire, IDcommande_donation, IDligne_commande_client, IDligne_expedition,
+      IDetat_stock_fini)
+     VALUES (${sqlText(d.numero)}, ${sqlText(d.lot)}, ${n(d.poids)}, ${n(d.metrage)},
+             ${d.IDref_fini}, ${inheritedIDColoris}, ${d.IDstock_ecru ?? 0},
+             ${idMagasin}, ${ligneId}, ${sqlText(d.observations)}, ${sqlText(d.observation_sst)}, '${dateSaisie}',
+             0, 0, 0, 0, 0, ${inheritedLcc}, 0, 1)`,
+  )
+  if (sources.length > 0 || mlNf > 0) {
+    // Find the row just inserted (no RETURNING on HFSQL): the newest row of
+    // this line above the pre-insert MAX.
+    const before = Number(beforeRows[0]?.m) || 0
+    const newRows = await query<{ IDstock_fini: number }>(
+      `SELECT TOP 1 IDstock_fini FROM stock_fini
+       WHERE IDstock_fini > ${before} AND IDref_commande_source = ${ligneId} AND IDstock_ecru = ${d.IDstock_ecru ?? 0}
+       ORDER BY IDstock_fini DESC`,
+    )
+    const newId = Number(newRows[0]?.IDstock_fini) || 0
+    if (newId > 0) {
+      if (sources.length > 0) await insertFiniSources(newId, sources)
+      // Written through the journaled path, like any later change.
+      if (mlNf > 0) {
+        await ecrireMlNonFactures(
+          newId,
+          { ml: mlNf, motif: d.ml_non_factures_motif },
+          { idutilisateur: par!.id, nom: par!.nom },
+          'reception',
+        )
+      }
+    } else console.error(`[fini-reception] new stock_fini row not found after insert (ligne ${ligneId}, numero ${d.numero})`)
+  }
+
+  // Track the lot in suivilot if it isn't already. Idempotent per
+  // (ligne, lot) — only the first reception of a given lot creates
+  // the row. Totals stay at 0 (a downstream workflow populates
+  // quantite_receptionnee / metrage_receptionne), matching legacy.
+  const idsuivilot = await upsertSuivilot({ commandeId, ligneId, lot: d.lot ?? '' })
+  // The lot's Journal: one line per roll, shown as one « BL enregistré » per click.
+  if (idsuivilot) {
+    await noterLot({
+      idsuivilot, evenement: 'reception', detail: d.numero ? String(d.numero) : null,
+      par,
+    })
+  }
+
+}
+
+/** Receive several dyed rolls on a line, in order (a BL validated from
+ *  Tricobot's proposal). Stops at the first refusal: what was received before
+ *  it stays. Returns the number of rolls received. */
+export async function recevoirPiecesFini(
+  commandeId: number,
+  ligneId: number,
+  pieces: readonly PieceFini[],
+  par: { id: number; nom: string } | null,
+): Promise<number> {
+  const ctx = await loadEnnoblisseurLineContext(commandeId, ligneId)
+  if (!ctx) throw new RefusReception(404, { error: 'Line not found or does not belong to commande', message: 'Ligne de commande introuvable.' })
+  if ((await loadCommandeSoldee(commandeId)) === 1) {
+    throw new RefusReception(409, { error: 'commande_terminee', message: 'Commande terminée — réouvrir la commande pour modifier les lignes.' })
+  }
+  let recues = 0
+  for (const p of pieces) {
+    const parsed = finiBody.safeParse(p)
+    if (!parsed.success) throw new RefusReception(400, { error: 'Validation failed', message: `Pièce ${p.numero} : valeurs invalides.` })
+    // Ml non facturés are a person's gesture: never part of a BL.
+    await recevoirPieceFini(commandeId, ligneId, ctx, parsed.data, par, async () => false)
+    recues++
+  }
+  return recues
+}
+
 commandesSousTraitantRouter.post(
   '/:commandeId/lignes/:ligneId/pieces/fini',
   async (req: Request, res: Response) => {
@@ -6950,194 +7184,13 @@ commandesSousTraitantRouter.post(
         res.status(400).json({ error: 'Validation failed', details: parsed.error.issues })
         return
       }
-      const d = parsed.data
-      if (d.lot !== undefined) d.lot = normaliserLot(d.lot)
-      const refusLot = refusLotSuffixe(d.lot)
-      if (refusLot) { res.status(400).json({ error: 'lot_suffixe_reprise', message: refusLot }); return }
-
-      // Reprise « Couper »: the piece takes the next free suffix of the cut
-      // roll's base (`3571/1-2` cut → `3571/1-3`), never the preview's guess.
-      if (d.numero_coupe_de) {
-        const src = await query<{ numero: string | null; IDref_commande_source: number | null }>(
-          `SELECT numero, IDref_commande_source FROM stock_fini WHERE IDstock_fini = ${d.numero_coupe_de}`,
-        )
-        if (src.length === 0 || (Number(src[0].IDref_commande_source) || 0) !== ligneId) {
-          res.status(400).json({ error: 'numero_coupe_de must be a roll of this line' }); return
-        }
-        const base = cutBase((src[0].numero ?? '').trim() || `#${d.numero_coupe_de}`)
-        const siblings = await query<{ numero: string | null }>(
-          `SELECT numero FROM stock_fini WHERE numero LIKE ${sqlText(`${base}-%`)}`,
-        )
-        d.numero = childNumero(base, nextCutIndex(base, siblings.map((r) => r.numero ?? '')))
-      }
-
-      // « Ml non facturés »: checked BEFORE the roll is created, so a refusal
-      // leaves nothing half-written.
-      const mlNf = d.ml_non_factures ?? 0
-      if (mlNf > 0) {
-        if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
-        if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), 'edit_ml_non_factures'))) {
-          res.status(403).json({ error: 'permission denied: edit_ml_non_factures' }); return
-        }
-        const v = validerSaisie(mlNf, d.ml_non_factures_motif, d.metrage ?? 0)
-        if (!v.ok) { res.status(400).json({ error: 'ml_non_factures_saisie', message: `${d.numero} : ${v.message}` }); return }
-      }
-
-      // stock_fini.IDColoris is the produced fini's coloris (a ref_fini_colori).
-      // The authoritative source is the LINE's IDColoris (the ennoblisseur was
-      // ordered to dye into that coloris) — NOT the source écru's IDcolori_ecru,
-      // which lives in a different id space (colori_ecru). The old code inherited
-      // IDcolori_ecru here, producing rows whose IDColoris resolved to a bogus
-      // cross-referenced ref_fini_colori (wrong coloris in Stock Finis + the
-      // Soumission Lot picker). A body-supplied IDColoris (>0) still wins as an
-      // explicit override; otherwise default to the line's coloris.
-      const inheritedIDColoris = (d.IDColoris && d.IDColoris > 0) ? d.IDColoris : ctx.IDColoris
-      // Inherit the source écru's client reservation. When the écru was
-      // affected with `IDligne_commande_client > 0` (e.g. reserved for
-      // "BONNE NOUVELLE"), the dyed roll keeps the same reservation so
-      // the client tag flows downstream into the Réception tab.
-      let inheritedLcc = 0
-      if (d.IDstock_ecru && d.IDstock_ecru > 0) {
-        const verify = await query<{
-          IDref_commande_affectation: number | null
-          IDligne_commande_client: number | null
-        }>(
-          `SELECT IDref_commande_affectation, IDligne_commande_client
-           FROM stock_ecru WHERE IDstock_ecru = ${d.IDstock_ecru}`,
-        )
-        if (verify.length === 0) {
-          res.status(400).json({ error: 'Source ecru not found' }); return
-        }
-        const aff = Number((verify[0] as any).IDref_commande_affectation) || 0
-        if (aff !== ligneId) {
-          res.status(400).json({ error: 'Source ecru is not affected to this line' }); return
-        }
-        inheritedLcc = Number((verify[0] as any).IDligne_commande_client) || 0
-      }
-
-      // Grouped roll: every component must be affected to this line and not
-      // already consumed into a fini (its own or as a component of another
-      // grouped roll). The first component is the roll's IDstock_ecru.
-      const sources = d.IDstock_ecru_sources ?? []
-      if (sources.length > 0) {
-        if (!(await probeFiniSourceTable())) {
-          res.status(503).json({ error: 'fusion_indisponible', message: new FiniSourceUnavailableError().message })
-          return
-        }
-        if (!(d.IDstock_ecru && d.IDstock_ecru > 0) || sources[0] !== d.IDstock_ecru) {
-          res.status(400).json({ error: 'IDstock_ecru_sources must start with IDstock_ecru' }); return
-        }
-        if (new Set(sources).size !== sources.length) {
-          res.status(400).json({ error: 'IDstock_ecru_sources holds a duplicate' }); return
-        }
-        const compRows = await query<{ IDstock_ecru: number; IDref_commande_affectation: number | null }>(
-          `SELECT IDstock_ecru, IDref_commande_affectation FROM stock_ecru WHERE IDstock_ecru IN (${sources.join(',')})`,
-        )
-        const affById = new Map(compRows.map((r) => [Number(r.IDstock_ecru), Number(r.IDref_commande_affectation) || 0]))
-        const notAffected = sources.filter((id) => affById.get(id) !== ligneId)
-        if (notAffected.length > 0) {
-          res.status(400).json({ error: 'Every component must be affected to this line', ids: notAffected }); return
-        }
-        const consumed = await consumedEcruIds(sources)
-        if (consumed.size > 0) {
-          res.status(409).json({
-            error: 'ecru_deja_recu',
-            message: 'Une des pièces à fusionner a déjà été réceptionnée.',
-            ids: Array.from(consumed),
-          })
-          return
-        }
-      }
-
-      // A piece number is received once per line (2026-10-06, lot MA109269:
-      // « 3550/2 », back on 21/09 and en reprise, was received a second time on
-      // 01/10 in place of 3550/16 — stock and invoice check counted it twice).
-      // A piece back from reprise is re-received by updating its roll (PATCH
-      // below), never by a new one; a split at the dyer gets « -1 » / « -2 ».
-      const deja = await query<{ IDstock_fini: number; IDetat_stock_fini: number | null; date_saisie: string | null }>(
-        `SELECT IDstock_fini, IDetat_stock_fini, DATE_SAISIE AS date_saisie FROM stock_fini
-         WHERE IDref_commande_source = ${ligneId} AND numero = '${esc(d.numero.trim())}'`,
-      )
-      if (deja.length > 0) {
-        const enReprise = Number(deja[0].IDetat_stock_fini) === 2
-        res.status(409).json({
-          error: 'piece_deja_recue',
-          message: `La pièce ${d.numero.trim()} est déjà réceptionnée sur cette ligne${enReprise ? ' (en reprise) : sélectionnez ce rouleau dans l’onglet Réception et « Réceptionner la reprise »' : ''}. Vérifiez le numéro sur le bordereau.`,
-          IDstock_fini: Number(deja[0].IDstock_fini),
-        })
-        return
-      }
-
-      const today = new Date()
-      const yyyy = String(today.getFullYear())
-      const mm = String(today.getMonth() + 1).padStart(2, '0')
-      const dd = String(today.getDate()).padStart(2, '0')
-      const dateSaisie = `${yyyy}${mm}${dd}`
-
-      // Resolve the parent commande's sous-traitant. New receptions are
-      // stored in the magasin keyed on that sst id (matches legacy: 86%
-      // of legacy stock_fini rows have IDmagasin = IDsous_traitant; the
-      // mismatched ones are mostly the IDmagasin=0 rows previously
-      // inserted by ETM before this fix). Body-supplied IDmagasin
-      // (non-zero) still wins so a user can override later.
-      const cmdInfo = await query<{ IDsous_traitant: number | null }>(
-        `SELECT IDsous_traitant FROM commande_sous_traitant WHERE IDcommande_sous_traitant = ${commandeId}`,
-      )
-      const sstId = Number(cmdInfo[0]?.IDsous_traitant) || 0
-      const idMagasin = (d.IDmagasin && d.IDmagasin > 0) ? d.IDmagasin : sstId
-
-      // IDetat_stock_fini = 1 → "En Contrôle" (per etat_stock_fini
-      // label table). New receptions need inspection before being
-      // validated/shipped, so they enter at state 1.
-      const beforeRows = sources.length > 0 || mlNf > 0
-        ? await query<{ m: number | null }>(`SELECT MAX(IDstock_fini) AS m FROM stock_fini`)
-        : []
-      await query(
-        `INSERT INTO stock_fini
-         (numero, lot, poids, metrage, IDref_fini, IDColoris, IDstock_ecru,
-          IDmagasin, IDref_commande_source, observations, observation_sst, date_saisie,
-          second_choix, destockage, don, IDProprietaire, IDcommande_donation, IDligne_commande_client, IDligne_expedition,
-          IDetat_stock_fini)
-         VALUES (${sqlText(d.numero)}, ${sqlText(d.lot)}, ${n(d.poids)}, ${n(d.metrage)},
-                 ${d.IDref_fini}, ${inheritedIDColoris}, ${d.IDstock_ecru ?? 0},
-                 ${idMagasin}, ${ligneId}, ${sqlText(d.observations)}, ${sqlText(d.observation_sst)}, '${dateSaisie}',
-                 0, 0, 0, 0, 0, ${inheritedLcc}, 0, 1)`,
-      )
-      if (sources.length > 0 || mlNf > 0) {
-        // Find the row just inserted (no RETURNING on HFSQL): the newest row of
-        // this line above the pre-insert MAX.
-        const before = Number(beforeRows[0]?.m) || 0
-        const newRows = await query<{ IDstock_fini: number }>(
-          `SELECT TOP 1 IDstock_fini FROM stock_fini
-           WHERE IDstock_fini > ${before} AND IDref_commande_source = ${ligneId} AND IDstock_ecru = ${d.IDstock_ecru ?? 0}
-           ORDER BY IDstock_fini DESC`,
-        )
-        const newId = Number(newRows[0]?.IDstock_fini) || 0
-        if (newId > 0) {
-          if (sources.length > 0) await insertFiniSources(newId, sources)
-          // Written through the journaled path, like any later change.
-          if (mlNf > 0) {
-            await ecrireMlNonFactures(
-              newId,
-              { ml: mlNf, motif: d.ml_non_factures_motif },
-              { idutilisateur: req.userId!, nom: await nomUtilisateur(req.userId!) },
-              'reception',
-            )
-          }
-        } else console.error(`[fini-reception] new stock_fini row not found after insert (ligne ${ligneId}, numero ${d.numero})`)
-      }
-
-      // Track the lot in suivilot if it isn't already. Idempotent per
-      // (ligne, lot) — only the first reception of a given lot creates
-      // the row. Totals stay at 0 (a downstream workflow populates
-      // quantite_receptionnee / metrage_receptionne), matching legacy.
-      const idsuivilot = await upsertSuivilot({ commandeId, ligneId, lot: d.lot ?? '' })
-      // The lot's Journal: one line per roll, shown as one « BL enregistré » per click.
-      if (idsuivilot) {
-        await noterLot({
-          idsuivilot, evenement: 'reception', detail: d.numero ? String(d.numero) : null,
-          par: req.userId ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null,
-        })
+      const par = req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null
+      try {
+        await recevoirPieceFini(commandeId, ligneId, ctx, parsed.data, par,
+          () => userHasPermission(req.userId!, isEffectiveAdmin(req), 'edit_ml_non_factures'))
+      } catch (e) {
+        if (e instanceof RefusReception) { res.status(e.status).json(e.corps); return }
+        throw e
       }
 
       res.status(201).json(await fetchPiecesPayload(ctx, ligneId))

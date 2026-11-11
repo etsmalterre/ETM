@@ -17,7 +17,7 @@ import { AlertCircle, Check, Loader2, Mail, Pencil, Trash2, X } from 'lucide-rea
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
-import { apiFetch } from '@/lib/api'
+import { API_URL, apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 export interface SaisieTricobot {
@@ -43,7 +43,27 @@ export interface SaisieTricobot {
   revuLe: string | null
 }
 
-export interface CompteurTricobot { aValider: number; aide: number; autonome: number }
+/** `bl`: how many of the waiting points are delivery notes (a réception to validate). */
+export interface CompteurTricobot { aValider: number; aide: number; autonome: number; bl?: number }
+
+// ── A delivery note (BL) ─────────────────────────────────
+
+/** `champ` of a BL point: its proposal is the rolls to receive. */
+export const CHAMP_RECEPTION = 'reception'
+
+export interface PieceProposee { numero: string; poids: number | null; metrage: number | null; observations: string }
+export interface PropositionReception { bordereau: string; lot: string; ennoblisseur: string | null; pieces: PieceProposee[] }
+
+export function lireReception(v: string | null): PropositionReception | null {
+  if (!v) return null
+  try {
+    const o = JSON.parse(v) as PropositionReception
+    return Array.isArray(o.pieces) ? o : null
+  } catch { return null }
+}
+
+/** A BL piece numero → the écru numeros it names (« 3510/11+3510/2 »; a cut « 3545/26-1 » names 3545/26). */
+export const numerosEcruDuBl = (numero: string): string[] => numero.split('+').map((n) => n.trim().replace(/-\d+$/, '')).filter(Boolean)
 
 export const jj = (iso: string | null) => (iso && /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : '—')
 export const messageErreur = (e: unknown) => {
@@ -166,7 +186,14 @@ export interface MailLu {
   competence?: string
   /** How §2 was read, per lot: was the lot's order line asked by the Point? */
   controles?: Array<{ lot: string; idsuivilot: number | null; idligne: number; texte: string; demande: boolean | null }>
+  /** The documents of the mail (a BL's PDF): GET /tricobot/saisies/mail/:runId/fichiers/:n. */
+  fichiers?: Array<{ n: number; nom: string }>
+  /** A BL: what the document says of itself. */
+  bl?: { bordereau: string; commande: string; lot: string; pieces: number; poidsTotal: number | null; metrageTotal: number | null; avertissements: string[] } | null
 }
+
+/** The URL of a document of a mail Tricobot read (for an iframe). */
+export const urlFichierMail = (runId: string, n: number) => `${API_URL}/tricobot/saisies/mail/${encodeURIComponent(runId)}/fichiers/${n}#view=FitH`
 
 export function useMailLu(runId: string | null) {
   return useQuery<MailLu>({
@@ -198,7 +225,10 @@ export function MailTricobotDialog({ runId, onClose }: { runId: string | null; o
                 <p><span className="text-muted-foreground">Objet :</span> <span className="font-medium">{q.data.sujet}</span></p>
                 <p><span className="text-muted-foreground">Reçu le :</span> {new Date(q.data.date).toLocaleString('fr-FR')}</p>
               </div>
-              <pre className="whitespace-pre-wrap font-sans text-sm rounded-lg border bg-white p-3">{q.data.texte || '(mail vide)'}</pre>
+              {/* A BL mail is its document; a reply to the Point is its text. */}
+              {q.data.fichiers?.length && runId
+                ? <iframe src={urlFichierMail(runId, q.data.fichiers[0].n)} className="w-full h-[60vh] rounded-lg border bg-zinc-50" title={q.data.fichiers[0].nom} />
+                : <pre className="whitespace-pre-wrap font-sans text-sm rounded-lg border bg-white p-3">{q.data.texte || '(mail vide)'}</pre>}
               <p className="text-xs text-muted-foreground flex items-center gap-1.5"><TricobotMascot className="h-4 w-4" />{q.data.resume}</p>
             </>
           )}

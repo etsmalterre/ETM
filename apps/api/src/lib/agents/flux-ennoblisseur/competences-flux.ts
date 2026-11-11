@@ -82,10 +82,18 @@ export const COMPETENCES_FLUX: readonly CompetenceDef[] = [
   {
     cle: 'bl',
     nom: 'BL',
-    description: 'Lit les bordereaux de livraison et pré-remplit la réception. La réception, faite par une personne, valide le pré-remplissage : pas d’autonomie au-delà.',
+    description: 'Lit les bordereaux de livraison et propose la réception des rouleaux. En supervisé, chaque BL attend sa validation dans Sous-traitants › Ennoblissement : valider, c’est réceptionner.',
+    // Supervisé for now: autonomy (Tricobot receiving a BL alone) comes step by step (Vincent, 2026-11-11).
     modes: ['off', 'essai', 'supervise'],
     defaut: 'supervise',
-    points: async (runs, _slug, v) => pointsBl(v === null ? runs : runs.filter((r) => r.version === v)),
+    // Since 2026-11-11 a BL leaves a point in saisie_agent (reception-bl.ts);
+    // the runs before it are still read from the history.
+    points: async (runs, slug, v) => {
+      const saisies = await saisiesDeCompetence(slug, 'bl', v ?? undefined)
+      const avecPoint = new Set(saisies.map((s) => s.runId))
+      const anciens = runs.filter((r) => !avecPoint.has(r.id) && (v === null || r.version === v))
+      return [...pointsBl(anciens), ...saisies.map(pointDe)]
+    },
   },
   {
     cle: 'delais',

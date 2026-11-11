@@ -24,7 +24,7 @@ import { z } from 'zod'
 import { userCanOpenScreen } from '../lib/permissions.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { auteur } from './agents-ia.js'
-import { lireRun } from '../lib/agents/store.js'
+import { lireFichier, lireRun } from '../lib/agents/store.js'
 import { BL_ENNOBLISSEUR_SLUG } from '../lib/agents/bl-ennoblisseur.js'
 import {
   compteursParCommande, compteursParLot, corriger, GesteRefuse, omission, riensARevoir, saisie, saisiesDeCommande, saisiesDeLot,
@@ -128,8 +128,48 @@ tricobotSaisiesRouter.get('/mail/:runId', async (req, res) => {
       point: r.idpoint ? await pointDuRun(r.idpoint) : null,
       delais: (r.delais ?? []).map((d) => ({ commande: d.commande, idligne: d.idligne, reponse: d.reponse, nommee: d.nommee ?? null })),
       controles: (r.controles ?? []).map((c) => ({ lot: c.lot, idsuivilot: c.idsuivilot, idligne: c.idligne ?? 0, texte: c.texte, demande: c.demande ?? null })),
+      // A BL: the document he read (GET /mail/:runId/fichiers/:n) and what it says of itself.
+      fichiers: (run.fichiers ?? []).map((f, n) => ({ n, nom: f.nom })),
+      bl: (run.competence ?? 'bl') === 'bl' ? blDuRun(run.resultat) : null,
     })
   } catch (err) { echec(res, err, 'mail') }
+})
+
+/** What a BL run read of the document itself, for Tricobot's reasoning. */
+function blDuRun(resultat: Record<string, unknown>) {
+  const r = resultat as {
+    extraction?: { numero_bordereau?: string; numero_commande?: string; nombre_pieces?: number | null; poids_total?: number | null; metrage_total?: number | null; pieces?: unknown[] } | null
+    resolution?: { lot?: string; commandeId?: number | null } | null
+    controles?: Array<{ gravite?: string; message?: string }> | null
+  }
+  if (!r.extraction) return null
+  return {
+    bordereau: r.extraction.numero_bordereau ?? '',
+    commande: r.extraction.numero_commande ?? '',
+    lot: r.resolution?.lot ?? '',
+    pieces: r.extraction.pieces?.length ?? 0,
+    poidsTotal: r.extraction.poids_total ?? null,
+    metrageTotal: r.extraction.metrage_total ?? null,
+    avertissements: (r.controles ?? []).filter((c) => c.gravite === 'avertissement' && (c.message ?? '').trim()).map((c) => String(c.message).trim()),
+  }
+}
+
+// One document of a mail Tricobot read (a BL's PDF), for the panel beside his bubble.
+tricobotSaisiesRouter.get('/mail/:runId/fichiers/:n', async (req, res) => {
+  if ((await garde(req, res, 'ennoblissement', 'suivi_lots')) === null) return
+  try {
+    const run = await lireRun(BL_ENNOBLISSEUR_SLUG, req.params.runId)
+    const f = run?.fichiers?.[parseInt(req.params.n, 10)]
+    const buf = f ? await lireFichier(f.fichier) : null
+    if (!f || !buf) { res.status(404).json({ error: 'document introuvable' }); return }
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(f.nom)}"`)
+    // Shown in an iframe of the web app (another origin in dev).
+    res.removeHeader('X-Frame-Options')
+    res.removeHeader('Content-Security-Policy')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.end(buf)
+  } catch (err) { echec(res, err, 'fichier') }
 })
 
 tricobotSaisiesRouter.get('/', async (req, res) => {

@@ -21,6 +21,8 @@ import { esc, sstDelaiSets, STATUT_ATTENTE_DELAI, STATUT_NON_ENVOYE } from '../.
 import { noterDelaiRecu } from '../../delai-sst.js'
 import { dateDeReference, enregistrerReportDelai, estUnReportDelai, refusAvanceDelai } from '../../report-delai-sst.js'
 import type { Decision, PointMesure, StatutPoint } from '../competences.js'
+import { enregistrerRetour } from '../retours.js'
+import { CHAMP_RECEPTION, lireReception, lotNormalise, receptionnerProposition, retirerPreRemplissage, texteReception } from './reception-bl.js'
 
 export interface Auteur { id: number; nom: string }
 
@@ -155,18 +157,21 @@ export async function compteursParLot(sql: Sql = mpsPg()): Promise<Record<number
 }
 
 /** Per order: what waits for a person (supervisé saisies, aides) and what
- *  Tricobot wrote alone — for the cards of Sous-traitants › Ennoblissement. */
-export async function compteursParCommande(sql: Sql = mpsPg()): Promise<Record<number, { aValider: number; aide: number; autonome: number }>> {
-  const rows = await sql<{ cmd: number; decision: string; statut: string; n: number }[]>`
-    SELECT idcommande_sous_traitant AS cmd, decision, statut, count(*)::int AS n FROM saisie_agent
+ *  Tricobot wrote alone — for the cards of Sous-traitants › Ennoblissement.
+ *  `bl`: how many of the waiting points are delivery notes (a réception to
+ *  validate, not a délai — the card says which). */
+export async function compteursParCommande(sql: Sql = mpsPg()): Promise<Record<number, { aValider: number; aide: number; autonome: number; bl: number }>> {
+  const rows = await sql<{ cmd: number; decision: string; statut: string; bl: boolean; n: number }[]>`
+    SELECT idcommande_sous_traitant AS cmd, decision, statut, (competence = 'bl') AS bl, count(*)::int AS n FROM saisie_agent
     WHERE idcommande_sous_traitant > 0 AND idsuivilot = 0 AND statut IN ('a_revoir', 'autonome')
-    GROUP BY 1, 2, 3`
-  const out: Record<number, { aValider: number; aide: number; autonome: number }> = {}
+    GROUP BY 1, 2, 3, 4`
+  const out: Record<number, { aValider: number; aide: number; autonome: number; bl: number }> = {}
   for (const r of rows) {
-    const o = (out[Number(r.cmd)] ??= { aValider: 0, aide: 0, autonome: 0 })
+    const o = (out[Number(r.cmd)] ??= { aValider: 0, aide: 0, autonome: 0, bl: 0 })
     if (r.statut === 'autonome') o.autonome += r.n
     else if (r.decision === 'aide') o.aide += r.n
     else o.aValider += r.n
+    if (r.bl && r.statut !== 'autonome') o.bl += r.n
   }
   return out
 }
@@ -363,16 +368,37 @@ async function aJuger(id: number, decisions: Decision[]): Promise<Saisie> {
 export async function valider(id: number, par: Auteur, sql: Sql = mpsPg()): Promise<void> {
   const s = await aJuger(id, ['saisie', 'rien'])
   if (s.decision === 'saisie' && !s.ecrit && s.proposition) {
-    // What was there before, for a later « Supprimer » of an autonomous point.
-    const avant = s.champ === 'mesures_sst' ? (s.idsuivilot > 0 ? await lireMesuresLot(s.idsuivilot, sql) : null) : (s.idligne > 0 ? await lireEtatLigne(s.idligne) : null)
+    // What was there before, for a later « Supprimer » of an autonomous point
+    // (a réception has no « before »: its rolls are removed from the stock, not put back).
+    const avant = s.champ === CHAMP_RECEPTION ? null
+      : s.champ === 'mesures_sst' ? (s.idsuivilot > 0 ? await lireMesuresLot(s.idsuivilot, sql) : null) : (s.idligne > 0 ? await lireEtatLigne(s.idligne) : null)
     await ecrireValeur(s, s.proposition, par)
     await sql`UPDATE saisie_agent SET ecrit = true, etat_avant = ${avant ? sql.json(avant as never) : null} WHERE id = ${id}`
   }
   await marquer(id, 'validee', par, s.proposition, null, sql)
+  await retourBl(s, true, '', par)
+}
+
+/** A BL point judged: the same verdict on its run, so Agents IA › Exécutions
+ *  reads what the person said (best effort — the point is the measure). */
+async function retourBl(s: Pick<Saisie, 'agent' | 'competence' | 'runId'>, juste: boolean, commentaire: string, par: Auteur, corrections: string[] = []): Promise<void> {
+  if (s.competence !== 'bl') return
+  try {
+    await enregistrerRetour({ slug: s.agent, runId: s.runId, cle: null, juste, commentaire, corrections, par, garderEchec: true })
+  } catch (e) {
+    console.error('[saisies] BL retour not recorded on its run', s.runId, e)
+  }
 }
 
 /** A person's value for the field Tricobot wrote, checked and written. Returns the canonical text. */
 async function ecrireValeur(s: Saisie, valeur: string, par: Auteur): Promise<string> {
+  if (s.champ === CHAMP_RECEPTION) {
+    // A BL: the rolls of the proposal are received on its line, by the person who validates.
+    const p = lireReception(valeur)
+    if (!p) throw new GesteRefuse('reception_invalide', 'Proposition de réception illisible : réceptionne ce BL à la main.')
+    await receptionnerProposition(s.idcommande, s.idligne, p, par)
+    return texteReception(p)
+  }
   if (s.champ === 'mesures_sst') {
     const m = lireMesures(valeur)
     if (!m) throw new GesteRefuse('mesures_invalides', 'Indiquez les mesures de l’ennoblisseur.')
@@ -387,6 +413,8 @@ async function ecrireValeur(s: Saisie, valeur: string, par: Auteur): Promise<str
 /** « Modifier »: another value, with why. The person's value is written. */
 export async function corriger(id: number, valeur: string, commentaire: string, par: Auteur): Promise<void> {
   const s = await aJuger(id, ['saisie'])
+  // A BL is corrected roll by roll in the réception dialog, which judges the point (receptionFaite).
+  if (s.champ === CHAMP_RECEPTION) throw new GesteRefuse('par_la_reception', 'Un BL se corrige depuis la réception des rouleaux.')
   const why = pourquoi(commentaire)
   const canon = s.champ === 'mesures_sst' ? texteMesures(lireMesures(valeur) ?? { laize: NaN, poids: 0, stabH: null, stabL: null, vrillage: null }) : valeur
   if (canon === s.proposition) throw new GesteRefuse('meme_valeur', 'Ce sont les valeurs de Tricobot : validez-les plutôt.')
@@ -399,11 +427,43 @@ export async function supprimer(id: number, commentaire: string, par: Auteur, sq
   const s = await aJuger(id, ['saisie'])
   const why = pourquoi(commentaire)
   const [r] = await sql<{ etat_avant: (EtatLigne & MesuresSst) | null }[]>`SELECT etat_avant FROM saisie_agent WHERE id = ${id}`
-  if (s.ecrit && r?.etat_avant) {
+  if (s.champ === CHAMP_RECEPTION) {
+    // « Pas à réceptionner »: the réception must not offer these rolls again. Rolls already received stay.
+    const p = lireReception(s.proposition)
+    if (p) await retirerPreRemplissage(s.idligne, p.lot)
+  } else if (s.ecrit && r?.etat_avant) {
     if (s.champ === 'mesures_sst' && s.idsuivilot > 0) await ecrireMesures(s.idsuivilot, r.etat_avant, sql)
     else if (s.idligne > 0) await remettreLigne(s.idligne, r.etat_avant)
   }
   await marquer(id, 'supprimee', par, null, why)
+  await retourBl(s, false, why, par)
+}
+
+/** A person received rolls of a lot from the réception dialog (PUT
+ *  /tricobot/bl-reception): Tricobot's BL point waiting on that line for that
+ *  lot is judged by it — received as he read it = validée, a value changed =
+ *  corrigée (the changes are the why). An aide stays open: the person still
+ *  owes « avais-je raison de demander ? ». Never fails the réception. */
+export async function receptionFaite(idligne: number, lot: string, corrections: readonly string[], commentaire: string, par: Auteur): Promise<number> {
+  try {
+    const sql = mpsPg()
+    const ouvertes = (await sql`
+      SELECT * FROM saisie_agent WHERE idligne_commande_sous_traitant = ${idligne}
+        AND competence = 'bl' AND champ = ${CHAMP_RECEPTION} AND decision = 'saisie' AND statut IN ('a_revoir', 'autonome')`).map(versSaisie)
+    const cible = lotNormalise(lot)
+    let n = 0
+    for (const s of ouvertes) {
+      if (lotNormalise(lireReception(s.proposition)?.lot ?? '') !== cible) continue
+      if (corrections.length === 0) await marquer(s.id, 'validee', par, s.proposition, null, sql)
+      else await marquer(s.id, 'corrigee', par, corrections.join(' ; ').slice(0, 4000), commentaire.trim() || 'Corrigé à la réception des rouleaux.', sql)
+      await sql`UPDATE saisie_agent SET ecrit = true WHERE id = ${s.id}`
+      n++
+    }
+    return n
+  } catch (e) {
+    console.error('[saisies] réception not reflected on Tricobot’s BL point', idligne, lot, e)
+    return 0
+  }
 }
 
 /** An aide settled: the value the person writes (or none), and their answer to
@@ -424,6 +484,9 @@ export async function trancher(
   const ecrit = valeur ? await ecrireValeur(s, valeur, par) : null
   await marquer(id, 'resolue', par, ecrit, commentaire.trim() || null, sql)
   await sql`UPDATE saisie_agent SET doute_justifie = ${avis.justifie}, doute_commentaire = ${pq || null} WHERE id = ${id}`
+  // A BL's run carries the same answer: in Agents IA the score of an « à
+  // vérifier » run IS « was it right to ask? » (competences-flux.ts pointsBl).
+  await retourBl(s, avis.justifie, pq, par)
 }
 
 /** « Il y avait un délai dans ce mail » on a « rien »: an omission, with why. */

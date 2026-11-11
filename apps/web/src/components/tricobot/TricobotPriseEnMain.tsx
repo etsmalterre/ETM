@@ -18,11 +18,16 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { AlertCircle, Check, Eye, Loader2, Mail, Pencil, Trash2 } from 'lucide-react'
+import { AlertCircle, Check, Eye, FileText, Loader2, Mail, Maximize2, Pencil, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Dialog } from '@/components/ui/dialog'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { cn } from '@/lib/utils'
-import { CHAMPS_MESURES, GesteDialog, jj, lireMesures, MailTricobotDialog, messageErreur, useGeste, useMailLu, type Geste, type SaisieTricobot } from './SaisiesTricobot'
+import { fmtNum } from '@/lib/format'
+import {
+  CHAMP_RECEPTION, CHAMPS_MESURES, GesteDialog, jj, lireMesures, lireReception, MailTricobotDialog, messageErreur, urlFichierMail, useGeste, useMailLu,
+  type Geste, type SaisieTricobot,
+} from './SaisiesTricobot'
 
 /** Room around a lit value. */
 const PAD = 8
@@ -31,6 +36,8 @@ const HAUT_ENTETE = 56
 const MASCOTTE = 160
 const LARGEUR_MAIL = 400
 const LARGEUR_BULLE = 560
+/** A BL's panel never grows past a readable page. */
+const LARGEUR_BL_MAX = 860
 
 type Zone = { left: number; top: number; width: number; height: number }
 
@@ -92,6 +99,60 @@ function MailPanneau({ runId, citations, idlignes, section }: { runId: string | 
   const q = useMailLu(runId)
   const point = q.data?.point ?? null
   const question = point ? (point.sections?.[String(section) as '2' | '5'] ?? (section === 5 ? { titre: point.titre, lignes: point.lignes } : null)) : null
+  // A BL: the mail is its document (several scanned pages = several files).
+  const fichiers = q.data?.competence === 'bl' ? q.data.fichiers ?? [] : []
+  const [page, setPage] = useState(0)
+  /** « Agrandir »: the document alone, as large as the screen allows (§18.B viewer). */
+  const [grand, setGrand] = useState(false)
+  const fichier = fichiers[Math.min(page, fichiers.length - 1)] ?? null
+  if (q.data?.competence === 'bl') {
+    return (
+      <div className="flex h-full flex-col overflow-hidden rounded-xl bg-white shadow-2xl ring-1 ring-black/10">
+        <div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5">
+          <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center bg-gold text-gold-foreground shadow-sm"><FileText className="h-[18px] w-[18px]" /></div>
+          <div className="min-w-0 flex-1">
+            <p className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">Le BL que j’ai lu</p>
+            <p className="text-xs text-white/70 truncate">{q.data.bl?.bordereau ? `BL ${q.data.bl.bordereau}` : q.data.sujet}</p>
+          </div>
+          {fichier && runId && (
+            <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0 text-white/80 hover:bg-white/15 hover:text-white" title="Agrandir le document" onClick={() => setGrand(true)}>
+              <Maximize2 className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+        {fichier && runId && (
+          <Dialog open={grand} onOpenChange={setGrand}>
+            <div className="relative z-50 w-[80vw] max-w-6xl h-[95vh]" onClick={(e) => e.stopPropagation()}>
+              <iframe src={urlFichierMail(runId, fichier.n)} className="w-full h-full rounded-lg bg-white" title={fichier.nom} />
+              <Button variant="ghost" size="icon" className="absolute -right-11 top-0 h-9 w-9 text-white/80 hover:bg-white/15 hover:text-white" title="Fermer" onClick={() => setGrand(false)}>
+                <X className="h-5 w-5" />
+              </Button>
+            </div>
+          </Dialog>
+        )}
+        <div className="flex-1 min-h-0 flex flex-col gap-3 bg-zinc-100 p-3">
+          <div className="flex-shrink-0 rounded-lg border bg-white p-3 shadow-sm">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Le mail · {q.data.de.replace(/<.*>/, '').trim() || q.data.de}</p>
+            <p className="text-xs text-muted-foreground">Reçu le {new Date(q.data.date).toLocaleString('fr-FR')}</p>
+            <p className="mt-1 text-sm font-medium truncate" title={q.data.sujet}>{q.data.sujet}</p>
+            {fichiers.length > 1 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {fichiers.map((x, i) => (
+                  <button key={x.n} type="button" onClick={() => setPage(i)} title={x.nom}
+                    className={cn('px-2 py-0.5 text-xs rounded-md transition-colors', i === page ? 'bg-accent text-accent-foreground shadow-sm font-medium' : 'text-muted-foreground hover:bg-accent/10')}>
+                    Page {i + 1}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {fichier && runId
+            ? <iframe key={fichier.n} src={urlFichierMail(runId, fichier.n)} className="flex-1 min-h-0 w-full rounded-lg border border-border/60 bg-white" title={fichier.nom} />
+            : <p className="flex-1 flex items-center justify-center text-sm italic text-muted-foreground">Document introuvable.</p>}
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-xl bg-white shadow-2xl ring-1 ring-black/10">
       <div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5">
@@ -141,6 +202,27 @@ function Raisonnement({ s }: { s: SaisieTricobot }) {
   const q = useMailLu(s.runId)
   const point = q.data?.point ?? null
   const etapes: ReactNode[] = []
+  if (s.champ === CHAMP_RECEPTION) {
+    // A BL: the document, what to know about it, then the rule (or the doubt).
+    const p = lireReception(s.proposition)
+    const bl = q.data?.bl ?? null
+    const de = q.data ? q.data.de.replace(/<.*>/, '').trim() || q.data.de : null
+    etapes.push(<>C’est le BL <span className="font-semibold">{p?.bordereau || bl?.bordereau || '(numéro illisible)'}</span>{p?.ennoblisseur ? <> de {p.ennoblisseur}</> : null}{de && q.data ? <>, joint au mail de {de} reçu le {new Date(q.data.date).toLocaleDateString('fr-FR')}</> : null}{bl?.commande ? <>. Il porte la commande <span className="font-semibold">{bl.commande}</span></> : null}.</>)
+    for (const a of bl?.avertissements ?? []) etapes.push(<>À savoir : {a}</>)
+    etapes.push(s.decision === 'aide'
+      ? <span className="font-medium text-red-700">Je ne suis pas sûr : {s.explication.split('\n').map((l, i) => <span key={i} className="block">{l}</span>)}</span>
+      : <>{s.explication}</>)
+    return (
+      <ol className="mt-1 space-y-1">
+        {etapes.map((e, i) => (
+          <li key={i} className="flex gap-2 text-sm">
+            <span className="mt-0.5 h-4 w-4 flex-shrink-0 rounded-full bg-zinc-200 text-[10px] font-semibold flex items-center justify-center text-muted-foreground">{i + 1}</span>
+            <span className="min-w-0">{e}</span>
+          </li>
+        ))}
+      </ol>
+    )
+  }
   if (s.competence === 'controles') {
     // Contrôles: §2 « Puis-je avoir vos contrôles… », the lot's line in the reply.
     const lu = q.data?.controles?.find((c) => c.idsuivilot === s.idsuivilot)
@@ -185,9 +267,52 @@ function Raisonnement({ s }: { s: SaisieTricobot }) {
 /** A proposal he could apply as is: a date, or every measure read (laize, poids, both stabilités). */
 function propositionComplete(s: SaisieTricobot): boolean {
   if (!s.proposition) return false
+  if (s.champ === CHAMP_RECEPTION) {
+    // Every roll has its métrage, on a line and a lot he knows.
+    const p = lireReception(s.proposition)
+    return !!p && s.idligne > 0 && !!p.lot && p.pieces.length > 0 && p.pieces.every((x) => !!x.numero && x.metrage != null)
+  }
   if (s.champ !== 'mesures_sst') return /^\d{4}-\d{2}-\d{2}$/.test(s.proposition)
   const m = lireMesures(s.proposition)
   return !!m && [m.laize, m.poids, m.stabH, m.stabL].every((v) => typeof v === 'number')
+}
+
+/** The rolls of a BL as he proposes to receive them. */
+function RouleauxBl({ s }: { s: SaisieTricobot }) {
+  const p = lireReception(s.proposition)
+  if (!p || p.pieces.length === 0) return <p className="text-sm italic text-muted-foreground">Je n’ai lu aucune pièce sur ce document.</p>
+  const total = p.pieces.reduce((t, x) => t + (x.metrage ?? 0), 0)
+  return (
+    <div className="max-h-56 overflow-y-auto scrollbar-transparent rounded-md border border-border/60 bg-white">
+      <table className="w-full text-xs">
+        <thead className="sticky top-0 bg-zinc-200 text-[10px] uppercase tracking-wide text-muted-foreground">
+          <tr>
+            <th className="px-2 py-1 text-left font-semibold">Pièce</th>
+            <th className="px-2 py-1 text-right font-semibold">Poids</th>
+            <th className="px-2 py-1 text-right font-semibold">Métrage</th>
+            <th className="px-2 py-1 text-left font-semibold">Observation de l’ennoblisseur</th>
+          </tr>
+        </thead>
+        <tbody>
+          {p.pieces.map((x, i) => (
+            <tr key={i} className="border-t border-border/40">
+              <td className="px-2 py-1 font-medium tabular-nums whitespace-nowrap">{x.numero || '?'}</td>
+              <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap" title={x.poids == null ? 'Le poids reste celui du tombé de métier' : undefined}>{x.poids != null ? `${fmtNum(x.poids, 1)} kg` : '—'}</td>
+              <td className={cn('px-2 py-1 text-right tabular-nums whitespace-nowrap', x.metrage == null && 'font-semibold text-red-600')}>{x.metrage != null ? `${fmtNum(x.metrage, 1)} Ml` : '?'}</td>
+              <td className="px-2 py-1 text-muted-foreground">{x.observations}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot className="sticky bottom-0 bg-zinc-100 text-[11px]">
+          <tr className="border-t border-border/60">
+            <td className="px-2 py-1 font-semibold" colSpan={2}>{p.pieces.length} rouleau{p.pieces.length > 1 ? 'x' : ''}{p.lot ? ` · lot ${p.lot}` : ''}</td>
+            <td className="px-2 py-1 text-right font-semibold tabular-nums whitespace-nowrap">{fmtNum(total, 1)} Ml</td>
+            <td />
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  )
 }
 
 /** What he wrote: a délai (before → after), or the dyer's measures (a small table). */
@@ -267,12 +392,17 @@ function Queue() {
 }
 
 /** `libelle(s)` names what he wrote on (« 029A - vert sauge », « Lot MA109516 »). */
-export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'commande' }: {
+export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'commande', onReception, receptionFaitePour }: {
   saisies: SaisieTricobot[]
   libelle: (s: SaisieTricobot) => string
   onChanged?: () => void
-  /** What he took over: « cette commande » (Délais) or « ce lot » (Contrôles). */
+  /** What he took over: « cette commande » (Délais, BL) or « ce lot » (Contrôles). */
   sujet?: 'commande' | 'lot'
+  /** A BL: open the roll-by-roll réception on its rolls, his values filled (« Modifier », on a saisie and on an aide). */
+  onReception?: (s: SaisieTricobot) => void
+  /** A BL he asked about, whose rolls the person just received by hand (its
+   *  saisie id): what is left is « avais-je raison de demander ? ». */
+  receptionFaitePour?: number | null
 }) {
   const geste = useGeste(onChanged)
   // The mail on the right is the one these saisies came from: it follows the
@@ -299,6 +429,10 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
     setAvisJustifie(null)
     setPourquoiAvis('')
   }
+  useEffect(() => {
+    if (receptionFaitePour) choisir({ id: receptionFaitePour, valeur: null, quoi: 'tu as réceptionné ces rouleaux après les avoir revus' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [receptionFaitePour])
   /** When a writing gesture brought him back: the rest of that click must not land on the veil. */
   const retourLe = useRef(0)
   const [zone, ...cibles] = useMesures(saisies.map((s) => s.idligne).filter((x) => x > 0))
@@ -342,16 +476,27 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
   const aRevoir = saisies.filter((s) => s.statut === 'a_revoir')
   const citations = saisies.filter((s) => s.runId === mailRun).map((s) => s.citation)
   const controles = saisies[0]?.competence === 'controles'
+  // Delivery notes only: the bubble speaks of rolls to receive, the panel shows the BL.
+  const bl = saisies.length > 0 && saisies.every((s) => s.champ === CHAMP_RECEPTION)
+  const rouleauxBl = bl ? saisies.reduce((t, s) => t + (lireReception(s.proposition)?.pieces.length ?? 0), 0) : 0
+  const ennoblisseurBl = bl ? lireReception(saisies[0].proposition)?.ennoblisseur ?? null : null
   const ce = sujet === 'lot' ? 'ce lot' : 'cette commande'
 
   // Inside the zone: the mail on the right when there is room, Tricobot and
   // his bubble under the lit values on the left.
   const avecMail = zone.width >= 1000
-  const largeurMail = avecMail ? Math.min(LARGEUR_MAIL, zone.width * 0.34) : 0
   const gauche = 16
+  const largeurTexte = Math.min(LARGEUR_MAIL, zone.width * 0.34)
+  // A BL is a document to read, figures to compare: its panel takes all the
+  // width the bubble leaves (a mail's text reads better on short lines and
+  // keeps the narrow panel). Wide enough, Chrome's viewer shows its zoom buttons.
+  const largeurMail = !avecMail ? 0
+    : bl ? Math.max(largeurTexte, Math.min(LARGEUR_BL_MAX, zone.width - (gauche + MASCOTTE + LARGEUR_BULLE) - 2 * 16))
+    : largeurTexte
   const largeurParole = Math.min(MASCOTTE + LARGEUR_BULLE, zone.width - largeurMail - 3 * 16)
   const basCibles = cibles.length ? Math.max(...cibles.map((r) => r.top + r.height)) - zone.top : 80
-  const haut = Math.max(16, Math.min(basCibles + PAD + 20, zone.height - 460))
+  // A BL's bubble is taller (its rolls): it starts higher when the detail is short.
+  const haut = Math.max(16, Math.min(basCibles + PAD + 20, zone.height - (bl ? 640 : 460)))
 
   if (consultation) {
     // Reading the detail: only the pill, at the bottom left of the detail.
@@ -390,7 +535,11 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
         onClick={() => { if (Date.now() - retourLe.current > 500) setConsultation(true) }}
       />
       {/* How to look under the veil, said once, discreetly (no button in the bubble). */}
-      <p className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 rounded-full bg-slate-900/50 px-3 py-1 text-xs text-white/80">
+      {/* Centred in what the panel on the right leaves of the veil. */}
+      <p
+        className="pointer-events-none absolute bottom-3 -translate-x-1/2 whitespace-nowrap flex items-center gap-1.5 rounded-full bg-slate-900/50 px-3 py-1 text-xs text-white/80"
+        style={{ left: (zone.width - (largeurMail ? largeurMail + 16 : 0)) / 2 }}
+      >
         <Eye className="h-3.5 w-3.5" />Clique sur le fond pour regarder le détail
       </p>
 
@@ -402,10 +551,16 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
             why, with the gestures. */}
         <div className="relative -ml-3 min-w-0 flex-1">
           <Queue />
-          <div className={cn(BULLE, 'relative')}>
-            <p className="text-[11px] font-bold uppercase tracking-wide text-red-600">Tricobot a pris la main sur {ce}</p>
-            <p className="mt-0.5 text-sm font-semibold">
-              {aRevoir.length > 0 && aRevoir.every((x) => x.decision === 'aide')
+          <div className={cn(BULLE, 'relative overflow-y-auto scrollbar-transparent')} style={{ maxHeight: zone.height - haut - 16 }}>
+            {/* No title (Vincent, 2026-11-11): the mascot, the veil and the red card already say he took over. */}
+            <p className="text-sm font-semibold">
+              {bl
+                ? (aRevoir.length > 0 && aRevoir.every((x) => x.decision === 'aide')
+                  ? `Je n’ai rien réceptionné : j’ai besoin de ton avis sur ce BL${ennoblisseurBl ? ` de ${ennoblisseurBl}` : ''}${avecMail ? ' (à droite)' : ''}.`
+                  : aRevoir.length
+                  ? `${ennoblisseurBl ?? 'L’ennoblisseur'} a livré : je te propose de réceptionner ${rouleauxBl > 1 ? `ces ${rouleauxBl} rouleaux` : 'ce rouleau'}, d’après son BL${avecMail ? ' à droite' : ''}. Rien n’est écrit tant que tu n’as pas validé.`
+                  : 'J’ai réceptionné ce BL seul. Tu peux encore le corriger.')
+                : aRevoir.length > 0 && aRevoir.every((x) => x.decision === 'aide')
                 ? `Je n’ai rien ${controles ? 'reporté' : 'saisi'} : j’ai besoin de ton avis sur ${controles ? 'les contrôles' : aRevoir.length > 1 ? 'les délais' : 'le délai'} de l’ennoblisseur${avecMail ? ' (son mail, à droite)' : ''}.`
                 : controles
                 ? (aRevoir.length
@@ -419,10 +574,17 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
             {saisies.map((s) => (
               <div key={s.id} className="mt-3">
                 {/* What he wrote. */}
-                <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-zinc-50 px-2.5 py-2">
-                  <span className="min-w-0 truncate text-sm font-medium">{libelle(s)}</span>
-                  <Valeur s={s} />
-                </div>
+                {s.champ === CHAMP_RECEPTION ? (
+                  <div className="rounded-lg border bg-zinc-50 px-2.5 py-2 space-y-2">
+                    <p className="truncate text-sm font-medium">{libelle(s)}</p>
+                    <RouleauxBl s={s} />
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-zinc-50 px-2.5 py-2">
+                    <span className="min-w-0 truncate text-sm font-medium">{libelle(s)}</span>
+                    <Valeur s={s} />
+                  </div>
+                )}
 
                 {/* Why — its own section. */}
                 <div className="mt-3 border-t border-border/60 pt-3">
@@ -435,7 +597,34 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
                       <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setMailDialog(s.runId)}><Mail className="mr-1 h-3.5 w-3.5" />Voir le mail</Button>
                     )}
                     <span className="ml-auto" />
-                    {s.decision === 'saisie' && (
+                    {s.champ === CHAMP_RECEPTION && s.decision === 'saisie' && (
+                      <>
+                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs text-destructive hover:text-destructive" disabled={geste.isPending} onClick={() => setDialog({ s, action: 'supprimer' })}><Trash2 className="mr-1 h-3.5 w-3.5" />Pas à réceptionner</Button>
+                        {onReception && (
+                          <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} title="Corriger un rouleau, couper, ajouter un commentaire…" onClick={() => onReception(s)}><Pencil className="mr-1 h-3.5 w-3.5" />Modifier</Button>
+                        )}
+                        {s.statut === 'a_revoir' && (() => {
+                          const nb = lireReception(s.proposition)?.pieces.length ?? 0
+                          return (
+                            <Button size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => lancer({ id: s.id, action: 'valider' })}>
+                              {geste.isPending ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Check className="mr-1 h-3.5 w-3.5" />}Réceptionner {nb > 1 ? `${nb} rouleaux` : 'le rouleau'}
+                            </Button>
+                          )
+                        })()}
+                      </>
+                    )}
+                    {s.champ === CHAMP_RECEPTION && s.decision === 'aide' && choix?.id !== s.id && (
+                      <>
+                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => choisir({ id: s.id, valeur: null, quoi: 'tu ne réceptionnes rien' })}>Ne rien réceptionner</Button>
+                        {onReception && (
+                          <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} title="Corriger ce que j’ai lu, rouleau par rouleau, puis réceptionner" onClick={() => onReception(s)}><Pencil className="mr-1 h-3.5 w-3.5" />Modifier</Button>
+                        )}
+                        {propositionComplete(s) && (
+                          <Button size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => choisir({ id: s.id, valeur: s.proposition, quoi: 'tu réceptionnes ces rouleaux comme je le propose' })}><Check className="mr-1 h-3.5 w-3.5" />Appliquer ma proposition</Button>
+                        )}
+                      </>
+                    )}
+                    {s.champ !== CHAMP_RECEPTION && s.decision === 'saisie' && (
                       <>
                         <Button variant="outline" size="sm" className="h-7 px-2 text-xs text-destructive hover:text-destructive" disabled={geste.isPending} onClick={() => setDialog({ s, action: 'supprimer' })}><Trash2 className="mr-1 h-3.5 w-3.5" />Supprimer</Button>
                         <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => setDialog({ s, action: 'corriger' })}><Pencil className="mr-1 h-3.5 w-3.5" />Modifier</Button>
@@ -444,7 +633,7 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
                         )}
                       </>
                     )}
-                    {s.decision === 'aide' && choix?.id !== s.id && (
+                    {s.champ !== CHAMP_RECEPTION && s.decision === 'aide' && choix?.id !== s.id && (
                       <>
                         <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => choisir({ id: s.id, valeur: null, quoi: 'tu ne saisis rien' })}>Ne rien saisir</Button>
                         <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => setDialog({ s, action: 'trancher' })}><Pencil className="mr-1 h-3.5 w-3.5" />Saisir autre chose</Button>
@@ -510,12 +699,12 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
       {/* Dialogs outside the veiled zone: they centre on the screen, above it. */}
       <GesteDialog
         open={!!dialog}
-        titre={dialog?.action === 'supprimer' ? 'Supprimer la saisie de Tricobot' : controles ? (dialog?.action === 'trancher' ? 'Saisir les mesures de l’ennoblisseur' : 'Corriger les mesures') : dialog?.action === 'trancher' ? 'Saisir le délai' : 'Corriger le délai'}
+        titre={dialog?.s.champ === CHAMP_RECEPTION ? 'Ce BL n’est pas à réceptionner' : dialog?.action === 'supprimer' ? 'Supprimer la saisie de Tricobot' : controles ? (dialog?.action === 'trancher' ? 'Saisir les mesures de l’ennoblisseur' : 'Corriger les mesures') : dialog?.action === 'trancher' ? 'Saisir le délai' : 'Corriger le délai'}
         avecDate={dialog?.action !== 'supprimer'}
         dateInitiale={dialog?.s.proposition}
         mesuresInitiales={controles ? lireMesures(dialog?.s.proposition ?? null) : undefined}
         pourquoiFacultatif={dialog?.action === 'trancher'}
-        libelle={dialog?.action === 'supprimer' ? 'Supprimer' : 'Enregistrer'}
+        libelle={dialog?.s.champ === CHAMP_RECEPTION ? 'Envoyer à Tricobot' : dialog?.action === 'supprimer' ? 'Supprimer' : 'Enregistrer'}
         isPending={geste.isPending}
         error={dialog ? erreur : null}
         onClose={() => { setDialog(null); setErreur(null) }}

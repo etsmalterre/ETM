@@ -84,7 +84,7 @@ import { TmRollIcon } from '@/components/icons/TmRollIcon'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { HorsRefBadge, type FilHorsRef } from '@/components/shared/HorsRef'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
-import { ouvertes, tricobotAttend, TricobotAvatar, useCompteursTricobot, useSaisiesTricobot, type CompteurTricobot } from '@/components/tricobot/SaisiesTricobot'
+import { lireReception, ouvertes, tricobotAttend, TricobotAvatar, useCompteursTricobot, useSaisiesTricobot, type CompteurTricobot, type SaisieTricobot } from '@/components/tricobot/SaisiesTricobot'
 import { TricobotPriseEnMain } from '@/components/tricobot/TricobotPriseEnMain'
 import { RollTable } from '@/components/stock/RollTable'
 import { EtatPill } from '@/lib/etat-stock-fini'
@@ -709,9 +709,10 @@ function rowUrgency(row: CommandeListRow): 'late' | 'soon' | null {
  *  date (API lib/cycle-ennoblissement.ts, lib/sst-tricotage.ts). */
 function raisonCarte(row: CommandeListRow, urgence: 'late' | 'soon' | null, tricobot: CompteurTricobot | undefined): string | null {
   if (tricobotAttend(tricobot)) {
-    return tricobot!.aide > 0 && tricobot!.aValider === 0
-      ? 'Tricobot demande ton avis'
-      : `Tricobot : ${tricobot!.aValider + tricobot!.aide > 1 ? 'délais à valider' : 'délai à valider'}`
+    if (tricobot!.aide > 0 && tricobot!.aValider === 0) return 'Tricobot demande ton avis'
+    // Delivery notes only: a réception to validate, not a délai.
+    if ((tricobot!.bl ?? 0) >= tricobot!.aValider + tricobot!.aide) return 'Tricobot : réception à valider'
+    return `Tricobot : ${tricobot!.aValider + tricobot!.aide > 1 ? 'délais à valider' : 'délai à valider'}`
   }
   if (!urgence) return null
   const quand = (iso: string | null | undefined) => {
@@ -1903,8 +1904,13 @@ function LignesSection({
   piecesDrawerLineId: number | null
   onOpenPiecesDrawer: (lineId: number | null) => void
 }) {
+  const queryClient = useQueryClient()
   const [editingLineId, setEditingLineId] = useState<number | null>(null)
   const [showLineForm, setShowLineForm] = useState(false)
+  // A BL Tricobot proposes (or asks about): the roll-by-roll réception opened
+  // from his bubble, and the aide whose rolls were just received by hand.
+  const [receptionBl, setReceptionBl] = useState<SaisieTricobot | null>(null)
+  const [receptionFaitePour, setReceptionFaitePour] = useState<number | null>(null)
   // Tricobot's revue (claude_doc/agents_autonomie.md §6): while some of his
   // saisies wait, only the lines he wrote stay lit, the rest is greyed.
   const { data: saisiesTricobot } = useSaisiesTricobot(commande.IDcommande_sous_traitant)
@@ -2170,7 +2176,27 @@ function LignesSection({
                 const l = commande.lignes.find((y) => y.IDligne_commande_sous_traitant === x.idligne)
                 return l ? [l.ref_label, l.colori_reference].filter(Boolean).join(' - ') : x.idligne ? `Ligne ${x.idligne}` : 'Commande'
               }}
-              onChanged={onMutationSuccess}
+              // Validating a BL receives its rolls: the stock and the line's pieces moved.
+              onChanged={() => {
+                invalidateStockCaches(queryClient)
+                queryClient.invalidateQueries({ queryKey: ['commande-sst-pieces', commande.IDcommande_sous_traitant] })
+                onMutationSuccess()
+              }}
+              onReception={setReceptionBl}
+              receptionFaitePour={receptionFaitePour}
+            />
+          )}
+          {receptionBl && (
+            <ReceptionBlTricobot
+              commande={commande}
+              saisie={receptionBl}
+              onClose={() => setReceptionBl(null)}
+              onDone={() => {
+                // An aide: what is left is « avais-je raison de demander ? ».
+                if (receptionBl.decision === 'aide') setReceptionFaitePour(receptionBl.id)
+                setReceptionBl(null)
+                onMutationSuccess()
+              }}
             />
           )}
           {commande.lignes.length === 0 && !showLineForm ? (
@@ -4786,6 +4812,70 @@ function TricobotBlBloqueNote({ bl, explication, onExplication }: {
   )
 }
 
+/** The roll-by-roll réception opened from Tricobot's bubble on a BL
+ *  (« Modifier », on a saisie and on an aide): the BL's rolls among the line's
+ *  tombés de métier still to receive — every one of them when the BL names
+ *  none (a number he could not match). */
+function ReceptionBlTricobot({ commande, saisie, onClose, onDone }: {
+  commande: CommandeDetail
+  saisie: SaisieTricobot
+  onClose: () => void
+  onDone: () => void
+}) {
+  const queryClient = useQueryClient()
+  const commandeId = commande.IDcommande_sous_traitant
+  // A BL he could not put on a line: the order's only line, else none.
+  const ligne = commande.lignes.find((l) => l.IDligne_commande_sous_traitant === saisie.idligne)
+    ?? (commande.lignes.length === 1 ? commande.lignes[0] : null)
+  const queryKey = ['commande-sst-pieces', commandeId, ligne?.IDligne_commande_sous_traitant ?? 0] as const
+  const { data, isError } = useQuery<PiecesPayload>({
+    queryKey,
+    queryFn: () => apiFetch(`/commandes-sous-traitant/${commandeId}/lignes/${ligne!.IDligne_commande_sous_traitant}/pieces`),
+    enabled: !!ligne,
+    staleTime: 0,
+  })
+  const recus = new Set((data?.finiReceived ?? []).flatMap((x) => [Number(x.IDstock_ecru), ...(x.source_ecru_ids ?? [])]).filter((id) => id > 0))
+  const aRecevoir = (data?.ecruLinked ?? []).filter((r) => !recus.has(r.IDstock_ecru))
+  const numeros = new Set((lireReception(saisie.proposition)?.pieces ?? []).flatMap((p) => numerosEcruDuBl(p.numero)))
+  const duBl = aRecevoir.filter((r) => numeros.has((r.numero ?? '').trim()))
+  const ecruRolls = duBl.length > 0 ? duBl : aRecevoir
+  const impossible = !ligne
+    ? 'Je ne sais pas sur quelle ligne de la commande réceptionner ce BL : ouvre la ligne concernée, onglet « Affectés », et réceptionne ses rouleaux de là.'
+    : isError
+      ? 'Les pièces de la ligne n’ont pas pu être chargées.'
+      : data && ecruRolls.length === 0
+        ? 'Il ne reste aucun tombé de métier à réceptionner sur cette ligne.'
+        : null
+  if (impossible) {
+    return (
+      <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
+        <DialogContent className="max-w-md" onClose={onClose}>
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><TricobotMascot className="h-6 w-6" />Réception du BL</DialogTitle></DialogHeader>
+          <p className="mt-4 text-sm text-muted-foreground">{impossible}</p>
+          <DialogFooter className="mt-4"><Button variant="outline" onClick={onClose}>Fermer</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    )
+  }
+  if (!ligne || !data) return null
+  return (
+    <BatchReceptionDialog
+      commandeId={commandeId}
+      ligne={ligne}
+      fusionEnabled={data.fusion_disponible === true}
+      ecruRolls={ecruRolls}
+      ouvrirEnEdition
+      propositionTricobot={saisie.decision === 'aide' ? lireReception(saisie.proposition) : null}
+      onClose={onClose}
+      onSuccess={(payload) => {
+        queryClient.setQueryData(queryKey, payload)
+        invalidateStockCaches(queryClient) // the réception creates stock_fini rows
+        onDone()
+      }}
+    />
+  )
+}
+
 interface BatchReceptionRow {
   lot: string
   poids: string
@@ -4806,6 +4896,12 @@ type BatchReceptionProps = {
   /** « Fusionner » (LIVA #1149) is offered only when the server can record a
    *  grouped roll (`PiecesPayload.fusion_disponible`). */
   fusionEnabled?: boolean
+  /** Opened from Tricobot's bubble to correct his BL: land on the roll-by-roll
+   *  editor, his values filled, instead of the recap (already read in the bubble). */
+  ouvrirEnEdition?: boolean
+  /** A BL Tricobot asked about (nothing pre-filled in the database): what he
+   *  read, filled into the rolls like a pre-fill so the person corrects it. */
+  propositionTricobot?: { lot: string; pieces: Array<{ numero: string; poids: number | null; metrage: number | null; observations: string }> } | null
 } & (
   | { mode?: 'create'; ecruRolls: StockEcruLite[]; finiRolls?: undefined; numerosExistants?: undefined }
   | {
@@ -4834,6 +4930,7 @@ function foldSearch(s: string): string {
 
 function BatchReceptionDialog(props: BatchReceptionProps) {
   const { commandeId, ligne, onClose, onSuccess } = props
+  const queryClient = useQueryClient()
   const isReprise = props.mode === 'reprise'
   // « Ml non facturés » typed next to the métrage, so the métrage Tricobot
   // read stays the roll's real length (decision Vincent 2026-10-06).
@@ -5380,6 +5477,14 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
         const np = (r.num_piece ?? '').trim()
         if (np) byNumero.set(np, r)
       }
+      // A BL he asked about wrote no pre-fill: « Modifier » still starts from
+      // what he read (his proposal in the bubble), never from empty rolls.
+      for (const p of props.propositionTricobot?.pieces ?? []) {
+        const np = p.numero.trim()
+        if (np && !byNumero.has(np)) {
+          byNumero.set(np, { IDdata_bl_tricotbot: 0, lot: props.propositionTricobot!.lot, poids: p.poids, metrage: p.metrage, observation: p.observations, num_piece: np })
+        }
+      }
       // Grouped rolls on the BL (`3510/11+3510/2`, LIVA #1149): when every
       // printed component is an écru of this batch, form the group the way
       // the dyer wrote it (first piece leads) and fill the leader's step.
@@ -5524,7 +5629,7 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
           .filter(Boolean),
       ))
       setTricobotRempli(filled)
-      setVue((v) => (v === 'chargement' ? (filled > 0 ? 'recap' : 'edition') : v))
+      setVue((v) => (v === 'chargement' ? (filled > 0 && !props.ouvrirEnEdition ? 'recap' : 'edition') : v))
       setTricobotMsgError(filled === 0)
       setTricobotMessage(
         filled === 0
@@ -5667,7 +5772,14 @@ function BatchReceptionDialog(props: BatchReceptionProps) {
             lots: lotsLus.map((lot) => ({ lot, corrections: tricobotCorrections.filter((c) => c.lot === lot).map((c) => c.texte) })),
             commentaire: tricobotPourquoi.trim(),
           }),
-        }).catch((e) => console.warn('[tricobot] feedback not recorded', e))
+        })
+          // The réception judged his BL point waiting on the order: its card and bubble follow.
+          .then(() => {
+            queryClient.invalidateQueries({ queryKey: ['tricobot-saisies'] })
+            queryClient.invalidateQueries({ queryKey: ['commandes-sst-urgency-counts'] })
+            queryClient.invalidateQueries({ queryKey: ['commandes-sst'] })
+          })
+          .catch((e) => console.warn('[tricobot] feedback not recorded', e))
       }
       // What the person explained about a BL Tricobot left to them: a lesson
       // on that run (no score). Best effort, like the feedback above.

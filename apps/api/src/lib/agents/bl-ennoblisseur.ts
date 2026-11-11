@@ -27,6 +27,7 @@ import { ocrPdf, chatJson } from '../mistral.js'
 import { notify } from '../notify.js'
 import { listerMessages, lireMessage, lireFil, lirePieceJointe, assurerLibelle, ajouterLibelle, retirerLibelle, type MessageInfo } from '../gmail-reader.js'
 import { traiterReponsePoint } from './flux-ennoblisseur/delais.js'
+import { enregistrerPointBl } from './flux-ennoblisseur/reception-bl.js'
 import { CONTROLES_VERSIONS_LIVREES, DELAIS_VERSIONS_LIVREES } from './flux-ennoblisseur/lecture.js'
 import type { ModeCompetence } from './competences.js'
 import { relaisTriage, triesParTriage } from './triage/relais.js'
@@ -314,7 +315,15 @@ export async function traiterPdfs(pdfs: Array<{ nom: string; contenu: Buffer }>,
       dureeMs: Date.now() - t0,
     })
   }
-  if (!ctx.simulation) for (const r of runs) await ajouterRun(r)
+  if (!ctx.simulation) {
+    for (const r of runs) {
+      await ajouterRun(r)
+      // A BL written or left to a person is a point on its order: the card
+      // turns red and Tricobot takes the order over (reception-bl.ts). A lost
+      // point must not lose the run: the réception still finds the pre-fill.
+      await enregistrerPointBl(r).catch((err) => console.error('[bl-ennoblisseur] point not recorded for run', r.id, err))
+    }
+  }
   return runs
 }
 

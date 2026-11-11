@@ -30,6 +30,7 @@ import { auteur } from './agents-ia.js'
 import { enregistrerRetour } from '../lib/agents/retours.js'
 import { BL_ENNOBLISSEUR_SLUG, runDuLot } from '../lib/agents/bl-ennoblisseur.js'
 import { blsDeLigne, runSurLaLigne } from '../lib/agents/bls-ligne.js'
+import { receptionFaite } from '../lib/agents/flux-ennoblisseur/saisies.js'
 import { lireFichier, lireRuns, modifierRun } from '../lib/agents/store.js'
 import { agentsDeLaBoite, chargerConversation, filConnu, lireFilConversation } from '../lib/tricobot-conversation.js'
 import { gmailLectureErreur, lireFil, lirePieceJointe } from '../lib/gmail-reader.js'
@@ -76,6 +77,8 @@ tricobotRouter.put('/bl-reception', async (req, res) => {
         const commentaire = juste ? '' : p.data.commentaire.trim()
         await enregistrerRetour({ slug: BL_ENNOBLISSEUR_SLUG, runId: run.id, cle: null, juste, commentaire, corrections: juste ? [] : corrections, par, garderEchec: true })
       }
+      // The BL's point waiting on the order (the prise en main) is judged by this réception too.
+      await receptionFaite(p.data.ligneId, lot, corrections, p.data.commentaire, par)
       retours.push({ lot, runId: run?.id ?? null, juste })
     }
     res.json({ retours })

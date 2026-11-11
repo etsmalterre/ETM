@@ -103,8 +103,11 @@ comparaison avec la réception passe dans le même passage horaire. Code :
   les mêmes créneaux, donc les mêmes types de mails.
 - **Un doute garde la priorité** : une exécution tirée « seule » où l'agent
   doute passe quand même la main.
-- Une compétence déclare les modes qu'elle offre. Le BL s'arrête à `supervise` :
-  c'est la réception, faite par une personne, qui valide le pré-remplissage.
+- Une compétence déclare les modes qu'elle offre. Le BL offre aujourd'hui
+  `supervise` au plus, **sans que ce soit un plafond** (Vincent, 2026-11-11) :
+  il recevra de l'autonomie très progressivement, et réceptionnera alors seul
+  les BL dont il est sûr (le Journal dira « réception de N pièces par Tricobot
+  le … »). La réception passe déjà par le serveur pour cela (§7).
 - On ne vise pas 100 % d'autonomie. Rien dans le code ne l'interdit, mais on en
   reparlera.
 - Monter d'un cran est la décision d'une personne. L'écran affiche le critère
@@ -247,17 +250,57 @@ runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
   du flux (`MembreFlux`), et s'ouvrent sur son propre écran. Hors du groupe il
   se nomme « Flux Ennoblisseur › Factures ». En faire une vraie compétence
   (modes supervisé / autonomie, les trois mesures) reste à faire, voir §8.
-- **BL** : inchangé. Mesures relues sur l'historique, un point par exécution.
-  Un run écrit = une saisie jugée à la réception : sa note est la **Fiabilité**.
-  Un run « à vérifier » (ou vérifié depuis) = une aide : la note que le pilote
-  lui donne dans Agents IA répond à « avais-je raison de demander ? », c'est le
-  **Discernement** (Vincent, 2026-11-11 : réussite = le blocage était justifié,
-  échec = il pouvait décider seul). Un score posé ou changé par le pilote dit
-  toujours pourquoi : le commentaire est obligatoire, gardé avec le score et
-  relu dans l'onglet Retours. Sans note, la demande attend une personne, même marquée
-  « vérifié » : traiter le BL à la main n'est pas juger la demande. Dans le
-  dialogue d'une exécution, l'en-tête montre les trois mesures et le pilote ne
-  règle que celle qui se juge ; l'Autonomie est un fait, jamais une note.
+- **BL** : depuis le 2026-11-11, un BL est un **point** comme un délai
+  (`saisie_agent`, compétence `bl`, champ `reception`,
+  `flux-ennoblisseur/reception-bl.ts`), plus seulement un run. Mesuré sur la
+  copie de la prod : 100 des 104 BL MATEL écrits depuis le 24/09 sont
+  réceptionnés le jour de leur lecture, donc l'arrivée du BL est bien une
+  action à faire maintenant. La carte de la commande passe rouge (« Tricobot :
+  réception à valider » / « Tricobot demande ton avis ») et, à l'ouverture, la
+  même prise en main que les délais : sa bulle montre les rouleaux qu'il
+  propose (pièce, poids, métrage, observation, lot), le panneau de droite le
+  mail et **le PDF du BL**.
+  - **BL écrit = saisie.** « Réceptionner N rouleaux » = Valider : la réception
+    est faite **par le serveur**, par la règle de l'écran
+    (`recevoirPiecesFini`, extraite de la route de réception : rouleau « En
+    contrôle », lot dans Suivi lots, Journal), signée par la personne.
+    « Modifier » ouvre la réception rouleau par rouleau, ses valeurs remplies :
+    une valeur changée = corrigée, les écarts sont le pourquoi (`receptionFaite`,
+    appelée par `PUT /tricobot/bl-reception` ; ce que la personne ajoute, coupe,
+    commentaire, Ml non facturés, n'est pas une erreur). « Pas à réceptionner »
+    = supprimée, avec pourquoi : le pré-remplissage est retiré, le PDF reste.
+  - **BL bloqué = aide** (un contrôle bloquant : il dit lequel). Sa
+    proposition = ce qu'il a lu. « Appliquer ma proposition » (offert quand
+    chaque rouleau a son métrage, sur une ligne et un lot connus), « Modifier »
+    (la même réception rouleau par rouleau, remplie avec ce qu'il a lu, jamais
+    vide), « Ne rien réceptionner », puis toujours « Avais-je raison de
+    demander ton avis ? » : le discernement du BL, jamais demandé avant.
+  - Un point par BL (un seul champ faux = échec). Un BL qu'il ne sait accrocher
+    à aucune commande reste côté pilote, comme pour les délais. Le
+    pré-remplissage `data_bl_tricotbot` reste écrit : la réception « à
+    l'ancienne » (cocher les tombés de métier, Réception) marche toujours et
+    juge le même point.
+  - **Les exécutions sans point** (toutes celles d'avant le 2026-11-11) sont
+    relues sur l'historique, un point par exécution. Un run écrit = une saisie
+    jugée à la réception : sa note est la **Fiabilité**. Un run « à vérifier »
+    (ou vérifié depuis) = une aide : la note que le pilote lui donne dans
+    Agents IA répond à « avais-je raison de demander ? », c'est le
+    **Discernement** (Vincent, 2026-11-11 : réussite = le blocage était
+    justifié, échec = il pouvait décider seul). Un score posé ou changé par le
+    pilote dit toujours pourquoi : le commentaire est obligatoire, gardé avec
+    le score et relu dans l'onglet Retours. Sans note, la demande attend une
+    personne, même marquée « vérifié » : traiter le BL à la main n'est pas
+    juger la demande.
+  - **Une exécution qui a son point** est mesurée par lui : c'est la réponse
+    de la personne dans la bulle qui compte, et chaque geste est recopié sur
+    l'exécution (valider = réussite ; modifier, « pas à réceptionner » =
+    échec ; « avais-je raison ? » oui = réussite, non = échec avec son
+    pourquoi), pour que le dialogue d'une exécution dise la même chose. Dans
+    ce dialogue, l'en-tête montre les trois mesures et le pilote ne règle que
+    celle qui se juge ; l'Autonomie est un fait, jamais une note.
+  - Jeux d'essai en dev : `scripts/seed-bl-tricobot-dev.ts` (un BL à valider,
+    un BL à trancher), `scripts/seed-delais-tricobot-dev.ts` (deux délais à
+    valider, un à trancher).
 - **Délais** : les réponses des teinturiers au « Point du JJ/MM ». Depuis la
   v2 (2026-11-05), le modèle lit la réponse entière avec son prompt
   (`flux-ennoblisseur/lecture.ts`) et la liste des commandes que le Point
