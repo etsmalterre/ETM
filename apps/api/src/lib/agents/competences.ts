@@ -167,6 +167,35 @@ export function mesurer(points: readonly PointMesure[]): Mesures {
   }
 }
 
+/** What one execution brings to a measure: its points counted for it, against
+ *  it, and still waiting for a person. */
+export interface Apport { plus: number; moins: number; attente: number }
+
+export interface ApportMesures { fiabilite: Apport; autonomie: Apport; discernement: Apport }
+
+/** The three measures read on the points of ONE execution (Agents IA ›
+ *  Exécutions, Vincent 2026-11-11): the same rules as `mesurer`, kept per point.
+ *  Observation: only the fiabilité (the agreement with what a person typed),
+ *  autonomie and discernement have no meaning there (doctrine §1). Pure. */
+export function apportMesures(points: readonly PointMesure[]): ApportMesures {
+  const vide = (): Apport => ({ plus: 0, moins: 0, attente: 0 })
+  const a: ApportMesures = { fiabilite: vide(), autonomie: vide(), discernement: vide() }
+  for (const p of points) {
+    if (p.decision !== 'aide') {
+      if (JUGE_OK.has(p.statut)) a.fiabilite.plus++
+      else if (JUGE_KO.has(p.statut)) a.fiabilite.moins++
+      else a.fiabilite.attente++
+    }
+    if (p.observation) continue
+    if (p.decision !== 'aide') { a.autonomie.plus++; continue }
+    a.autonomie.moins++
+    if (p.statut !== 'resolue') a.discernement.attente++
+    else if (p.douteJustifie != null ? p.douteJustifie : !aideInutile(p)) a.discernement.plus++
+    else a.discernement.moins++
+  }
+  return a
+}
+
 // ── Up / down (doctrine §5) ──────────────────────────────
 
 export const MONTEE_MIN_JUGES = 30

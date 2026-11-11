@@ -3,7 +3,7 @@
 // store.ts). Adding an agent = one entry here + its pipeline module.
 
 import { isChatModel } from '../mistral.js'
-import { PROFILS } from './bl-profils.js'
+import { PROFILS, PROMPTS_PAR_ENNOBLISSEUR } from './bl-profils.js'
 import {
   BL_ENNOBLISSEUR_BOITE,
   BL_ENNOBLISSEUR_SLUG,
@@ -42,6 +42,7 @@ import {
   FACTURES_SST_SLUG,
   FACTURES_SST_VERSION_INITIALE,
   sonderBoite as sonderFacturesSst,
+  titreRunFacture,
   traiterPdfs as traiterFacturesSst,
   OPTION_CONFIRMATION,
 } from './factures-sst/agent.js'
@@ -75,6 +76,13 @@ export interface AgentDef {
   /** The app whose « Agents IA » menu shows it (lib/agents/app-scope.ts). Absent = ETM. */
   app?: AppIa
   nom: string
+  /** The agent whose group shows this one, as one more of its agents (Vincent 2026-11-11:
+   *  « Factures » under « Flux Ennoblisseur », beside BL, Délais and Contrôles). Presentation
+   *  only: its state, runs, prompt, mode and score stay its own. Its `nom` is then read
+   *  under the group's (« Flux Ennoblisseur › Factures »). */
+  groupe?: string
+  /** What one of its runs read, in a few words (« Facture FA2865 »), for the group's mails list. */
+  titreRun?(run: AgentRun): string
   description: string
   declenchement: Declenchement
   /** What triggers it, shown in the « Fonctionnement » tab. */
@@ -127,6 +135,12 @@ export interface AgentDef {
   promptLivre?: VersionInitiale
   /** Chat models a version may use. */
   modeles: readonly string[]
+  /** The prompts of one version when the agent reads with several, routed by code (the BL: one
+   *  per dyer). The Prompt tab shows one sub-tab each; they share the version number, and
+   *  changing one publishes a new version of them all (Vincent 2026-11-11). `defaut`: the
+   *  prompt shipped with the code, for a version that stores none under that key; null = the
+   *  version's own `prompt` (one entry only, the first). Absent = one prompt. */
+  promptsSpecialises?: ReadonlyArray<{ cle: string; nom: string; defaut: string | null }>
   /** One run now (scheduler tick, or « Relever / Lancer maintenant » when `par` is set). */
   sonder(state: AgentState, version: AgentVersion, par: Auteur | null): Promise<AgentRun[]>
   /** Run PDFs through the pipeline outside the mailbox (manual test, retraitement) — agents that read PDFs only. */
@@ -152,7 +166,7 @@ export const AGENTS: readonly AgentDef[] = [
     slug: TRIAGE_SLUG,
     nom: 'Triage',
     description:
-      `L’agent de tête de la boîte ${TRIAGE_BOITE} : chaque mail reçu prend une ou plusieurs catégories (BL ennoblisseur, facture sous-traitant, commande client, qualité, transport…), un libellé Gmail sous « ETM/ », et part vers l’agent qui le traite — les BL et les échanges des ennoblisseurs vers Flux Ennoblisseur, les factures des ennoblisseurs vers Factures Ennoblisseur. Son tri est tenu pour juste tant que personne ne le corrige.`,
+      `L’agent de tête de la boîte ${TRIAGE_BOITE} : chaque mail reçu prend une ou plusieurs catégories (BL ennoblisseur, facture sous-traitant, commande client, qualité, transport…), un libellé Gmail sous « ETM/ », et part vers l’agent qui le traite — les BL, les échanges et les factures des ennoblisseurs vers Flux Ennoblisseur (les factures à son agent Factures). Son tri est tenu pour juste tant que personne ne le corrige.`,
     declenchement: { type: 'releve', intervalleMs: 60_000 },
     declencheur: `Relève chaque minute la boîte ${TRIAGE_BOITE} : tous les mails reçus (jamais ceux qu’elle envoie), depuis sa mise en route et au plus les 7 derniers jours, du plus ancien au plus récent. L’expéditeur est reconnu dans les contacts d’ETM (clients, sous-traitants, fournisseurs, transporteurs, prospects) ; le modèle lit l’objet, le corps, les noms des pièces jointes et les deux messages précédents du fil.`,
     ecritures: [
@@ -235,17 +249,21 @@ export const AGENTS: readonly AgentDef[] = [
     versionInitiale: BL_ENNOBLISSEUR_VERSION_INITIALE,
     promptLivre: BL_ENNOBLISSEUR_PROMPT_LIVRE,
     modeles: MODELES_MISTRAL,
+    promptsSpecialises: PROMPTS_PAR_ENNOBLISSEUR,
     sonder: sonderBlEnnoblisseur,
     traiter: traiterBlEnnoblisseur,
     competences: COMPETENCES_FLUX,
   },
   {
     slug: FACTURES_SST_SLUG,
-    nom: 'Factures Ennoblisseur',
+    // One of the agents of « Flux Ennoblisseur » (Vincent 2026-11-11, ex « Factures Ennoblisseur », slug kept).
+    nom: 'Factures',
+    groupe: BL_ENNOBLISSEUR_SLUG,
+    titreRun: titreRunFacture,
     description:
       'Contrôle les factures des ennoblisseurs comme le faisait Pierre-Emmanuel avec « Lire facture » dans l’ancien Suivi lots : pour chaque lot facturé, le poids envoyé, le rendement et les traitements qui donnent le prix, comparés au tarif ETM du sous-traitant. La facture est enregistrée une seule fois dans Sous-traitants › Factures et rattachée à chaque commande qu’elle facture. Seules les factures avec un écart demandent une intervention.',
     declenchement: { type: 'releve', intervalleMs: 5 * 60_000 },
-    declencheur: `Relève toutes les 5 minutes la boîte ${FACTURES_SST_BOITE} : mails des contacts des ennoblisseurs (les mêmes que Flux Ennoblisseur) dont une pièce jointe ressemble à une facture. C’est le texte du PDF qui décide s’il s’agit d’une facture de ${FOURNISSEURS.map((f) => f.nom).join(', ')}. Tant que le Triage est en service, il ne relève pas la boîte : il traite les mails que le Triage lui transmet (relevé de secours si le Triage est en panne).`,
+    declencheur: `Relève toutes les 5 minutes la boîte ${FACTURES_SST_BOITE} : mails des contacts des ennoblisseurs (les mêmes que BL, Délais et Contrôles) dont une pièce jointe ressemble à une facture. C’est le texte du PDF qui décide s’il s’agit d’une facture de ${FOURNISSEURS.map((f) => f.nom).join(', ')}. Tant que le Triage est en service, il ne relève pas la boîte : il traite les mails que le Triage lui transmet (relevé de secours si le Triage est en panne).`,
     ecritures: [
       'La facture et son PDF dans Sous-traitants › Factures, une ligne par ligne imprimée, chaque lot rattaché à sa ligne de commande sous-traitant (avec le poids ETM, le prix attendu et le verdict).',
       'Le n° de facture sur les lignes de commande facturées, là où il est vide (comme dans l’ancien Suivi lots) — seulement si la lecture est fiable.',

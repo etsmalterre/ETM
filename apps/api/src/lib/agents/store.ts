@@ -23,6 +23,7 @@ import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { exclusive, readJson, writeJson } from './json-store.js'
 import { tirer, type EtatCompetence, type ModeCompetence } from './competences.js'
+import { noteCourte } from './notes-courtes.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 export const AGENTS_DIR = path.resolve(__dirname, '../../../data/agents')
@@ -43,6 +44,11 @@ export interface AgentVersion {
   version: number
   model: string
   prompt: string
+  /** The specialised prompts of the version, by key (catalog.ts `promptsSpecialises`: the BL's
+   *  TAD and Bontemps prompts, beside MATEL's in `prompt`). One version number for them all
+   *  (Vincent 2026-11-11): changing one publishes a new version of the whole. A key absent
+   *  (every version before that date) = the prompt shipped with the code. */
+  promptsProfils?: Record<string, string>
   note: string
   createdBy: Auteur | null
   createdAt: string
@@ -288,11 +294,18 @@ export interface VersionInitiale {
   note: string
 }
 
+/** A stored state, its versions read with their short note (notes-courtes.ts): a version
+ *  published with a long one shows the short one, and is stored with it at the next write. */
+function avecNotesCourtes(slug: string, s: AgentState | undefined): AgentState | undefined {
+  if (s) for (const v of s.versions) v.note = noteCourte(slug, v.version, v.note)
+  return s
+}
+
 /** State of an agent, seeded (mode off, version 1) the first time it is read. */
 export async function lireEtat(slug: string, initiale: VersionInitiale): Promise<AgentState> {
   await migrerSlugs()
   const all = await readJson<Record<string, AgentState>>(STATE_FILE, {})
-  return all[slug] ?? {
+  return avecNotesCourtes(slug, all[slug]) ?? {
     mode: 'off',
     startedAt: null,
     activeVersion: 1,
@@ -306,7 +319,7 @@ async function modifierEtat(slug: string, initiale: VersionInitiale, fn: (s: Age
   await migrerSlugs()
   return exclusive(async () => {
     const all = await readJson<Record<string, AgentState>>(STATE_FILE, {})
-    const s = all[slug] ?? (await lireEtat(slug, initiale))
+    const s = avecNotesCourtes(slug, all[slug]) ?? (await lireEtat(slug, initiale))
     fn(s)
     all[slug] = s
     await writeJson(STATE_FILE, all)
@@ -470,7 +483,7 @@ export function marquerPlanification(slug: string, initiale: VersionInitiale, jo
 export function publierVersion(
   slug: string,
   initiale: VersionInitiale,
-  v: { model: string; prompt: string; note: string },
+  v: { model: string; prompt: string; note: string; promptsProfils?: Record<string, string> },
   par: Auteur,
 ): Promise<AgentState> {
   return modifierEtat(slug, initiale, (s) => {

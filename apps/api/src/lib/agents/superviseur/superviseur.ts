@@ -24,6 +24,7 @@
 // must not turn tomorrow's new points into old ones.
 
 import { ajouterRun, nouvelIdRun, type AgentRun, type AgentState, type AgentVersion, type Auteur, type RunStatut, type VersionInitiale } from '../store.js'
+import { noteCourteDe } from '../notes-courtes.js'
 import { appliquerSuivi, lireAvis, lireResolutions, purgerAvis, purgerResolutions, type Resolution } from './avis.js'
 import { comparer, ecrireMemoire, lireMemoire, type ConstatRun } from './constats.js'
 import { journaliserRun } from './historique.js'
@@ -57,7 +58,7 @@ export const SUPERVISEUR_VERSION_INITIALE: VersionInitiale = {
 export const SUPERVISEUR_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-small-latest',
   prompt: TRI_PROMPT_V3,
-  note: 'Version 4 — retard : le solde d’une commande « sur appel » attend l’appel du client (son délai habituel), une commande payable avant livraison attend le règlement après la proforma (relance au bout de 5 jours ouvrés), un retard dont on a parlé au client par mail n’est plus signalé ; confirmation : une confirmation envoyée par mail compte, Unicycle (commande saisie à l’expédition) n’en attend pas mais son expédition doit lui être envoyée ; commande reçue par mail : le prix du contrat tarifaire est cité ; écru réservé ou sans emploi : dit si la commande du client a déjà son compte (à désaffecter, pièces d’avance). Tout est du code, le prompt du tri des mails est celui de la v3.',
+  note: noteCourteDe('superviseur', 4),
 }
 
 /** What a Superviseur run stores in `resultat` (read by the web screen). */

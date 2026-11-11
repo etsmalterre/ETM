@@ -49,7 +49,7 @@ export const ABONNEMENTS_ETM: readonly AbonnementEtm[] = [
   {
     id: ABONNEMENT_FACTURES_SST,
     nom: 'Factures sous-traitants — écarts',
-    description: 'Les factures des ennoblisseurs où l’agent « Factures Ennoblisseur » a trouvé un écart (prix, poids, lot introuvable) ou n’a pas pu contrôler les prix, à traiter dans Sous-traitants › Factures.',
+    description: 'Les factures des ennoblisseurs où l’agent « Flux Ennoblisseur › Factures » a trouvé un écart (prix, poids, lot introuvable) ou n’a pas pu contrôler les prix, à traiter dans Sous-traitants › Factures.',
     icone: 'facture_sst',
     permission: 'dashboard_notif_factures_sst',
   },

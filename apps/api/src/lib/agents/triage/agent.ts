@@ -46,6 +46,7 @@ import {
   type RunSource,
   type VersionInitiale,
 } from '../store.js'
+import { noteCourteDe } from '../notes-courtes.js'
 import { TRIAGE_BOITE, TRIAGE_SLUG } from './constantes.js'
 import { categorie, libelleGmail, normaliserCategories, type Categorie } from './categories.js'
 import { adresseDe, annuaire, identifier, type Organisation } from './annuaire.js'
@@ -65,7 +66,7 @@ export const TRIAGE_VERSION_INITIALE: VersionInitiale = {
 export const TRIAGE_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-small-latest',
   prompt: TRIAGE_PROMPT_V3,
-  note: 'Chez TAD, seule la mise à disposition (« MISE A DISPO ») clôt la teinture et va à l’agent BL ; son « BON DE LIVRAISON - CDE » est l’expédition au client après notre demande d’envoi → transport (cde 8922). Rejoué sur 125 mails d’ennoblisseurs : les 6 bons d’expédition TAD passent en transport, rien d’autre ne bouge.',
+  note: noteCourteDe('triage', 3),
 }
 
 /** A new mail older than this is never triaged (the agent was off, or it is a backfill). */

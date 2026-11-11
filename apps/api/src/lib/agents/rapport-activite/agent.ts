@@ -18,6 +18,7 @@
 // than the reader).
 
 import { ajouterRun, nouvelIdRun, type AgentRun, type AgentState, type AgentVersion, type Auteur, type RunStatut, type VersionInitiale } from '../store.js'
+import { noteCourteDe } from '../notes-courtes.js'
 import { chatJson } from '../../mistral.js'
 import { sendMail } from '../../gmail.js'
 import { renderNotificationEmail } from '../../notification-email.js'
@@ -57,7 +58,7 @@ export const RAPPORT_ACTIVITE_VERSION_INITIALE: VersionInitiale = {
 export const RAPPORT_ACTIVITE_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-medium-latest',
   prompt: PROMPT_V4,
-  note: 'Version 4 — relecture des 45 premiers rapports (2026-10-14) : un point = deux faits datés qui se contredisent, le risque et la vérification à faire (un point sans heure de la période est écarté par le code) ; signaler un défaut ou un manque à un fournisseur, une étape antérieure à l’heure, une livraison en plusieurs fois, les mails de Vincent ne sont jamais des points.',
+  note: noteCourteDe('rapport-activite', 3),
 }
 
 /** Worked hours before the period that make the reference pace. */

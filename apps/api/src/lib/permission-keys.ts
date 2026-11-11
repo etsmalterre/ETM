@@ -104,7 +104,7 @@ export const PERMISSION_KEYS = [
   {
     key: 'dashboard_notif_factures_sst',
     label: 'Factures sous-traitants — écarts',
-    description: 'Propose l’abonnement « Factures sous-traitants — écarts » dans le widget Notifications : une carte par facture d’ennoblisseur où l’agent « Factures Ennoblisseur » a trouvé un écart, à traiter dans Sous-traitants › Factures. Sous-droit de « Notifications ».',
+    description: 'Propose l’abonnement « Factures sous-traitants — écarts » dans le widget Notifications : une carte par facture d’ennoblisseur où l’agent « Flux Ennoblisseur › Factures » a trouvé un écart, à traiter dans Sous-traitants › Factures. Sous-droit de « Notifications ».',
     category: 'Tableau de bord',
     parent: 'dashboard_notifications',
   },

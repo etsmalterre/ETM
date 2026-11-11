@@ -225,8 +225,39 @@ Ce que fait la personne, et ce que ça compte :
 Ex-« BL Ennoblisseur ». Le slug `bl-ennoblisseur` est gardé (historique des
 runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
 
-- **BL** : inchangé. Mesures relues sur l'historique : un run « à vérifier » =
-  une aide, un run écrit = une saisie jugée à la réception.
+- **Le flux lui-même** (Vincent, 2026-11-11) : deux étages. Le Triage choisit
+  le métier (ce mail va au Flux Ennoblisseur) ; le flux répartit entre ses
+  compétences **par des règles, sans modèle** : chaque PDF au BL, le texte
+  d'une réponse au « Point du JJ/MM » à Délais et à Contrôles. Un même mail
+  peut nourrir plusieurs compétences, ou aucune. Le flux n'a donc ni prompt, ni
+  mode, ni mesures : rien à noter. Il se voit dans Agents IA sur la carte du
+  groupe : les mails reçus et où chacun est parti (`flux-ennoblisseur/mails.ts`,
+  `GET /agents-ia/:slug/mails`). Un mail qu'aucune compétence n'a eu (pas de
+  PDF, réponse en attente d'une compétence en observation) n'appartient à
+  aucune : il vit là, jamais dans les exécutions du BL (`SANS_COMPETENCE`).
+  Un PDF que le BL a regardé et écarté (« Pas un BL ») reste au BL.
+- **Factures, rangé dans le groupe** (Vincent, 2026-11-11) : l'agent des
+  factures des ennoblisseurs (ex « Factures Ennoblisseur », slug
+  `factures-ennoblisseur` gardé) s'appelle « Factures » et se voit sous la
+  carte Flux Ennoblisseur, après BL, Délais et Contrôles (`groupe` dans
+  `catalog.ts`). **Présentation seulement** : ce n'est pas une compétence. Il
+  garde son état, ses exécutions, son prompt, son mode (arrêt / essai / actif),
+  son relevé et sa note par ligne de facture ; le Triage lui transmet toujours
+  ses mails directement. Ses exécutions sont une colonne de plus dans les mails
+  du flux (`MembreFlux`), et s'ouvrent sur son propre écran. Hors du groupe il
+  se nomme « Flux Ennoblisseur › Factures ». En faire une vraie compétence
+  (modes supervisé / autonomie, les trois mesures) reste à faire, voir §8.
+- **BL** : inchangé. Mesures relues sur l'historique, un point par exécution.
+  Un run écrit = une saisie jugée à la réception : sa note est la **Fiabilité**.
+  Un run « à vérifier » (ou vérifié depuis) = une aide : la note que le pilote
+  lui donne dans Agents IA répond à « avais-je raison de demander ? », c'est le
+  **Discernement** (Vincent, 2026-11-11 : réussite = le blocage était justifié,
+  échec = il pouvait décider seul). Un score posé ou changé par le pilote dit
+  toujours pourquoi : le commentaire est obligatoire, gardé avec le score et
+  relu dans l'onglet Retours. Sans note, la demande attend une personne, même marquée
+  « vérifié » : traiter le BL à la main n'est pas juger la demande. Dans le
+  dialogue d'une exécution, l'en-tête montre les trois mesures et le pilote ne
+  règle que celle qui se juge ; l'Autonomie est un fait, jamais une note.
 - **Délais** : les réponses des teinturiers au « Point du JJ/MM ». Depuis la
   v2 (2026-11-05), le modèle lit la réponse entière avec son prompt
   (`flux-ennoblisseur/lecture.ts`) et la liste des commandes que le Point
@@ -268,5 +299,25 @@ runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
   un agent : son onglet **Score** (le premier : les trois mesures en grand, sur
   la version choisie, et le cran suivant), ses exécutions, ses retours, son
   prompt, ses coûts, et son mode au pied du panneau de droite.
-- Étendre le modèle aux autres agents (Factures Ennoblisseur, Triage…), §0 en
+- Étendre le modèle aux autres agents (Factures, Triage…), §0 en
   tête de chaque prompt.
+- **Un prompt par ennoblisseur, un seul numéro de version** (Vincent,
+  2026-11-11) : le BL lit avec un prompt par ennoblisseur (MATEL, TAD,
+  Bontemps), choisi par le code d'après le texte du PDF (`detecterProfil`),
+  jamais d'après l'adresse mail. C'est « un gros et même prompt », découpé
+  parce que c'est plus sûr et plus simple à maintenir : une version les porte
+  tous (`AgentVersion.promptsProfils`, MATEL restant dans `prompt`), et en
+  changer un seul publie une nouvelle version de l'ensemble. Agents IA ›
+  Prompt les montre en sous-onglets. Une version d'avant cette date ne stocke
+  que celui de MATEL : les autres sont ceux livrés avec le code
+  (`bl-profils.ts`, `promptDe`). Un nouvel ennoblisseur (France Teinture)
+  = un profil de plus, donc un sous-onglet de plus.
+- **La note d'une version de prompt** (Vincent, 2026-11-11) : une ou deux
+  phrases courtes, ce qui change pour les personnes qui utilisent l'agent.
+  Jamais les seuils, les exemples, ni ce qui est du code ou du prompt : ce
+  détail vit dans le code et son historique. 240 caractères au plus, refusé
+  au-delà par l'API et par le test des versions livrées
+  (`lib/agents/notes-courtes.ts`). Les versions déjà publiées avec une note
+  longue sont lues avec leur note courte (même fichier), et une version livrée
+  prend sa note au même endroit : c'est ce qui la fait reconnaître comme déjà
+  publiée (`estPublie`).

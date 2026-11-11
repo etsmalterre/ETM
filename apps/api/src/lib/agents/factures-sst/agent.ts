@@ -92,6 +92,15 @@ export interface Contexte {
 
 const round2 = (n: number) => Math.round(n * 100) / 100
 
+/** What a run read, in a few words, for the mails list of « Flux Ennoblisseur » (mails.ts):
+ *  the invoice number alone (its column is named « Factures », and narrow). */
+export function titreRunFacture(r: Pick<AgentRun, 'statut' | 'resultat'>): string {
+  const f = (r.resultat as Partial<ResultatFacture>).extraction
+  if (!f) return r.statut === 'erreur' ? 'Lecture impossible' : 'Pas une facture'
+  if (!f.numero_facture) return f.type_document === 'avoir' ? 'Avoir illisible' : 'Facture illisible'
+  return f.type_document === 'avoir' ? `Avoir ${f.numero_facture}` : f.numero_facture
+}
+
 /** One PDF → one run (an invoice is one document; pages are its own). */
 async function traiterUn(pdf: { nom: string; contenu: Buffer }, ctx: Contexte, idx: number): Promise<AgentRun> {
   const t0 = Date.now()

@@ -2,7 +2,8 @@
 // each one's measures are read (claude_doc/agents_autonomie.md §7).
 //
 //   bl         the delivery notes — measures re-read from the runs: « à
-//              vérifier » = an aide, « écrit » = a saisie judged at the réception;
+//              vérifier » = an aide, judged by the pilot's score on the run (was
+//              asking right?); « écrit » = a saisie judged at the réception;
 //   delais     the délais of a reply to the Point — PG saisie_agent;
 //   controles  the dyer's measures in the same reply — PG saisie_agent.
 // Délais and Contrôles have their own prompt versions (lecture.ts, doctrine
@@ -28,13 +29,26 @@ export interface CompetenceDef {
   points(runs: readonly AgentRun[], slug: string, version: number | null): Promise<PointMesure[]>
 }
 
-/** A run belongs to the skill it names; a run naming none is the BL's (before 2026-11-05). */
-export const competenceDuRun = (r: Pick<AgentRun, 'competence'>) => r.competence ?? 'bl'
+/** The « skill » of a mail that went to none (Vincent 2026-11-11): no PDF to read, nothing
+ *  for Délais nor Contrôles, or held until a person has reacted. It is the agent's, shown
+ *  with its mails (mails.ts), never among the BL's runs. */
+export const SANS_COMPETENCE = 'aucune'
 
-/** BL: one point per document read. « à vérifier » (or checked since) = an
- *  aide; written = a saisie, judged by the réception (silence = validée, a
- *  correction = corrigée). In observation (essai) the same, judged by the
- *  rolls received (bl-observation.ts). Errors, ignored mails, PDF tests are no decision. */
+/** A run belongs to the skill it names. A run naming none is the BL's (every BL run, and
+ *  all of them before 2026-11-05), unless it read no file at all: then no skill had it. A
+ *  PDF the BL looked at and set aside (« Pas un BL ») stays the BL's: that was its call. */
+export const competenceDuRun = (r: Pick<AgentRun, 'competence' | 'statut' | 'fichiers'>) =>
+  r.competence ?? (r.statut === 'ignore' && r.fichiers.length === 0 ? SANS_COMPETENCE : 'bl')
+
+/** BL: one point per document read. Written = a saisie, judged by the réception
+ *  (silence = validée, a correction = corrigée): its score is the Fiabilité.
+ *  « à vérifier » (or checked since) = an aide: the score a pilot gives that run
+ *  in Agents IA answers « was it right to ask? », the Discernement (Vincent
+ *  2026-11-11: réussite = the block was justified, échec = it could decide alone).
+ *  Not scored yet = still waiting for a person, whether or not the run was marked
+ *  « vérifié » (handling the BL by hand is not judging the request). In
+ *  observation (essai) the same points, judged by the rolls received
+ *  (bl-observation.ts). Errors, ignored mails, PDF tests are no decision. */
 export function pointsBl(runs: readonly AgentRun[]): PointMesure[] {
   const out: PointMesure[] = []
   for (const r of runs) {
@@ -53,9 +67,12 @@ export function pointsBl(runs: readonly AgentRun[]): PointMesure[] {
     }
     if (competenceDuRun(r) !== 'bl' || r.mode !== 'actif' || r.source === 'essai_manuel') continue
     const aide = r.statut === 'a_verifier' || (r.statut === 'verifie' && r.verification?.statutAvant === 'a_verifier')
-    if (aide) { out.push({ decision: 'aide', statut: r.statut === 'verifie' ? 'resolue' : 'a_revoir', le: r.createdAt, proposition: null }); continue }
-    if (r.statut !== 'ecrit') continue
     const note = r.evaluation ? noteBinaire(r.evaluation.note) : null
+    if (aide) {
+      out.push({ decision: 'aide', statut: note ? 'resolue' : 'a_revoir', douteJustifie: note ? note === 'reussite' : null, le: r.createdAt, proposition: null })
+      continue
+    }
+    if (r.statut !== 'ecrit') continue
     out.push({ decision: 'saisie', statut: note === 'reussite' ? 'validee' : note === 'echec' ? 'corrigee' : 'a_revoir', le: r.createdAt })
   }
   return out

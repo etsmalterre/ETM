@@ -7,6 +7,8 @@ import {
   modeEffectif,
   nomGed,
   profilDe,
+  promptDe,
+  PROMPTS_PAR_ENNOBLISSEUR,
   reglesDe,
   requeteExpediteurs,
   sousTraitantExpediteur,
@@ -162,5 +164,25 @@ describe('estPieceCandidate', () => {
     expect(estPieceCandidate({ nom: 'FACTURE TRICOTAGE MALTERRE FA522.pdf', mimeType: 'application/pdf' })).toBe(false)
     expect(estPieceCandidate({ nom: 'image001.png', mimeType: 'image/png' })).toBe(false)
     expect(estPieceCandidate({ nom: 'TRICOTAGE MALTERRE BL 3963.doc', mimeType: 'application/msword' })).toBe(false)
+  })
+})
+
+describe('the prompt a dyer is read with', () => {
+  const matel = profilDe('matel')!
+  const tad = profilDe('tad')!
+  it('is the version\'s own for that dyer when it stores one', () => {
+    const v = { prompt: 'prompt MATEL de la version', promptsProfils: { tad: 'prompt TAD de la version' } }
+    expect(promptDe(tad, v)).toBe('prompt TAD de la version')
+    expect(promptDe(matel, v)).toBe('prompt MATEL de la version')
+  })
+  it('is the one shipped with the code for a version that stores none (every version before 2026-11-11)', () => {
+    const v = { prompt: 'prompt MATEL de la version' }
+    expect(promptDe(tad, v)).toBe(tad.prompt)
+    expect(promptDe(profilDe('bontemps')!, v)).toBe(profilDe('bontemps')!.prompt)
+    expect(promptDe(matel, v)).toBe('prompt MATEL de la version')
+  })
+  it('lists MATEL first in the Prompt tab, the one prompt that is the version\'s own', () => {
+    expect(PROMPTS_PAR_ENNOBLISSEUR.map((x) => x.cle)).toEqual(['matel', 'tad', 'bontemps'])
+    expect(PROMPTS_PAR_ENNOBLISSEUR.filter((x) => x.defaut === null).map((x) => x.cle)).toEqual(['matel'])
   })
 })

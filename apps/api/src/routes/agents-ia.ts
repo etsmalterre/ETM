@@ -53,10 +53,12 @@ import { comparerObservationsBl } from '../lib/agents/bl-observation.js'
 import { bilanObservation, bilanObservationBl, type BilanObservation } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { DESTINATAIRES } from '../lib/agents/triage/transmission.js'
 import { relaisTriage } from '../lib/agents/triage/relais.js'
-import { conseiller, libelleEtat, mesurer, MODES_COMPETENCE, FENETRE_DEFAUT, type ModeCompetence } from '../lib/agents/competences.js'
-import { activerVersionCompetence, changerModeCompetence, etatCompetence, modePlafonne, publierVersionCompetence, reglerCycle } from '../lib/agents/store.js'
-import { competenceDuRun, versionsDeCompetence } from '../lib/agents/flux-ennoblisseur/competences-flux.js'
-import { saisiesDeCompetence, saisiesDeRuns, type Saisie } from '../lib/agents/flux-ennoblisseur/saisies.js'
+import { apportMesures, conseiller, libelleEtat, mesurer, MODES_COMPETENCE, FENETRE_DEFAUT, type ModeCompetence } from '../lib/agents/competences.js'
+import { activerVersionCompetence, changerModeCompetence, etatCompetence, modePlafonne, noteBinaire, publierVersionCompetence, reglerCycle } from '../lib/agents/store.js'
+import { competenceDuRun, pointsBl, versionsDeCompetence } from '../lib/agents/flux-ennoblisseur/competences-flux.js'
+import { mailsDuFlux } from '../lib/agents/flux-ennoblisseur/mails.js'
+import { NOTE_MAX } from '../lib/agents/notes-courtes.js'
+import { pointDe, saisiesDeCompetence, saisiesDeRuns, type Saisie } from '../lib/agents/flux-ennoblisseur/saisies.js'
 import { rejouer, REJEU_MAX } from '../lib/agents/flux-ennoblisseur/rejeu.js'
 import type { ResultatFlux } from '../lib/agents/flux-ennoblisseur/delais.js'
 
@@ -203,6 +205,17 @@ function jugementDuRun(ss: readonly Saisie[]) {
   }
 }
 
+/** A run of an agent with skills: what its own points bring to the three measures
+ *  (doctrine §4), for the runs list and the run dialog. The BL's point is read on
+ *  the run itself; a Délais / Contrôles run needs its saisies (`ss`), without
+ *  them nothing is said. An agent without skills: nothing. */
+function apportDuRun(def: AgentDef, r: AgentRun, ss?: readonly Saisie[]) {
+  const c = def.competences?.find((x) => x.cle === competenceDuRun(r))
+  if (!c) return {}
+  if (c.cle === 'bl') return { apport: apportMesures(pointsBl([r])) }
+  return ss ? { apport: apportMesures(ss.map(pointDe)) } : {}
+}
+
 /** Délais / Contrôles: the list's three columns (Point du, points, à trancher). */
 function colonnesFlux(r: AgentRun) {
   if (r.competence !== 'delais' && r.competence !== 'controles') return {}
@@ -256,6 +269,8 @@ async function vueAgent(def: AgentDef) {
     relais,
     slug: def.slug,
     nom: def.nom,
+    /** The agent whose group shows it (« Factures » under « Flux Ennoblisseur »); null = on its own. */
+    groupe: def.groupe ?? null,
     description: def.description,
     declencheur: def.declencheur,
     ecritures: def.ecritures,
@@ -360,6 +375,8 @@ routes.get('/:slug', async (req, res) => {
       ...(await vueAgent(def)),
       activeVersion: state.activeVersion,
       versions: [...state.versions].reverse(),
+      // The prompts one version reads with, when there are several (the BL: one per dyer).
+      promptsSpecialises: def.promptsSpecialises ?? [],
       // The shipped prompt, until a stored version carries it.
       promptLivre: def.promptLivre && !estPublie(def.promptLivre, state.versions) ? def.promptLivre : null,
       modeles: def.modeles.map((m) => ({ id: m, label: CHAT_MODELS[m]?.label ?? m })),
@@ -446,6 +463,28 @@ function competenceOu404(def: AgentDef, req: Request, res: Response) {
   if (!c) res.status(404).json({ error: 'compétence inconnue' })
   return c ?? null
 }
+
+/** An agent with skills, seen above them (Vincent 2026-11-11): the mails it received,
+ *  newest first, and where each one went (which skills, with their runs), waits, or why
+ *  it went nowhere. ?limit= (default 300). */
+routes.get('/:slug/mails', async (req, res) => {
+  if (session(req, res) === null) return
+  const def = agentOu404(req, res)
+  if (!def) return
+  if (!def.competences?.length) { res.status(404).json({ error: 'cet agent n’a pas de compétences' }); return }
+  try {
+    // The agents of its group read the same mailbox on their own: their runs are columns too.
+    const membres = await Promise.all(agentsDe(scopeDe(res).app).filter((a) => a.groupe === def.slug).map(async (a) => ({
+      slug: a.slug, runs: await lireRuns(a.slug), titre: a.titreRun ?? ((r: AgentRun) => r.resume),
+    })))
+    const mails = mailsDuFlux(await lireRuns(def.slug), def.competences.map((c) => c.cle), membres)
+    const limit = Math.min(1000, Math.max(1, parseInt(String(req.query.limit ?? '300'), 10) || 300))
+    res.json({ total: mails.length, mails: mails.slice(0, limit) })
+  } catch (err) {
+    console.error('[agents-ia] mails failed:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 
 /** A skill's three measures on one version (?version=N, « tout » = every
  *  version; default the one in service): the Score tab's version picker. */
@@ -563,7 +602,10 @@ routes.patch('/:slug/options', async (req, res) => {
 const versionBody = z.object({
   model: z.string().min(1),
   prompt: z.string().trim().min(20).max(30_000),
-  note: z.string().trim().max(1000).default(''),
+  // One or two short sentences: what changes for the people who use the agent (notes-courtes.ts).
+  note: z.string().trim().max(NOTE_MAX, `La note est trop longue : une ou deux phrases courtes (${NOTE_MAX} caractères au plus).`).default(''),
+  /** The version's specialised prompts, by key (catalog.ts `promptsSpecialises`). */
+  promptsProfils: z.record(z.string().trim().min(20).max(30_000)).optional(),
 })
 
 routes.post('/:slug/versions', async (req, res) => {
@@ -574,6 +616,10 @@ routes.post('/:slug/versions', async (req, res) => {
   const p = versionBody.safeParse(req.body)
   if (!p.success) { res.status(400).json({ error: 'Validation failed', details: p.error.issues }); return }
   if (!def.modeles.includes(p.data.model)) { res.status(400).json({ error: 'modèle non autorisé pour cet agent' }); return }
+  // Only the keys the agent reads with, never the one that is the version's own `prompt`.
+  const cles = new Set((def.promptsSpecialises ?? []).filter((x) => x.defaut !== null).map((x) => x.cle))
+  const inconnue = Object.keys(p.data.promptsProfils ?? {}).find((c) => !cles.has(c))
+  if (inconnue) { res.status(400).json({ error: `prompt « ${inconnue} » inconnu pour cet agent` }); return }
   try {
     const s = await publierVersion(def.slug, def.versionInitiale, p.data, await auteur(uid))
     res.status(201).json({ activeVersion: s.activeVersion })
@@ -631,7 +677,10 @@ routes.get('/:slug/runs', async (req, res) => {
     const parPoints = page.filter((r) => r.competence === 'delais' || r.competence === 'controles')
     const saisies = parPoints.length ? await saisiesDeRuns(parPoints.map((r) => r.id)).catch(() => [] as Saisie[]) : []
     // `notes`: the scores ?note= matches on, so the screen can filter its tags without a round trip.
-    res.json({ total: runs.length, runs: page.map((r) => ({ ...allege(r), notes: [...notesDuRun(r)], ...(r.competence === 'delais' || r.competence === 'controles' ? { jugement: jugementDuRun(saisies.filter((x) => x.runId === r.id)) } : {}) })) })
+    res.json({ total: runs.length, runs: page.map((r) => {
+      const ss = saisies.filter((x) => x.runId === r.id)
+      return { ...allege(r), notes: [...notesDuRun(r)], ...(r.competence === 'delais' || r.competence === 'controles' ? { jugement: jugementDuRun(ss) } : {}), ...apportDuRun(def, r, ss) }
+    }) })
   } catch (err) {
     console.error('[agents-ia] runs failed:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -658,7 +707,7 @@ routes.get('/:slug/runs/:id', async (req, res) => {
   const saisies = r.competence === 'delais' || r.competence === 'controles'
     ? await saisiesDeRuns([r.id]).catch((err) => { console.error('[agents-ia] saisies of run failed:', err); return null })
     : null
-  res.json({ ...r, ...(enStock ? { enStock } : {}), ...(saisies ? { saisies } : {}) })
+  res.json({ ...r, ...(enStock ? { enStock } : {}), ...(saisies ? { saisies } : {}), ...apportDuRun(def, r, saisies ?? undefined) })
 })
 
 routes.get('/:slug/runs/:id/fichiers/:n', async (req, res) => {
@@ -727,7 +776,7 @@ routes.post('/:slug/runs/:id/notes-dev', async (req, res) => {
   const note = { commentaire: p.data.commentaire, par: await auteur(uid), le: new Date().toISOString() }
   const r = await modifierRun(def.slug, req.params.id, (x) => { x.notesDev = [...(x.notesDev ?? []), note] })
   if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
-  res.json(r)
+  res.json({ ...r, ...apportDuRun(def, r) })
 })
 
 /** Remove one note, identified by its timestamp. */
@@ -738,7 +787,7 @@ routes.delete('/:slug/runs/:id/notes-dev/:le', async (req, res) => {
   if (!def) return
   const r = await modifierRun(def.slug, req.params.id, (x) => { x.notesDev = (x.notesDev ?? []).filter((n) => n.le !== req.params.le) })
   if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
-  res.json(r)
+  res.json({ ...r, ...apportDuRun(def, r) })
 })
 
 // ── Score correction (BL Ennoblisseur) ───────────────────
@@ -747,10 +796,12 @@ routes.delete('/:slug/runs/:id/notes-dev/:le', async (req, res) => {
 // fixed since through « Ml non facturés ». The one carve-out from « scored where
 // the work is done »: only agents scored per run (no `points`), never the
 // Triage (its correction re-dispatches). The replaced score is kept in `avant`.
+// The why is required (Vincent 2026-11-11): a score a pilot sets or changes
+// always says why, kept on the score itself (read by the Retours tab).
 
 const evaluationBody = z.object({
   note: z.enum(['reussite', 'echec']),
-  commentaire: z.string().trim().max(2000).default(''),
+  commentaire: z.string().trim().min(1).max(2000),
 })
 
 routes.put('/:slug/runs/:id/evaluation', async (req, res) => {
@@ -760,8 +811,11 @@ routes.put('/:slug/runs/:id/evaluation', async (req, res) => {
   if (!def) return
   if (def.points || def.slug === TRIAGE_SLUG) { res.status(409).json({ error: 'cet agent est noté là où le travail est fait' }); return }
   const p = evaluationBody.safeParse(req.body)
-  if (!p.success) { res.status(400).json({ error: 'note invalide' }); return }
-  // No why required: a pilot writes it as a dev note on the run (« Note pour la vN+1 »).
+  if (!p.success) {
+    const sansPourquoi = p.error.issues.some((i) => i.path[0] === 'commentaire')
+    res.status(400).json({ error: sansPourquoi ? 'un commentaire est obligatoire pour changer un score' : 'note invalide' })
+    return
+  }
   const par = await auteur(uid)
   const r = await modifierRun(def.slug, req.params.id, (x) => {
     const prec = x.evaluation ?? null
@@ -770,7 +824,7 @@ routes.put('/:slug/runs/:id/evaluation', async (req, res) => {
     x.evaluation = { note: p.data.note, commentaire: p.data.commentaire, par, le: new Date().toISOString(), avant }
   })
   if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
-  res.json(r)
+  res.json({ ...r, ...apportDuRun(def, r) })
 })
 
 // ── « Vérifié » ──────────────────────────────────────────
@@ -797,7 +851,7 @@ routes.post('/:slug/runs/:id/verifie', async (req, res) => {
   if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
   if (refus) { res.status(409).json({ error: refus }); return }
   if (def.slug === BL_ENNOBLISSEUR_SLUG && r.message?.id && r.mode === 'actif') await etiqueterVerifie(r.message.id)
-  res.json(r)
+  res.json({ ...r, ...apportDuRun(def, r) })
 })
 
 // ── Triage ───────────────────────────────────────────────
@@ -1020,7 +1074,15 @@ routes.get('/:slug/retours', async (req, res) => {
     const retours: Array<{
       runId: string; runLe: string; source: AgentRun['source']; portee: 'execution' | 'point'
       titre: string | null; note: Note; commentaire: string; corrections?: string[]; par: Auteur; le: string; retrait: string | null
+      /** BL: what the agent read and the rolls of the lot as they stand in stock, when the
+       *  retour itself names no field (see below). */
+      stock?: { pieces: unknown[]; enStock: RouleauEnStock[] }
     }> = []
+    /** BL retours to complete with the stock (Vincent 2026-11-11): an échec, or a comment,
+     *  that names no field changed at the réception (a score a pilot gave, rolls received by
+     *  hand). The card then shows what the stock holds against what was read, as the run's
+     *  dialog does, so the change is read without opening it. */
+    const aCompleter: Array<{ retour: (typeof retours)[number]; ligneId: number; lot: string; pieces: unknown[] }> = []
     /** Points marked résolu by hand — what ETM and the mailboxes could not see. */
     const resolutions: Array<{ runId: string; runLe: string; titre: string; commentaire: string; par: Auteur; le: string }> = []
     /** « Former Tricobot › Tu pouvais aller chercher plus loin »: no score, read like the comments. */
@@ -1031,7 +1093,17 @@ routes.get('/:slug/retours', async (req, res) => {
       if (r.version !== version) continue
       if (competence && competenceDuRun(r) !== competence.cle) continue
       const base = { runId: r.id, runLe: r.createdAt, source: r.source }
-      if (r.evaluation) retours.push({ ...base, portee: 'execution', titre: r.resume, ...r.evaluation, retrait: r.evaluation.retrait ?? null })
+      if (r.evaluation) {
+        const retour: (typeof retours)[number] = { ...base, portee: 'execution', titre: r.resume, ...r.evaluation, retrait: r.evaluation.retrait ?? null }
+        retours.push(retour)
+        const e = r.evaluation
+        const bl = r.resultat as { extraction?: { pieces?: unknown[] }; resolution?: { ligneId?: number | null; lot?: string } | null }
+        const sansChamp = !e.corrections?.length && !e.avant?.corrections?.length
+        if (def.slug === BL_ENNOBLISSEUR_SLUG && sansChamp && (noteBinaire(e.note) === 'echec' || e.commentaire)
+          && bl.resolution?.ligneId && bl.resolution.lot && bl.extraction?.pieces?.length) {
+          aCompleter.push({ retour, ligneId: bl.resolution.ligneId, lot: bl.resolution.lot, pieces: bl.extraction.pieces })
+        }
+      }
       const titres = new Map((def.points?.duRun(r) ?? []).map((p) => [p.cle, p.titre]))
       // A plain « Traité » (dashboard widget) is a réussite with no comment and
       // a résolu with no explanation: nothing to learn from, left out.
@@ -1049,6 +1121,14 @@ routes.get('/:slug/retours', async (req, res) => {
       for (const x of r.lecons ?? []) lecons.push({ runId: r.id, runLe: r.createdAt, titre: r.resume, ...x })
       for (const x of r.notesDev ?? []) notesDev.push({ runId: r.id, runLe: r.createdAt, titre: r.resume, ...x })
     }
+    // Best effort, a handful of reads (the échecs of one version): a failed one leaves its card as it was.
+    await Promise.all(aCompleter.map(async (x) => {
+      const enStock = await rouleauxEnStock(x.ligneId, x.lot).catch((err) => {
+        console.error('[agents-ia] retours: rouleaux en stock failed:', err)
+        return null
+      })
+      if (enStock?.length) x.retour.stock = { pieces: x.pieces, enStock }
+    }))
     retours.sort((a, b) => b.le.localeCompare(a.le))
     resolutions.sort((a, b) => b.le.localeCompare(a.le))
     lecons.sort((a, b) => b.le.localeCompare(a.le))

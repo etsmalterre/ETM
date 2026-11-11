@@ -20,6 +20,7 @@ import { selectBonnetiers } from '../../production-trm.js'
 import { chatJson } from '../../mistral.js'
 import { enregistrerRetour } from '../retours.js'
 import { ajouterRun, lireEtat, lireRun, lireRuns, nouvelIdRun, versionActive, type AgentRun, type Auteur, type VersionInitiale } from '../store.js'
+import { noteCourteDe } from '../notes-courtes.js'
 import { sousVerrou } from '../verrous.js'
 import {
   derniereSemaineTravaillee,
@@ -78,7 +79,7 @@ export const PLANNING_ATELIER_VERSION_INITIALE: VersionInitiale = {
 export const PLANNING_ATELIER_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-medium-latest',
   prompt: PROMPT_V2,
-  note: 'Version 2 : dans un binôme, les heures de début s’échangent d’une fois sur l’autre dans la même équipe (pour que ce ne soit pas toujours le même qui finisse tard) ; l’heure de chacun est calculée sur l’historique (retour d’Isabelle sur S46).',
+  note: noteCourteDe('planning-atelier', 2),
 }
 
 /** A refusal the screen shows as is (409 / 400 / 502). */

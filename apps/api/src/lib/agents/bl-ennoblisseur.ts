@@ -79,6 +79,7 @@ import {
   type RunStatut,
   type VersionInitiale,
 } from './store.js'
+import { noteCourteDe } from './notes-courtes.js'
 
 export const BL_ENNOBLISSEUR_SLUG = 'bl-ennoblisseur'
 
@@ -98,7 +99,7 @@ export const BL_ENNOBLISSEUR_VERSION_INITIALE: VersionInitiale = {
 export const BL_ENNOBLISSEUR_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-small-latest',
   prompt: BL_PROMPT_V1,
-  note: 'Retours de la v3, prompt inchangé : un métrage sans rapport avec le poids (moins de la moitié ou plus d’une fois et demie les m/kg des autres pièces du même OF sur le BL, ex. 3546/11 à 19,8 m pour 21,6 kg à côté de ~108 m) bloque le BL et dit le métrage attendu, à demander à l’ennoblisseur ; un BL qui arrive sur des pièces déjà réceptionnées sans reprise ouverte (BL rectifié, BL en retard) est comparé au stock : rien à faire quand le stock porte déjà ses valeurs, sinon chaque écart est nommé avec le geste (« Corriger la réception » ou « Envoyer en reprise ») et un mail part.',
+  note: noteCourteDe('bl-ennoblisseur', 4),
 }
 
 /** The mailbox n8n polled. Every dyer mails its BLs there (Bontemps asked to
@@ -150,7 +151,7 @@ async function lire(pdf: { nom: string; contenu: Buffer }, v: AgentVersion): Pro
     l.type = d.type
     const r = await chatJson({
       model: v.model,
-      system: promptDe(d.profil, v.prompt),
+      system: promptDe(d.profil, v),
       user: `Texte OCR du ${d.type === 'mise_a_dispo' ? 'document' : 'BL'} :\n\n${o.text}`,
       schemaName: 'bordereau_livraison',
       schema: d.profil.schema,
@@ -438,7 +439,9 @@ export async function traiterMessage(
     const run: AgentRun = {
       id: nouvelIdRun(), slug: BL_ENNOBLISSEUR_SLUG, createdAt: new Date().toISOString(), source, mode,
       lancePar, message, fichiers: [], version: version.version, model: version.model, statut: 'ignore',
-      resultat: {},
+      // No skill had this mail (competences-flux.ts SANS_COMPETENCE): it is listed with the
+      // agent's mails, with the skills in observation that hold it (mails.ts).
+      resultat: enAttente.length ? { enAttente } : {},
       // Observation: the mail waits for a person's reaction, read then (hourly pass).
       resume: enAttente.length
         ? `${enAttente.map((c) => (c === 'delais' ? 'Délais' : 'Contrôles')).join(' et ')} en observation : lu une fois qu’une personne aura réagi`

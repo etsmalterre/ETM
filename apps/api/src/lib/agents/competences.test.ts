@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { aideInutile, conseiller, crantSuivant, mesurer, nouveauBloc, tirer, type PointMesure } from './competences.js'
+import { aideInutile, apportMesures, conseiller, crantSuivant, mesurer, nouveauBloc, tirer, type PointMesure } from './competences.js'
 
 const p = (x: Partial<PointMesure>): PointMesure => ({ decision: 'saisie', statut: 'validee', le: '2026-11-05T10:00', ...x })
 
@@ -73,6 +73,34 @@ describe('the three measures (doctrine §4)', () => {
     const m = mesurer([p({ statut: 'autonome', autonome: true })])
     expect(m.nonRevus).toBe(1)
     expect(m.fiabilite.den).toBe(0)
+  })
+})
+
+describe('what one execution brings to the measures', () => {
+  const le = '2026-11-11T08:00:00.000Z'
+  const z = { plus: 0, moins: 0, attente: 0 }
+  it('counts each point for, against, or waiting', () => {
+    const a = apportMesures([
+      { decision: 'saisie', statut: 'validee', le },
+      { decision: 'saisie', statut: 'corrigee', le },
+      { decision: 'rien', statut: 'a_revoir', le },
+      { decision: 'aide', statut: 'a_revoir', le },
+      { decision: 'aide', statut: 'resolue', douteJustifie: true, le },
+      { decision: 'aide', statut: 'resolue', douteJustifie: false, le },
+    ])
+    expect(a.fiabilite).toEqual({ ...z, plus: 1, moins: 1, attente: 1 })
+    expect(a.autonomie).toEqual({ ...z, plus: 3, moins: 3 })
+    expect(a.discernement).toEqual({ ...z, plus: 1, moins: 1, attente: 1 })
+  })
+  it('reads only the fiabilité in observation', () => {
+    const a = apportMesures([
+      { decision: 'saisie', statut: 'validee', observation: true, le },
+      { decision: 'saisie', statut: 'observation', observation: true, le },
+      { decision: 'aide', statut: 'resolue', douteJustifie: true, observation: true, le },
+    ])
+    expect(a.fiabilite).toEqual({ ...z, plus: 1, attente: 1 })
+    expect(a.autonomie).toEqual(z)
+    expect(a.discernement).toEqual(z)
   })
 })
 

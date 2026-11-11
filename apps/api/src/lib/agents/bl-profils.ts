@@ -18,7 +18,7 @@
 //     only MATEL keeps the dyer's weight, as n8n did.
 
 import { BL_SCHEMA, type BlExtraction, type ReglesControle } from './bl-extraction.js'
-import type { AgentMode } from './store.js'
+import type { AgentMode, AgentVersion } from './store.js'
 
 export type ProfilCle = 'matel' | 'bontemps' | 'tad'
 /** A delivery note, or TAD's « stock fini à disposition » (the same pieces, before shipping). */
@@ -34,7 +34,8 @@ export interface ProfilEnnoblisseur {
   modeMax: Exclude<AgentMode, 'off'>
   /** Which of its documents this OCR text is, or null when it is none of them. */
   reconnaitre(ocr: string): TypeDocument | null
-  /** null = the agent version's prompt (MATEL, versioned in the Prompt tab). */
+  /** The dyer's prompt as shipped with the code: read by a version that stores none of its
+   *  own for this dyer. null = the agent version's `prompt` (MATEL). */
   prompt: string | null
   schema: object
   /** The printed bordereau number, once normalised ('' allowed on a mise à dispo). */
@@ -234,10 +235,17 @@ export function estPieceCandidate(p: { nom: string; mimeType: string }): boolean
   return !/^BL-\d+\.pdf$|soumission|^logo|factur|^FA\d|avoir|\bRIB\b/i.test(p.nom)
 }
 
-/** MATEL's prompt is the agent version's one; the others ship with the code. */
-export function promptDe(profil: ProfilEnnoblisseur, promptVersion: string): string {
-  return profil.prompt ?? promptVersion
+/** The prompt a dyer's document is read with: the version's own for that dyer, else the one
+ *  shipped with the code, else the version's `prompt` (MATEL). One version carries them all:
+ *  « one big prompt », cut by dyer and routed by `detecterProfil` (Vincent 2026-11-11). */
+export function promptDe(profil: ProfilEnnoblisseur, version: Pick<AgentVersion, 'prompt' | 'promptsProfils'>): string {
+  return version.promptsProfils?.[profil.cle] ?? profil.prompt ?? version.prompt
 }
+
+/** The BL's prompts as the Prompt tab shows them, one sub-tab each: MATEL (the version's
+ *  `prompt`) first, then the dyers whose prompt ships with the code. */
+export const PROMPTS_PAR_ENNOBLISSEUR: ReadonlyArray<{ cle: string; nom: string; defaut: string | null }> =
+  [...PROFILS].sort((a, b) => Number(a.prompt !== null) - Number(b.prompt !== null)).map((p) => ({ cle: p.cle, nom: p.nom, defaut: p.prompt }))
 
 /** The per-dyer rules controlerExtraction() applies. */
 export function reglesDe(profil: ProfilEnnoblisseur): ReglesControle {

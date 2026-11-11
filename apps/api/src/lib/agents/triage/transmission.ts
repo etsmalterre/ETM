@@ -65,7 +65,8 @@ export const DESTINATAIRES: Record<string, Destinataire> = {
   },
   [FACTURES_SST_SLUG]: {
     slug: FACTURES_SST_SLUG,
-    nom: 'Factures Ennoblisseur',
+    // One of the agents of Flux Ennoblisseur since 2026-11-11: named under its group out of it.
+    nom: 'Flux Ennoblisseur › Factures',
     versionInitiale: FACTURES_SST_VERSION_INITIALE,
     recevoir: recevoirFacture,
     sousCategorie: (runs) => premier(runs.map((r) => fournisseurDe((r.resultat as { fournisseur?: string | null }).fournisseur)?.nom)),
