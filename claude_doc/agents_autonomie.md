@@ -59,10 +59,23 @@ Reste du travail de développeur : une nouvelle compétence, un nouveau champ à
 ### L'observation pilotée par les personnes (Vincent, 2026-11-09)
 
 Ce qui vaut d'être regardé en observation : **combien il a tourné, l'accord avec ce que les
-personnes ont saisi, et les écarts**. L'autonomie et le discernement n'y ont pas de sens (personne
-n'est interrogé) : l'onglet Score montre à la place **Exécutions**, **Accord** (le critère pour
-passer en supervisé, 90 % sur 30 comparés) et **Portée**, puis la liste des écarts (ce qu'il a lu
-face à ce qui a été saisi : la matière pour améliorer le prompt).
+personnes ont saisi, et les écarts**. Le Score montre en grand **Accord** (le critère pour
+passer en supervisé, 90 % sur 30 comparés) et **Autonomie** (révisé le 2026-11-11, ci-dessous),
+avec le nombre d'exécutions dessous et rien d'autre. La **Portée** (point 4 ci-dessous) reste
+calculée mais n'est plus affichée : pas assez claire pour l'instant (Vincent, 2026-11-11). Puis
+la liste des écarts (ce qu'il a lu face à ce qui a été saisi : la matière pour améliorer le
+prompt).
+
+**L'autonomie se lit aussi en observation, le discernement jamais** (Vincent, 2026-11-11, révise
+le 2026-11-09). L'autonomie est un fait que l'agent enregistre de toute façon : pour chaque
+point, il **aurait** saisi ou il **aurait** demandé. Elle explique un Accord qui ne se remplit
+pas : l'Accord ne compte que les points où il aurait agi, donc une compétence qui demande tout
+(Délais au 2026-11-11 : 5 points sur 5, « je lis s50 comme le 09/12, pas le 16/12 ») n'atteint
+jamais ses 30 comparés. Le discernement est la réponse de la personne interrogée (§4) ; en
+observation personne ne l'est, et un développeur n'est pas cette personne. L'estimation gardée
+sur le point (sa proposition était-elle la valeur saisie ?) n'est pas une note. Dans Agents IA ›
+Exécutions, une compétence en observation a donc deux colonnes : **Accord** et **Autonomie**
+(`apportMesures`).
 
 La donnée n'existe qu'une fois qu'une personne a réagi au mail, ce qui prend du temps. D'où :
 
@@ -76,10 +89,15 @@ La donnée n'existe qu'une fois qu'une personne a réagi au mail, ce qui prend d
    réagi est lu **comme à son arrivée** : la ligne / le lot d'avant la saisie, « aujourd'hui » = le
    jour du mail. Il ne voit jamais la réponse : sinon « la ligne a déjà un délai » ferait de chaque
    point une aide. La relecture d'un prompt (« Rejouer ») relit dans ce même contexte.
-4. Une valeur saisie qu'aucun mail lu n'explique est **hors de portée** (téléphone, autre boîte) :
-   ce n'est pas l'erreur de l'agent, c'est la part du travail qu'il ne voit pas (« Portée »).
-   Une valeur saisie plus tard sur une ligne / un lot dont le mail lu parlait, et que sa lecture a
-   manquée, est une **omission**.
+4. **Une valeur saisie est donnée à UN mail, une fois tous les mails en attente lus** (corrigé le
+   2026-11-11, `mailExpliquant`). D'abord le mail le plus récent dont la lecture a un point sur
+   cette ligne / ce lot : ce point est jugé par la valeur. À défaut, le plus récent qui en
+   parlait (son Point le demandait) sans rien y lire : c'est une **omission**. Sinon la valeur
+   est **hors de portée** (téléphone, autre boîte) : ce n'est pas l'erreur de l'agent, c'est la
+   part du travail qu'il ne voit pas. Jamais mail par mail au fil de la lecture : le 10/11, une
+   réponse sans mesures du 09/11, lue la première, avait pris la saisie du lot MA109651 que la
+   réponse du 10/11 contenait ; la bonne lecture n'avait compté pour rien, et un faux oubli
+   avait été noté.
 
 Le **BL** reste lu à son arrivée (rien n'est encore réceptionné, donc rien ne fuit) ; sa
 comparaison avec la réception passe dans le même passage horaire. Code :

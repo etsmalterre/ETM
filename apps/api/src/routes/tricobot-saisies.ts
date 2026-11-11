@@ -31,8 +31,8 @@ import {
   supprimer, trancher, valider,
 } from '../lib/agents/flux-ennoblisseur/saisies.js'
 import type { ResultatFlux } from '../lib/agents/flux-ennoblisseur/delais.js'
-import { MpsPgIndisponible, mpsPg } from '../lib/mps-pg.js'
-import { SECTIONS } from '../lib/point-sst/regles.js'
+import { pointDuRun } from '../lib/agents/flux-ennoblisseur/point-du-run.js'
+import { MpsPgIndisponible } from '../lib/mps-pg.js'
 
 export const tricobotSaisiesRouter: RouterType = Router()
 
@@ -59,37 +59,6 @@ function echec(res: Response, err: unknown, quoi: string): void {
   if (err instanceof MpsPgIndisponible) { res.status(503).json({ error: 'base indisponible' }); return }
   console.error(`[tricobot-saisies] ${quoi} failed:`, err)
   res.status(500).json({ error: 'Internal server error' })
-}
-
-/** Our Point a reply answers: when it left, and its §2 (contrôles) and §5 (délais) lines. */
-async function pointDuRun(idpoint: number) {
-  const sql = mpsPg()
-  const [p] = await sql<{ jour: string; envoye_le: Date | null; envoye_par_nom: string | null; sujet: string }[]>`
-    SELECT to_char(jour, 'YYYY-MM-DD') AS jour, envoye_le, envoye_par_nom, sujet FROM point_sst WHERE idpoint_sst = ${idpoint}`
-  if (!p) return null
-  const lignes = await sql<{ section: number; commande: string; reference: string; coloris: string; idligne: number; commentaire: string }[]>`
-    SELECT section, commande, reference, coloris, idligne_commande_sous_traitant AS idligne, commentaire
-    FROM point_sst_ligne WHERE idpoint_sst = ${idpoint} AND section IN (2, 5) AND NOT retiree ORDER BY section, ordre`
-  const section = (n: 2 | 5) => ({
-    titre: SECTIONS.find((x) => x.n === n)!.titre,
-    lignes: lignes.filter((l) => Number(l.section) === n).map((l) => ({
-      commande: String(l.commande).trim(),
-      idligne: Number(l.idligne) || 0,
-      article: [l.reference, l.coloris].map((x) => String(x ?? '').trim()).filter(Boolean).join(' - '),
-      commentaire: String(l.commentaire ?? '').trim(),
-    })),
-  })
-  const s5 = section(5)
-  return {
-    jour: p.jour,
-    envoyeLe: p.envoye_le ? new Date(p.envoye_le).toISOString() : null,
-    envoyePar: p.envoye_par_nom,
-    sujet: p.sujet,
-    // §5 at the top level: the Délais shape of 2026-11-05.
-    titre: s5.titre,
-    lignes: s5.lignes,
-    sections: { 2: section(2), 5: s5 },
-  }
 }
 
 tricobotSaisiesRouter.get('/compteurs', async (req, res) => {

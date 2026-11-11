@@ -175,8 +175,10 @@ export interface ApportMesures { fiabilite: Apport; autonomie: Apport; discernem
 
 /** The three measures read on the points of ONE execution (Agents IA ›
  *  Exécutions, Vincent 2026-11-11): the same rules as `mesurer`, kept per point.
- *  Observation: only the fiabilité (the agreement with what a person typed),
- *  autonomie and discernement have no meaning there (doctrine §1). Pure. */
+ *  Observation (Vincent 2026-11-11, doctrine §2): the fiabilité is the agreement
+ *  with what a person typed, and the autonomie what it WOULD have done (acted or
+ *  asked: a fact it records either way). No discernement there: nobody is asked,
+ *  and whether asking was right is the answer of the person asked. Pure. */
 export function apportMesures(points: readonly PointMesure[]): ApportMesures {
   const vide = (): Apport => ({ plus: 0, moins: 0, attente: 0 })
   const a: ApportMesures = { fiabilite: vide(), autonomie: vide(), discernement: vide() }
@@ -186,9 +188,9 @@ export function apportMesures(points: readonly PointMesure[]): ApportMesures {
       else if (JUGE_KO.has(p.statut)) a.fiabilite.moins++
       else a.fiabilite.attente++
     }
-    if (p.observation) continue
     if (p.decision !== 'aide') { a.autonomie.plus++; continue }
     a.autonomie.moins++
+    if (p.observation) continue
     if (p.statut !== 'resolue') a.discernement.attente++
     else if (p.douteJustifie != null ? p.douteJustifie : !aideInutile(p)) a.discernement.plus++
     else a.discernement.moins++

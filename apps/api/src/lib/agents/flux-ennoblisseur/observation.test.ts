@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { contexteAvant, rapprocher, type SaisieHumaine } from './observation.js'
-import type { Saisie } from './saisies.js'
+import { contexteAvant, mailExpliquant, type SaisieHumaine } from './observation.js'
 
 const personne = { id: 7, nom: 'Pierre-Emmanuel' }
 
@@ -8,56 +7,53 @@ const humaine = (o: Partial<SaisieHumaine> & Pick<SaisieHumaine, 'id' | 'valeur'
   competence: 'delais', idsousTraitant: 1, idcommande: 9132, idligne: 0, idsuivilot: 0, avant: null, par: personne, ...o,
 })
 
-type PointLu = Pick<Saisie, 'id' | 'decision' | 'proposition' | 'idligne' | 'idsuivilot' | 'statut'>
-const point = (o: Partial<PointLu> & Pick<PointLu, 'id'>): PointLu => ({
-  decision: 'saisie', proposition: '2026-12-02', idligne: 0, idsuivilot: 0, statut: 'observation', ...o,
-})
+/** A mail read before the value: what it has on the lot the value is on. */
+const mail = (nom: string, dateMail: string, o: { point?: boolean; cible?: boolean } = {}) =>
+  ({ mail: nom, dateMail, point: !!o.point, cible: !!o.cible })
 
 describe('observation driven by people (2026-11-09)', () => {
-  it('judges each point by the FIRST value typed on its line, and explains the retypes too', () => {
-    const r = rapprocher('delais', [point({ id: 1, idligne: 11 })], [
-      humaine({ id: 100, idligne: 11, valeur: '2026-12-09', le: '2026-11-10T09:00:00Z' }),
-      humaine({ id: 101, idligne: 11, valeur: '2026-12-02', le: '2026-11-10T08:00:00Z' }),
-    ], new Set([11]))
-    expect(r.jugements).toHaveLength(1)
-    expect(r.jugements[0].humaine.id).toBe(101)
-    expect(r.omissions).toEqual([])
-    expect(r.rattachees.sort()).toEqual([100, 101])
+  it('gives the value to the mail whose reading has a point on the lot', () => {
+    expect(mailExpliquant([mail('A', '2026-11-10T12:07:05Z', { point: true, cible: true })])).toEqual({ mail: 'A', omission: false })
   })
 
-  it('a value on a line the mail was about, with no point of the reading, is an omission', () => {
-    const r = rapprocher('delais', [point({ id: 1, idligne: 11 })], [
-      humaine({ id: 100, idligne: 11, valeur: '2026-12-02', le: '2026-11-10T08:00:00Z' }),
-      humaine({ id: 200, idligne: 22, valeur: '2026-12-16', le: '2026-11-10T08:05:00Z' }),
-    ], new Set([11, 22]))
-    expect(r.omissions.map((h) => h.id)).toEqual([200])
-    expect(r.rattachees.sort()).toEqual([100, 200])
+  it('never lets an older mail that only asked about the lot take the value a later mail gives (lot MA109651, 2026-11-10)', () => {
+    // 09/11: « on va faire le max pour fin novembre », no measure, but its Point asked for the lot.
+    // 10/11: the measures. Both waited when the person typed them.
+    const r = mailExpliquant([
+      mail('sans mesures', '2026-11-09T13:45:22Z', { cible: true }),
+      mail('les mesures', '2026-11-10T12:07:05Z', { point: true, cible: true }),
+    ])
+    expect(r).toEqual({ mail: 'les mesures', omission: false })
   })
 
-  it('a value on a line the mail was NOT about stays free (another mail, or hors de portée)', () => {
-    const r = rapprocher('delais', [point({ id: 1, idligne: 11 })], [
-      humaine({ id: 300, idligne: 33, valeur: '2026-12-16', le: '2026-11-10T08:05:00Z' }),
-    ], new Set([11]))
-    expect(r.jugements).toEqual([])
-    expect(r.omissions).toEqual([])
-    expect(r.rattachees).toEqual([])
+  it('prefers the mail that read the lot to a later one that only asked about it', () => {
+    const r = mailExpliquant([
+      mail('les mesures', '2026-11-09T12:17:14Z', { point: true, cible: true }),
+      mail('merci', '2026-11-09T13:45:22Z', { cible: true }),
+    ])
+    expect(r).toEqual({ mail: 'les mesures', omission: false })
   })
 
-  it('a point already judged (in real time) is not judged twice, its value is still explained', () => {
-    const r = rapprocher('delais', [point({ id: 1, idligne: 11, statut: 'validee' })], [
-      humaine({ id: 100, idligne: 11, valeur: '2026-12-02', le: '2026-11-10T08:00:00Z' }),
-    ], new Set([11]))
-    expect(r.jugements).toEqual([])
-    expect(r.rattachees).toEqual([100])
+  it('takes the latest of two mails that both read the lot: the person typed from the last one', () => {
+    const r = mailExpliquant([
+      mail('premières mesures', '2026-11-09T12:00:00Z', { point: true, cible: true }),
+      mail('mesures corrigées', '2026-11-10T12:00:00Z', { point: true, cible: true }),
+    ])
+    expect(r?.mail).toBe('mesures corrigées')
   })
 
-  it('contrôles are matched by lot', () => {
-    const r = rapprocher('controles', [point({ id: 1, idligne: 11, idsuivilot: 5, proposition: '{}' })], [
-      humaine({ id: 100, competence: 'controles', idligne: 11, idsuivilot: 5, valeur: '{}', le: '2026-11-10T08:00:00Z' }),
-      humaine({ id: 101, competence: 'controles', idligne: 11, idsuivilot: 6, valeur: '{}', le: '2026-11-10T08:00:00Z' }),
-    ], new Set([5, 6]))
-    expect(r.jugements.map((j) => j.humaine.id)).toEqual([100])
-    expect(r.omissions.map((h) => h.id)).toEqual([101])
+  it('is an omission of the latest mail that was about the lot when none read it', () => {
+    const r = mailExpliquant([
+      mail('A', '2026-11-09T12:00:00Z', { cible: true }),
+      mail('B', '2026-11-10T12:00:00Z', { cible: true }),
+      mail('C', '2026-11-10T15:00:00Z'),
+    ])
+    expect(r).toEqual({ mail: 'B', omission: true })
+  })
+
+  it('is hors de portée when no mail read was about the lot', () => {
+    expect(mailExpliquant([mail('autre lot', '2026-11-10T12:00:00Z')])).toBeNull()
+    expect(mailExpliquant([])).toBeNull()
   })
 
   it('reads the mail against each line as it was before the first value typed, « today » = the mail’s day in Paris', () => {

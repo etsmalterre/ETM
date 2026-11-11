@@ -9,9 +9,9 @@
 // Délais and Contrôles have their own prompt versions (lecture.ts, doctrine
 // §0 « le modèle lit, le code vérifie »); the BL's prompt is the agent's.
 
-import type { ModeCompetence, PointMesure } from '../competences.js'
+import { apportMesures, type ApportMesures, type Decision, type ModeCompetence, type PointMesure, type StatutPoint } from '../competences.js'
 import { noteBinaire, promptsCompetence, type AgentRun, type AgentState, type PromptsCompetence, type VersionInitiale } from '../store.js'
-import { saisiesDeCompetence, pointDe } from './saisies.js'
+import { saisiesDeCompetence, pointDe, type Saisie } from './saisies.js'
 import { CONTROLES_VERSIONS_LIVREES, DELAIS_VERSIONS_LIVREES } from './lecture.js'
 
 export interface CompetenceDef {
@@ -76,6 +76,57 @@ export function pointsBl(runs: readonly AgentRun[]): PointMesure[] {
     out.push({ decision: 'saisie', statut: note === 'reussite' ? 'validee' : note === 'echec' ? 'corrigee' : 'a_revoir', le: r.createdAt })
   }
   return out
+}
+
+/** What a BL run is about, in a word, for the « Référence » column of the runs
+ *  list (Vincent 2026-11-11): its lot once resolved, else the bordereau as
+ *  printed, else nothing (an error, a PDF that was no BL). Pure. */
+export function referenceBl(r: Pick<AgentRun, 'resultat'>): string | null {
+  const res = r.resultat as { resolution?: { lot?: string } | null; extraction?: { numero_bordereau?: string } | null }
+  const lot = res.resolution?.lot?.trim()
+  if (lot) return `Lot ${lot}`
+  const bl = res.extraction?.numero_bordereau?.trim()
+  return bl ? `BL ${bl}` : null
+}
+
+/** One point of a Délais / Contrôles run, as the runs list shows it (Agents IA ›
+ *  Exécutions, Vincent 2026-11-11: a row is a point, the run is the group). */
+export interface PointRun {
+  /** Its saisie_agent row. */
+  id: number
+  /** « Lot MA109579 », « Commande 9132 », or « Mail » for a « rien » on the whole reply. */
+  quoi: string
+  /** Délais: the article of the order line. */
+  detail?: string
+  decision: Decision
+  statut: StatutPoint
+  /** What this point alone brings to the three measures: one token. */
+  apport: ApportMesures
+}
+
+/** The points of one Délais / Contrôles run, in the order they were recorded.
+ *  They are read from saisie_agent, never from what the model read: a value a
+ *  person typed that the reading missed (an omission) is a point of the run
+ *  too, and the reading knows nothing of it. A point is named by the reading
+ *  when it has it (the order and lot numbers as printed), else by its lot
+ *  (`lots`: idsuivilot → lot number) or its order. Pure. */
+export function pointsDuRun(r: Pick<AgentRun, 'resultat'>, saisies: readonly Saisie[], lots: ReadonlyMap<number, string>): PointRun[] {
+  const res = r.resultat as {
+    delais?: Array<{ commande: string; article: string; saisieId?: number }>
+    controles?: Array<{ lot: string; lotEtm: string | null; saisieId?: number }>
+  }
+  const lus = new Map<number, { quoi: string; detail?: string }>()
+  for (const p of res.delais ?? []) if (p.saisieId) lus.set(p.saisieId, { quoi: `Commande ${p.commande}`, ...(p.article ? { detail: p.article } : {}) })
+  for (const c of res.controles ?? []) if (c.saisieId) lus.set(c.saisieId, { quoi: `Lot ${c.lotEtm ?? c.lot}` })
+  return saisies.map((s) => ({
+    id: s.id,
+    ...(lus.get(s.id) ?? {
+      quoi: s.idsuivilot > 0 ? `Lot ${lots.get(s.idsuivilot) ?? '?'}` : s.idcommande > 0 ? `Commande ${s.idcommande}` : 'Mail',
+    }),
+    decision: s.decision,
+    statut: s.statut,
+    apport: apportMesures([pointDe(s)]),
+  }))
 }
 
 export const COMPETENCES_FLUX: readonly CompetenceDef[] = [

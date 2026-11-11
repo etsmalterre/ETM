@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { apportMesures, mesurer } from '../competences.js'
 import type { AgentRun, Evaluation } from '../store.js'
-import { pointsBl } from './competences-flux.js'
+import { pointsBl, pointsDuRun, referenceBl } from './competences-flux.js'
+import type { Saisie } from './saisies.js'
 
 const par = { id: 1, nom: 'Pilote' }
 const run = (o: Partial<AgentRun>): AgentRun => ({
@@ -70,5 +71,55 @@ describe('the BL point of a run in service', () => {
     // It acted and was corrected at the réception.
     expect(apportMesures(pointsBl([run({ evaluation: note('echec') })])))
       .toEqual({ fiabilite: { ...z, moins: 1 }, autonomie: { ...z, plus: 1 }, discernement: z })
+  })
+})
+
+describe('what a BL run is about', () => {
+  it('is its lot once resolved, else the bordereau as printed, else nothing', () => {
+    expect(referenceBl(run({ resultat: { resolution: { lot: 'MA109675' }, extraction: { numero_bordereau: '109675A' } } }))).toBe('Lot MA109675')
+    expect(referenceBl(run({ resultat: { resolution: null, extraction: { numero_bordereau: '109675A' } } }))).toBe('BL 109675A')
+    expect(referenceBl(run({ statut: 'erreur', resultat: {} }))).toBeNull()
+  })
+})
+
+describe('the points of a Délais / Contrôles run, one by one', () => {
+  const saisie = (o: Partial<Saisie>): Saisie => ({
+    id: 1, agent: 'bl-ennoblisseur', competence: 'controles', version: 2, runId: 'r', messageId: null, threadId: null,
+    creeLe: '2026-11-10T14:00:00Z', mode: 'observation', decision: 'saisie', idsousTraitant: 3, idcommande: 9132, idligne: 7, idsuivilot: 0,
+    champ: 'mesures_sst', valeurAvant: null, proposition: null, ecrit: false, explication: '', citation: '', statut: 'validee',
+    valeurFinale: null, commentaire: null, douteJustifie: null, douteCommentaire: null, revuPar: null, revuLe: null, ...o,
+  })
+  const lots = new Map([[41, 'MA109581']])
+
+  it('a lot read is named as the reading printed it, and carries its own token', () => {
+    const r = run({ competence: 'controles', resultat: { controles: [
+      { lot: '109579', lotEtm: 'MA109579', saisieId: 1 },
+      { lot: '109580', lotEtm: null, saisieId: 2 },
+    ] } })
+    const points = pointsDuRun(r, [saisie({ id: 1, idsuivilot: 40 }), saisie({ id: 2, idsuivilot: 0, statut: 'corrigee' })], lots)
+    expect(points).toMatchObject([
+      { id: 1, quoi: 'Lot MA109579', statut: 'validee', apport: { fiabilite: { plus: 1, moins: 0, attente: 0 } } },
+      { id: 2, quoi: 'Lot 109580', statut: 'corrigee', apport: { fiabilite: { plus: 0, moins: 1, attente: 0 } } },
+    ])
+  })
+
+  it('a value the reading missed is a point too, named by its lot', () => {
+    const r = run({ competence: 'controles', resultat: { controles: [] } })
+    expect(pointsDuRun(r, [saisie({ id: 5, decision: 'rien', statut: 'omission', idsuivilot: 41 })], lots))
+      .toMatchObject([{ id: 5, quoi: 'Lot MA109581', decision: 'rien', statut: 'omission', apport: { fiabilite: { moins: 1 } } }])
+    // A lot that is gone keeps its row.
+    expect(pointsDuRun(r, [saisie({ id: 6, statut: 'omission', idsuivilot: 99 })], lots)[0].quoi).toBe('Lot ?')
+  })
+
+  it('a délai is named by its order, with the article; a « rien » on the whole reply by the mail', () => {
+    const r = run({ competence: 'delais', resultat: { delais: [{ commande: '9132', article: 'JERSEY 160 · NOIR', saisieId: 1 }, { commande: '9133', article: '', saisieId: undefined }] } })
+    const points = pointsDuRun(r, [
+      saisie({ id: 1, competence: 'delais', champ: 'date_livraison', mode: 'supervise', decision: 'aide', statut: 'a_revoir' }),
+      saisie({ id: 2, competence: 'delais', champ: 'date_livraison', mode: 'observation', statut: 'omission', decision: 'rien', idcommande: 9140 }),
+      saisie({ id: 3, competence: 'delais', champ: null, mode: 'supervise', decision: 'rien', statut: 'a_revoir', idcommande: 0, idligne: 0 }),
+    ], lots)
+    expect(points.map((p) => [p.quoi, p.detail])).toEqual([['Commande 9132', 'JERSEY 160 · NOIR'], ['Commande 9140', undefined], ['Mail', undefined]])
+    // Supervisé, an aide waiting: it asked, and whether asking was right is not judged yet.
+    expect(points[0].apport).toEqual({ fiabilite: { plus: 0, moins: 0, attente: 0 }, autonomie: { plus: 0, moins: 1, attente: 0 }, discernement: { plus: 0, moins: 0, attente: 1 } })
   })
 })

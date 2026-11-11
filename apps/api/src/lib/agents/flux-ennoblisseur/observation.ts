@@ -10,11 +10,15 @@
 //      line / lot as it was just before (`noterSaisieHumaine`, from the routes).
 //   3. Once an hour (`passeObservation`, scheduler.ts), every waiting mail a
 //      person reacted to is read AS IT WAS on arrival (the line / lot before
-//      the person typed, « today » = the mail's day: it never sees the answer)
-//      and each point is judged by what the person typed: same value = accord,
-//      another = désaccord, a value on a line / lot the mail was about that the
-//      reading missed = omission.
-//   4. A typed value no waiting mail explains is « hors de portée » (phone,
+//      the person typed, « today » = the mail's day: it never sees the answer).
+//      Only once ALL of them are read is each typed value given to ONE mail
+//      (`mailExpliquant`): the latest whose reading has a point on that line /
+//      lot, and the point is judged by the value (same = accord, another =
+//      désaccord); failing that, the latest that was about it, which missed
+//      it: an omission. Never mail by mail as they are read (2026-11-11: a
+//      mail without measures, read first, took the value a later waiting mail
+//      held, and the right reading counted for nothing).
+//   4. A typed value no mail read explains is « hors de portée » (phone,
 //      another mailbox): not the agent's mistake, the share of the work it
 //      cannot see. A mail nobody reacts to within ATTENTE_MAX_J days is never read.
 //
@@ -80,48 +84,24 @@ const OU_LU: Record<CompetenceObservee, string> = { delais: 'la ligne de command
 
 // ── Matching (pure) ──────────────────────────────────────
 
-export interface Rapprochement {
-  /** An observation point and the person's value that judges it (the first typed). */
-  jugements: Array<{ point: Pick<Saisie, 'id' | 'decision' | 'proposition'>; humaine: SaisieHumaine }>
-  /** A person's value on a line / lot the mail was about, with no point of the reading. */
-  omissions: SaisieHumaine[]
-  /** Every person's value this mail explains (judging or omission, and the later retypes). */
-  rattachees: number[]
-}
+/** A mail read, of the dyer and before a person's value, seen from the line /
+ *  lot that value is on: did its reading give a point there, was it about it
+ *  (its Point asked for it). */
+export interface MailCandidat<M> { mail: M; dateMail: string; point: boolean; cible: boolean }
 
-/** Match the points of a late reading with what people typed after the mail.
- *  `cibles`: the lines / lots the mail was about (the Point's questions and
- *  the reading's own points). A value elsewhere stays free (another mail, or
- *  hors de portée). Pure. */
-export function rapprocher(
-  competence: CompetenceObservee,
-  points: ReadonlyArray<Pick<Saisie, 'id' | 'decision' | 'proposition' | 'idligne' | 'idsuivilot' | 'statut'>>,
-  humaines: readonly SaisieHumaine[],
-  cibles: ReadonlySet<number>,
-): Rapprochement {
-  const parCle = new Map<number, SaisieHumaine[]>()
-  for (const h of [...humaines].sort((a, b) => a.le.localeCompare(b.le))) {
-    const k = cleDe(competence, h)
-    if (!k) continue
-    parCle.set(k, [...(parCle.get(k) ?? []), h])
-  }
-  const out: Rapprochement = { jugements: [], omissions: [], rattachees: [] }
-  const vues = new Set<number>()
-  for (const p of points) {
-    const k = cleDe(competence, p)
-    if (!k || p.decision === 'rien') continue
-    vues.add(k)
-    const hs = parCle.get(k)
-    if (!hs) continue
-    if (p.statut === 'observation') out.jugements.push({ point: p, humaine: hs[0] })
-    out.rattachees.push(...hs.map((h) => h.id))
-  }
-  for (const [k, hs] of parCle) {
-    if (vues.has(k) || !cibles.has(k)) continue
-    out.omissions.push(hs[0])
-    out.rattachees.push(...hs.map((h) => h.id))
-  }
-  return out
+/** The ONE mail a person's value is explained by, among the mails read before
+ *  it (Vincent 2026-11-11). A mail whose reading has a point on that line / lot
+ *  comes first, the latest of them: the person typed from the last mail that
+ *  gave the value, and its point is judged by it. Failing that, the latest
+ *  mail that was about it without reading anything there: an omission. None:
+ *  the value came from elsewhere (hors de portée). An older mail that only
+ *  asked about the lot never takes the value a later one gives. Pure. */
+export function mailExpliquant<M>(candidats: ReadonlyArray<MailCandidat<M>>): { mail: M; omission: boolean } | null {
+  const duPlusRecent = [...candidats].sort((a, b) => b.dateMail.localeCompare(a.dateMail))
+  const lu = duPlusRecent.find((c) => c.point)
+  if (lu) return { mail: lu.mail, omission: false }
+  const manque = duPlusRecent.find((c) => c.cible)
+  return manque ? { mail: manque.mail, omission: true } : null
 }
 
 /** What the mail is read against: each line / lot as it was before the FIRST
@@ -211,8 +191,10 @@ export async function passeObservation(): Promise<{ lus: number; expires: number
         SELECT 1 FROM observation_saisie s WHERE s.statut = 'libre' AND s.agent = m.agent AND s.competence = m.competence
           AND s.idsous_traitant = m.idsous_traitant AND s.le > m.date_mail)
       ORDER BY m.date_mail`).map(versMail)
+    // Read them all first, judge nothing: a value is given to a mail only once every mail
+    // that could explain it has been read.
     for (const m of mails) if (await lireMailObserve(m, sql)) bilan.lus++
-    bilan.horsPortee = await fermerSaisiesLibres(sql)
+    bilan.horsPortee = await rapprocherSaisiesLibres(sql)
     bilan.bl = await comparerObservationsBl(BL_ENNOBLISSEUR_SLUG)
     dernierePasse = new Date().toISOString()
     if (bilan.lus || bilan.expires || bilan.horsPortee || bilan.bl) console.log('[observation] pass:', JSON.stringify(bilan))
@@ -224,8 +206,9 @@ export async function passeObservation(): Promise<{ lus: number; expires: number
   return bilan
 }
 
-/** Read one waiting mail as it was on arrival and judge it. False when the
- *  reading failed (retried at the next pass, ESSAIS_MAX times in all). */
+/** Read one waiting mail as it was on arrival: its points are recorded, waiting
+ *  to be judged (`rapprocherSaisiesLibres`). False when the reading failed
+ *  (retried at the next pass, ESSAIS_MAX times in all). */
 async function lireMailObserve(m: MailEnAttente, sql: Sql): Promise<boolean> {
   const competence = m.competence as CompetenceObservee
   const echec = async (erreur: string) => {
@@ -256,12 +239,6 @@ async function lireMailObserve(m: MailEnAttente, sql: Sql): Promise<boolean> {
 
     const points = await saisiesDeRuns([run.id], sql)
     const cibles = await ciblesDuMail(competence, m, run, points, sql)
-    const r = rapprocher(competence, points, humaines, cibles)
-    for (const j of r.jugements) await jugerObservation(j.point, j.humaine.valeur, j.humaine.par, OU_LU[competence], sql)
-    for (const h of r.omissions) await omissionPour(competence, m, run, h, sql)
-    if (r.rattachees.length) {
-      await sql`UPDATE observation_saisie SET statut = 'rattachee', idobservation_mail = ${m.id} WHERE id IN ${sql(r.rattachees)}`
-    }
     await sql`UPDATE observation_mail SET statut = 'lu', lu_le = now(), run_id = ${run.id}, cibles = ${[...cibles]}, erreur = NULL
       WHERE id = ${m.id}`
     return true
@@ -301,34 +278,56 @@ async function omissionPour(competence: CompetenceObservee, m: MailEnAttente, ru
   }, h.valeur, h.par, OU_LU[competence], sql)
 }
 
-/** The values still free once the waiting mails are read: an omission of a
- *  mail read earlier that was about that line / lot, else hors de portée,
- *  unless a mail of that dyer, before it, still waits (read at a next pass). */
-async function fermerSaisiesLibres(sql: Sql): Promise<number> {
+/** Give each value still free to the mail that explains it, once the waiting
+ *  mails are read (`mailExpliquant`): its point judged by the value, or an
+ *  omission of the mail that missed it; else hors de portée. Values in the
+ *  order they were typed: the first on a line / lot judges, a retype only
+ *  joins it. A value waits while a mail of that dyer, before it, still waits
+ *  (a reading that failed, retried at a next pass). Read from the database
+ *  alone, so a pass cut short is finished by the next one. Returns how many
+ *  were hors de portée. */
+export async function rapprocherSaisiesLibres(sql: Sql): Promise<number> {
   const libres = (await sql`
     SELECT s.* FROM observation_saisie s WHERE s.statut = 'libre' AND NOT EXISTS (
       SELECT 1 FROM observation_mail m WHERE m.statut = 'attente' AND m.essais < ${ESSAIS_MAX} AND m.agent = s.agent
         AND m.competence = s.competence AND m.idsous_traitant = s.idsous_traitant AND m.date_mail < s.le)
     ORDER BY s.le, s.id`).map(versHumaine)
+  if (!libres.length) return 0
+  const runs = await lireRuns(BL_ENNOBLISSEUR_SLUG)
   let horsPortee = 0
   for (const h of libres) {
     const k = cleDe(h.competence, h)
-    // The latest mail read of that dyer that was about this line / lot, within the window.
-    const [lu] = k ? (await sql`
+    // The mails read of that dyer before the value, within the window, and what each has on this line / lot.
+    const lus = k ? await sql`
       SELECT * FROM observation_mail WHERE statut = 'lu' AND agent = ${BL_ENNOBLISSEUR_SLUG} AND competence = ${h.competence}
         AND idsous_traitant = ${h.idsousTraitant} AND date_mail < ${h.le}
-        AND date_mail > ${h.le}::timestamptz - make_interval(days => ${ATTENTE_MAX_J}) AND ${k} = ANY(cibles)
-      ORDER BY date_mail DESC LIMIT 1`).map(versMail) : []
-    const run = lu?.runId ? (await lireRuns(BL_ENNOBLISSEUR_SLUG)).find((r) => r.id === lu.runId) : undefined
-    if (lu && run) {
-      // Its reading has a point on it (judged in real time already) or not: an omission.
-      const points = (await saisiesDeRuns([run.id], sql)).filter((p) => cleDe(h.competence, p) === k)
-      if (!points.length) await omissionPour(h.competence, lu, run, h, sql)
-      await sql`UPDATE observation_saisie SET statut = 'rattachee', idobservation_mail = ${lu.id} WHERE id = ${h.id}`
+        AND date_mail > ${h.le}::timestamptz - make_interval(days => ${ATTENTE_MAX_J})` : []
+    const mails = lus.map((r) => ({ ...versMail(r), cibles: ((r.cibles as Array<string | number> | null) ?? []).map(Number) }))
+    const ids = mails.flatMap((m) => (m.runId ? [m.runId] : []))
+    // Read again for each value: the one before may have judged a point.
+    const surLaCle = (ids.length ? await saisiesDeRuns(ids, sql) : []).filter((p) => cleDe(h.competence, p) === k)
+    const choix = mailExpliquant(mails.map((m) => ({
+      mail: m, dateMail: m.dateMail,
+      // A « rien » on it is an omission recorded earlier, not something the reading found.
+      point: surLaCle.some((p) => p.runId === m.runId && p.decision !== 'rien'),
+      cible: m.cibles.includes(k),
+    })))
+    const run = choix?.mail.runId ? runs.find((r) => r.id === choix.mail.runId) : undefined
+    if (!choix || !run) {
+      await sql`UPDATE observation_saisie SET statut = 'hors_portee' WHERE id = ${h.id}`
+      horsPortee++
       continue
     }
-    await sql`UPDATE observation_saisie SET statut = 'hors_portee' WHERE id = ${h.id}`
-    horsPortee++
+    const siens = surLaCle.filter((p) => p.runId === run.id)
+    if (choix.omission) {
+      // Once per line / lot: a retype joins the omission the first value made.
+      if (!siens.length) await omissionPour(h.competence, choix.mail, run, h, sql)
+    } else {
+      // The point still waiting is judged; one already judged (a retype) only explains the value.
+      const point = siens.find((p) => p.statut === 'observation' && p.decision !== 'rien')
+      if (point) await jugerObservation(point, h.valeur, h.par, OU_LU[h.competence], sql)
+    }
+    await sql`UPDATE observation_saisie SET statut = 'rattachee', idobservation_mail = ${choix.mail.id} WHERE id = ${h.id}`
   }
   return horsPortee
 }
@@ -346,6 +345,9 @@ export interface EcartObservation {
   agent: string | null
   personne: string | null
   citation: string
+  /** The run that read it (Agents IA opens it from the gap), and who typed the value. Absent on the BL's. */
+  runId?: string
+  par?: string | null
 }
 
 /** Observation, as it is worth watching (Vincent 2026-11-09): how much ran,
@@ -375,9 +377,9 @@ export async function bilanObservation(competence: CompetenceObservee, version: 
       count(*) FILTER (WHERE statut = 'hors_portee')::int AS hors, count(*) FILTER (WHERE statut = 'libre')::int AS libres
     FROM observation_saisie WHERE agent = ${agent} AND competence = ${competence}`
   const v = version === null ? sql`` : sql`AND a.version = ${version}`
-  const points = await sql<{ decision: string; statut: string; proposition: string | null; valeur_finale: string | null; cree_le: Date; revu_le: Date | null; idcommande: number; lot: string | null; citation: string }[]>`
+  const points = await sql<{ decision: string; statut: string; proposition: string | null; valeur_finale: string | null; cree_le: Date; revu_le: Date | null; idcommande: number; lot: string | null; citation: string; run_id: string; revu_par: string | null }[]>`
     SELECT a.decision, a.statut, a.proposition, a.valeur_finale, a.cree_le, a.revu_le, a.idcommande_sous_traitant AS idcommande,
-      s.lot::text AS lot, a.citation
+      s.lot::text AS lot, a.citation, a.run_id, a.revu_par
     FROM saisie_agent a LEFT JOIN suivilot s ON s.idsuivilot = a.idsuivilot AND a.idsuivilot > 0
     WHERE a.agent = ${agent} AND a.competence = ${competence} AND a.mode = 'observation' ${v}
     ORDER BY COALESCE(a.revu_le, a.cree_le) DESC`
@@ -389,7 +391,7 @@ export async function bilanObservation(competence: CompetenceObservee, version: 
     const quoi = competence === 'delais' ? `Commande ${x.idcommande}` : `Lot ${x.lot ?? '?'}`
     const le = new Date(x.revu_le ?? x.cree_le).toISOString()
     const ecart = (type: EcartObservation['type']) => {
-      if (ecarts.length < ECARTS_MAX) ecarts.push({ le, quoi, type, agent: x.proposition, personne: x.valeur_finale, citation: x.citation })
+      if (ecarts.length < ECARTS_MAX) ecarts.push({ le, quoi, type, agent: x.proposition, personne: x.valeur_finale, citation: x.citation, runId: x.run_id, par: x.revu_par })
     }
     if (x.statut === 'validee') p.accords++
     else if (x.statut === 'corrigee') { p.desaccords++; ecart('desaccord') }

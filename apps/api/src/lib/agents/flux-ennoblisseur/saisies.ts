@@ -122,6 +122,15 @@ export async function saisiesDeRuns(runIds: readonly string[], sql: Sql = mpsPg(
   return rows.map(versSaisie)
 }
 
+/** The lot numbers of these saisies' lots (idsuivilot → lot), to name a
+ *  Contrôles point the reading does not carry (an omission). */
+export async function numerosDeLots(saisies: readonly Pick<Saisie, 'idsuivilot'>[], sql: Sql = mpsPg()): Promise<Map<number, string>> {
+  const ids = [...new Set(saisies.map((s) => s.idsuivilot).filter((id) => id > 0))]
+  if (!ids.length) return new Map()
+  const rows = await sql<{ id: number; lot: string | null }[]>`SELECT idsuivilot AS id, lot::text AS lot FROM suivilot WHERE idsuivilot IN ${sql(ids)}`
+  return new Map(rows.filter((r) => r.lot).map((r) => [Number(r.id), String(r.lot).trim()]))
+}
+
 /** Every saisie on one sst order, newest first (the order's revue). */
 export async function saisiesDeCommande(idcommande: number, sql: Sql = mpsPg()): Promise<Saisie[]> {
   // Observation points are invisible in ETM (2026-11-05): only Agents IA reads them.

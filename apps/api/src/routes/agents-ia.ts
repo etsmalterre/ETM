@@ -55,11 +55,12 @@ import { DESTINATAIRES } from '../lib/agents/triage/transmission.js'
 import { relaisTriage } from '../lib/agents/triage/relais.js'
 import { apportMesures, conseiller, libelleEtat, mesurer, MODES_COMPETENCE, FENETRE_DEFAUT, type ModeCompetence } from '../lib/agents/competences.js'
 import { activerVersionCompetence, changerModeCompetence, etatCompetence, modePlafonne, noteBinaire, publierVersionCompetence, reglerCycle } from '../lib/agents/store.js'
-import { competenceDuRun, pointsBl, versionsDeCompetence } from '../lib/agents/flux-ennoblisseur/competences-flux.js'
+import { competenceDuRun, pointsBl, pointsDuRun, referenceBl, versionsDeCompetence } from '../lib/agents/flux-ennoblisseur/competences-flux.js'
 import { mailsDuFlux } from '../lib/agents/flux-ennoblisseur/mails.js'
 import { NOTE_MAX } from '../lib/agents/notes-courtes.js'
-import { pointDe, saisiesDeCompetence, saisiesDeRuns, type Saisie } from '../lib/agents/flux-ennoblisseur/saisies.js'
+import { numerosDeLots, pointDe, saisiesDeCompetence, saisiesDeRuns, type Saisie } from '../lib/agents/flux-ennoblisseur/saisies.js'
 import { rejouer, REJEU_MAX } from '../lib/agents/flux-ennoblisseur/rejeu.js'
+import { pointDuRun } from '../lib/agents/flux-ennoblisseur/point-du-run.js'
 import type { ResultatFlux } from '../lib/agents/flux-ennoblisseur/delais.js'
 
 const routes: RouterType = Router()
@@ -208,12 +209,15 @@ function jugementDuRun(ss: readonly Saisie[]) {
 /** A run of an agent with skills: what its own points bring to the three measures
  *  (doctrine §4), for the runs list and the run dialog. The BL's point is read on
  *  the run itself; a Délais / Contrôles run needs its saisies (`ss`), without
- *  them nothing is said. An agent without skills: nothing. */
-function apportDuRun(def: AgentDef, r: AgentRun, ss?: readonly Saisie[]) {
+ *  them nothing is said, and the numbers of their lots (`lots`) to list them
+ *  one by one. An agent without skills: nothing. */
+function apportDuRun(def: AgentDef, r: AgentRun, ss?: readonly Saisie[], lots?: ReadonlyMap<number, string>) {
   const c = def.competences?.find((x) => x.cle === competenceDuRun(r))
   if (!c) return {}
-  if (c.cle === 'bl') return { apport: apportMesures(pointsBl([r])) }
-  return ss ? { apport: apportMesures(ss.map(pointDe)) } : {}
+  // A BL is one point: the run's row says what it is about (`reference`).
+  if (c.cle === 'bl') return { apport: apportMesures(pointsBl([r])), reference: referenceBl(r) }
+  // `points`: the same, point by point (a row each in Agents IA › Exécutions), named by `lots`.
+  return ss ? { apport: apportMesures(ss.map(pointDe)), ...(lots ? { points: pointsDuRun(r, ss, lots) } : {}) } : {}
 }
 
 /** Délais / Contrôles: the list's three columns (Point du, points, à trancher). */
@@ -676,10 +680,11 @@ routes.get('/:slug/runs', async (req, res) => {
     // Délais / Contrôles: how a person judged each run's points (saisie_agent), one read for the page.
     const parPoints = page.filter((r) => r.competence === 'delais' || r.competence === 'controles')
     const saisies = parPoints.length ? await saisiesDeRuns(parPoints.map((r) => r.id)).catch(() => [] as Saisie[]) : []
+    const lots = await numerosDeLots(saisies).catch(() => new Map<number, string>())
     // `notes`: the scores ?note= matches on, so the screen can filter its tags without a round trip.
     res.json({ total: runs.length, runs: page.map((r) => {
       const ss = saisies.filter((x) => x.runId === r.id)
-      return { ...allege(r), notes: [...notesDuRun(r)], ...(r.competence === 'delais' || r.competence === 'controles' ? { jugement: jugementDuRun(ss) } : {}), ...apportDuRun(def, r, ss) }
+      return { ...allege(r), notes: [...notesDuRun(r)], ...(r.competence === 'delais' || r.competence === 'controles' ? { jugement: jugementDuRun(ss) } : {}), ...apportDuRun(def, r, ss, lots) }
     }) })
   } catch (err) {
     console.error('[agents-ia] runs failed:', err)
@@ -707,7 +712,13 @@ routes.get('/:slug/runs/:id', async (req, res) => {
   const saisies = r.competence === 'delais' || r.competence === 'controles'
     ? await saisiesDeRuns([r.id]).catch((err) => { console.error('[agents-ia] saisies of run failed:', err); return null })
     : null
-  res.json({ ...r, ...(enStock ? { enStock } : {}), ...(saisies ? { saisies } : {}), ...apportDuRun(def, r, saisies ?? undefined) })
+  const lots = saisies ? await numerosDeLots(saisies).catch(() => new Map<number, string>()) : undefined
+  // And the question the reply answers (our Point, its §2 / §5): the context the reading had,
+  // shown beside what it read. Best effort: a Point that is gone leaves the reply alone.
+  const flux = r.competence === 'delais' || r.competence === 'controles'
+  const idpoint = flux ? Number((r.resultat as Partial<ResultatFlux>).idpoint) || 0 : 0
+  const point = idpoint ? await pointDuRun(idpoint).catch((err) => { console.error('[agents-ia] point of run failed:', err); return null }) : null
+  res.json({ ...r, ...(enStock ? { enStock } : {}), ...(saisies ? { saisies } : {}), ...(flux ? { point } : {}), ...apportDuRun(def, r, saisies ?? undefined, lots) })
 })
 
 routes.get('/:slug/runs/:id/fichiers/:n', async (req, res) => {
@@ -1143,7 +1154,11 @@ routes.get('/:slug/retours', async (req, res) => {
 /** Délais / Contrôles: their retours are the gestures on their points
  *  (saisie_agent), given where the work is done — a correction or a deletion
  *  with its why, a validation with a word, an aide settled with « tu pouvais
- *  décider seul, parce que… » — plus the pilots' notes on the runs. */
+ *  décider seul, parce que… », plus the pilots' notes on the runs.
+ *  A point read in observation is no retour (Vincent 2026-11-11): nobody said
+ *  anything about it, it was compared with what a person typed, and the words
+ *  it carries are the comparison's own. Its gap is listed with the skill's
+ *  écarts (flux-ennoblisseur/observation.ts), where both values are read. */
 async function retoursCompetence(slug: string, cle: string, prompts: { activeVersion: number; versions: Array<{ version: number }> }, v: unknown) {
   const version = parseInt(String(v ?? ''), 10) || prompts.activeVersion
   const [saisies, runs] = await Promise.all([saisiesDeCompetence(slug, cle, version), lireRuns(slug)])
@@ -1160,6 +1175,7 @@ async function retoursCompetence(slug: string, cle: string, prompts: { activeVer
   const lecons: Array<Record<string, unknown>> = []
   const resolutions: Array<Record<string, unknown>> = []
   for (const s of saisies) {
+    if (s.mode === 'observation') continue
     const le = s.revuLe ?? s.creeLe
     if (s.statut === 'corrigee' || s.statut === 'supprimee' || s.statut === 'omission') {
       const titre = s.statut === 'corrigee' ? `${quoi(s)} · ${valeur(s.proposition)} corrigé en ${valeur(s.valeurFinale)}`

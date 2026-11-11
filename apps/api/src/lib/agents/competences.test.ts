@@ -92,14 +92,16 @@ describe('what one execution brings to the measures', () => {
     expect(a.autonomie).toEqual({ ...z, plus: 3, moins: 3 })
     expect(a.discernement).toEqual({ ...z, plus: 1, moins: 1, attente: 1 })
   })
-  it('reads only the fiabilité in observation', () => {
+  it('reads the agreement and what it would have done in observation, never the discernement', () => {
     const a = apportMesures([
       { decision: 'saisie', statut: 'validee', observation: true, le },
       { decision: 'saisie', statut: 'observation', observation: true, le },
       { decision: 'aide', statut: 'resolue', douteJustifie: true, observation: true, le },
     ])
     expect(a.fiabilite).toEqual({ ...z, plus: 1, attente: 1 })
-    expect(a.autonomie).toEqual(z)
+    // Two it would have written, one it would have asked about.
+    expect(a.autonomie).toEqual({ ...z, plus: 2, moins: 1 })
+    // Nobody was asked: the estimate kept on the point is not a judgement.
     expect(a.discernement).toEqual(z)
   })
 })
