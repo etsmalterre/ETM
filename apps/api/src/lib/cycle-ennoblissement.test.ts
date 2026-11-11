@@ -12,6 +12,7 @@ import {
   prealablesDetail,
   prealablesValidation,
   urgenceCommande,
+  calendrierTraitement,
   urgenceLot,
   type CommandeFait,
   type LotFait,
@@ -31,11 +32,11 @@ function lot(p: Partial<LotFait> = {}): LotFait {
 }
 
 /** A soumission: asked or not, sent on a day, answered or not. */
-function soum(p: { requise?: boolean; le?: string; accepte?: boolean; commentaire?: string } = {}): SoumissionFait {
+function soum(p: { requise?: boolean; le?: string; accepte?: boolean; commentaire?: string; reponseLe?: string } = {}): SoumissionFait {
   return {
     requise: p.requise ?? true,
     envoyeeLe: p.le ?? null,
-    reponse: p.accepte === undefined ? null : { accepte: p.accepte, commentaire: p.commentaire ?? '', le: `${p.le ?? '2026-10-20'} 10:00:00` },
+    reponse: p.accepte === undefined ? null : { accepte: p.accepte, commentaire: p.commentaire ?? '', le: `${p.reponseLe ?? p.le ?? '2026-10-20'} 10:00:00` },
   }
 }
 
@@ -217,6 +218,54 @@ describe('etatCommande', () => {
     expect(etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ dateNotif: '2026-10-12' }) }))).toMatchObject({ etape: 'attente_delai', main: 'teinturier', relance: '2026-10-13' })
     expect(etatCommande(commande({ rangStatut: 1, delaiFaits: faitsDelai({ demandeLe: '2026-10-09' }) })).relance).toBe('2026-10-15')
     expect(etatCommande(commande())).toMatchObject({ etape: 'en_teinture', main: 'teinturier', relance: '2026-10-20' })
+  })
+  it('en traitement: the card runs from the bon to the earliest open délai, later lines listed (2026-11-11)', () => {
+    const e = etatCommande(commande({ delaiFaits: faitsDelai({ demandeLe: '2026-10-01', reponduLe: '2026-10-03' }), delaisLignes: ['2026-10-20', '2026-10-27'] }))
+    expect(e.traitement).toEqual({ depuis: '2026-10-01', delai: '2026-10-20', autres: ['2026-10-27'], attentes: [], retardClient: 0, reporteClient: 0 })
+    // No délai on any open line: no card (the line asks for one).
+    expect(etatCommande(commande({ delai: null })).traitement).toBeUndefined()
+    // A solde still at the dyer keeps it; en contrôle without solde drops it.
+    const partiel = etatCommande(commande({ lots: [lot({ etat: 5, mesuresTeinturier: true, stabilites: soum({ le: '2026-10-20' }) })], ecruChezTeinturier: 4 }))
+    expect(partiel.traitement?.delai).toBe('2026-10-20')
+    const tout = etatCommande(commande({ lots: [lot({ etat: 5, mesuresTeinturier: true, stabilites: soum({ le: '2026-10-20' }) })], ecruChezTeinturier: 0 }))
+    expect(tout.traitement).toBeUndefined()
+  })
+  it('coloris at the client: the hand is the client’s for 5 working days inside the dyer’s délai (9111, 2026-11-11)', () => {
+    // Bon Mon 05/10, délai Tue 20/10, coloris sent Mon 12/10, not received.
+    const soumis = lot({ reception: null, idligne: 7, coloris: soum({ requise: true, le: '2026-10-12' }) })
+    const c = commande({ delaiFaits: faitsDelai({ demandeLe: '2026-10-05' }), lignesOuvertes: [{ id: 7, delai: '2026-10-20' }], lots: [soumis], ecruChezTeinturier: 1 })
+    const e = etatCommande(c)
+    // The order waits on the client: chased once its 5 days are used, never the dyer meanwhile.
+    expect(e).toMatchObject({ etape: 'en_teinture', main: 'client', relance: '2026-10-19' })
+    expect(e.traitement!.attentes).toEqual([{ lot: soumis.lot, du: '2026-10-12', au: null }])
+    // Wed 14/10: 5 dyer days (06→12), 2 client days (13, 14), 3 left of the client's 5 (15, 16, 19), then the délai.
+    const cal = calendrierTraitement(e.traitement!, '2026-10-14')
+    expect(cal.jours).toEqual(['sst', 'sst', 'sst', 'sst', 'sst', 'client', 'client', 'client_prevu', 'client_prevu', 'client_prevu', 'avenir'])
+    expect(cal).toMatchObject({ attente: { depuis: '2026-10-12', jours: 2 }, retardClient: 0, sortie: '2026-10-20' })
+    expect(urgenceCommande(e, '2026-10-16')).toBe('soon')
+    expect(urgenceCommande(e, '2026-10-19')).toBe('late')
+    // Still no answer Wed 21/10: 7 working days = 2 beyond the 5, the sortie slides by 2 — the client’s delay.
+    expect(calendrierTraitement(e.traitement!, '2026-10-21')).toMatchObject({ retardClient: 2, sortie: '2026-10-22' })
+  })
+  it('the client answered late: its overrun pushes the dyer’s chase date, a timely answer does not', () => {
+    const base = { delaiFaits: faitsDelai({ demandeLe: '2026-10-05' }), ecruChezTeinturier: 1 }
+    // Sent 12/10, accepted 21/10 = 7 working days: 2 of delay, the dyer is expected 22/10 instead of 20/10.
+    const tard = etatCommande(commande({ ...base, lots: [lot({ reception: null, coloris: soum({ requise: true, le: '2026-10-12', accepte: true, reponseLe: '2026-10-21' }), okRamerLe: '2026-10-21' })] }))
+    expect(tard).toMatchObject({ main: 'teinturier', relance: '2026-10-22' })
+    expect(tard.traitement).toMatchObject({ retardClient: 2 })
+    const cal = calendrierTraitement(tard.traitement!, '2026-10-21')
+    expect(cal.jours.filter((j) => j === 'client')).toHaveLength(7)
+    expect(cal).toMatchObject({ attente: null, sortie: '2026-10-22' })
+    // The délai already moved by a report due to the client (2 days): not pushed a second time.
+    const reporte = etatCommande(commande({ ...base, delai: '2026-10-22', lignesOuvertes: [{ id: 7, delai: '2026-10-22', reporteClient: 2 }], lots: [lot({ reception: null, idligne: 7, coloris: soum({ requise: true, le: '2026-10-12', accepte: true, reponseLe: '2026-10-21' }), okRamerLe: '2026-10-21' })] }))
+    expect(reporte).toMatchObject({ main: 'teinturier', relance: '2026-10-22' })
+    expect(calendrierTraitement(reporte.traitement!, '2026-10-21')).toMatchObject({ retardClient: 2, resteClient: 0, sortie: '2026-10-22' })
+    // Answered in 3 working days: nothing moves.
+    const aTemps = etatCommande(commande({ ...base, lots: [lot({ reception: null, coloris: soum({ requise: true, le: '2026-10-12', accepte: true, reponseLe: '2026-10-15' }), okRamerLe: '2026-10-15' })] }))
+    expect(aTemps).toMatchObject({ main: 'teinturier', relance: '2026-10-20' })
+    // A lot of ANOTHER line waiting on the client does not hold the line the card follows.
+    const autre = etatCommande(commande({ ...base, lignesOuvertes: [{ id: 7, delai: '2026-10-20' }, { id: 8, delai: '2026-10-27' }], lots: [lot({ reception: null, idligne: 8, coloris: soum({ requise: true, le: '2026-10-12' }) })] }))
+    expect(autre).toMatchObject({ main: 'teinturier', relance: '2026-10-20' })
   })
   it('received, all back: en contrôle, no chase on the order, each lot keeps its own (9016: soumis + ACP; 2026-11-03)', () => {
     const e = etatCommande(commande({

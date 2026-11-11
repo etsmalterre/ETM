@@ -31,7 +31,9 @@ describe('report de délai sous-traitant (LIVA #1364)', () => {
   it('a report needs a motif and a known imputable', () => {
     expect(lireReport({ motif: ' retard teinture ', imputable: 'sous_traitant' })).toEqual({ motif: 'retard teinture', imputable: 'sous_traitant' })
     expect(lireReport({ motif: '', imputable: 'malterre' })).toBeNull()
-    expect(lireReport({ motif: 'x', imputable: 'client' })).toBeNull()
+    // The client since 2026-11-11 (a late coloris answer); anything else is unknown.
+    expect(lireReport({ motif: 'x', imputable: 'client' })).toEqual({ motif: 'x', imputable: 'client' })
+    expect(lireReport({ motif: 'x', imputable: 'partenaire' })).toBeNull()
     expect(lireReport(undefined)).toBeNull()
   })
 })

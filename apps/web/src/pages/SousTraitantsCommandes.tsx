@@ -172,6 +172,9 @@ interface LotCycle {
   etape: EtapeLot
   main: MainCycle | null
   relance: string | null
+  /** Working days at the step / the days it gets (5 for the controls); null = no clock. */
+  jours?: number | null
+  delai?: number | null
 }
 interface CycleCommande {
   urgence: 'late' | 'soon' | null
@@ -181,7 +184,31 @@ interface CycleCommande {
   lots: LotCycle[]
   /** attente_delai only: the délai question (API lib/delai-sst.ts, LIVA #1314). */
   delai?: DelaiCycle
+  /** En traitement (or a solde at the dyer): bon → earliest open délai. */
+  traitement?: TraitementCycle
 }
+interface TraitementCycle {
+  depuis: string | null
+  delai: string
+  autres: string[]
+  /** One entry per working day from the bon to the sortie: who held the hand
+   *  (API calendrierTraitement). client = waiting for a coloris answer,
+   *  client_prevu = what is left of the client's 5 days. */
+  jours: ('sst' | 'client' | 'client_prevu' | 'avenir')[]
+  /** The coloris answer still waited from the client. */
+  attente: { lot: string; depuis: string; jours: number; fin: string } | null
+  /** Working days the client took beyond its 5: its own delay, never the dyer's. */
+  retardClient: number
+  /** …the part no report has put on the délai yet. */
+  resteClient: number
+  /** The délai pushed by that part ('YYYY-MM-DD'). */
+  sortie: string
+  joursClient: number
+  joursSst: number
+  joursRestants: number
+}
+/** Working days the client gets to answer a soumission (API RELANCE_J.soumis). */
+const REPONSE_CLIENT_J = 5
 
 /** kg ordered / knitted / shipped over an order's circulaire lines. */
 interface JaugeTricotage {
@@ -205,7 +232,9 @@ interface LigneCommande {
   /** working days the current délai is behind the engagement, in the sous-traitant's calendar */
   retard_jours?: number | null
   /** every time the délai was pushed back, oldest first (motif + who it is due to) */
-  reports_delai?: { le: string; ancien: string; nouveau: string; motif: string; imputable: 'sous_traitant' | 'malterre'; par: string | null }[]
+  reports_delai?: { le: string; ancien: string; nouveau: string; motif: string; imputable: 'sous_traitant' | 'malterre' | 'client'; par: string | null }[]
+  /** working days of the reports due to the client (late coloris answers), out of retard_jours */
+  retard_client_jours?: number
   /** YYYYMMDD the date we asked for (proposed at the launch from the doctrine, migration 0048); the
    *  partner's own délai stays date_livraison */
   date_demandee?: string | null
@@ -704,6 +733,8 @@ function raisonCarte(row: CommandeListRow, urgence: 'late' | 'soon' | null, tric
       return tard ? 'À lancer' : 'À lancer bientôt'
     default: {
       // En traitement / en tricotage / solde en contrôle: the délai of the line.
+      // The client holds the hand (a coloris soumission): it is the one to chase.
+      if (row.main === 'client') return tard ? 'Réponse coloris : relancer le client' : 'Réponse coloris : dernier jour demain'
       const d = quand(row.relance) || (row.earliest_delivery ? quand(row.earliest_delivery) : '')
       if (tard) return d ? `Délai du ${d} dépassé : relancer` : 'Sans délai : le demander'
       return d ? `Délai le ${d} : s’assurer du départ` : null
@@ -2082,6 +2113,11 @@ function LignesSection({
       prix: fmtNumberInput(l.prix),
       date_livraison: hfsqlDateToInput(l.date_livraison),
     })
+    // The client's late coloris answer is known: a report of this line's délai starts as its own.
+    const t = commande.cycle?.traitement
+    if (t && t.resteClient > 0 && l.date_livraison === t.delai.replace(/-/g, '')) {
+      setReportForm({ imputable: 'client', motif: `Réponse coloris du client : ${t.resteClient} j ouvré${t.resteClient > 1 ? 's' : ''} au-delà des ${REPONSE_CLIENT_J} prévus` })
+    }
   }
 
   const startAddLine = () => {
@@ -2174,6 +2210,7 @@ function LignesSection({
                   bonEnvoyeAt={commande.bon_envoye_at}
                   dateNotif={commande.date_notif}
                   cycleUrgence={commande.cycle ? commande.cycle.urgence : undefined}
+                  traitement={commande.cycle?.traitement}
                   onEdit={() => startEditLine(l)}
                   onDelete={() => setDeleteLineConfirmId(l.IDligne_commande_sous_traitant)}
                   onOpenDrawer={onOpenPiecesDrawer}
@@ -2374,7 +2411,7 @@ function LignesSection({
 }
 
 function LineCard({
-  line, isEditing, linesLocked, isEnnoblisseur, linesEditable, isDrawerOpen, bonEnvoyeAt, dateNotif, cycleUrgence, onEdit, onDelete, onOpenDrawer,
+  line, isEditing, linesLocked, isEnnoblisseur, linesEditable, isDrawerOpen, bonEnvoyeAt, dateNotif, cycleUrgence, traitement, onEdit, onDelete, onOpenDrawer,
 }: {
   line: LigneCommande
   isEditing: boolean
@@ -2390,6 +2427,8 @@ function LineCard({
    *  When present it colours the line, and the count lives in the side panel
    *  (« Délai attendu depuis … · N jours ouvrés », 2026-11-02). */
   cycleUrgence?: 'late' | 'soon' | null
+  /** The order's « en traitement » facts: applied to the line whose délai it follows. */
+  traitement?: TraitementCycle
   /** True when the parent commande's sst supports inline line editing in
    *  ETM (ennoblisseur OR tricoteur). Drives the per-card edit/delete
    *  affordances regardless of which exact type. */
@@ -2467,6 +2506,85 @@ function LineCard({
   const fait = line.type === 1 ? totalKgEcru : totalMetrageFini
   const faitPct = qty > 0 ? Math.min(100, (fait / qty) * 100) : 0
 
+  // The délai, in the card's top-right corner (Vincent 2026-11-11: under the figures its extra
+  // lines pushed the whole stat row down): label + date on one line, ONE status line under it —
+  // the sous-traitant's engagement (LIVA #1364), a report only moves it later (the hover lists them).
+  const delaiCoin: React.ReactNode = dateLivRaw ? (() => {
+    // A coloris soumission at the client (Vincent 2026-11-11): the hand is the client's, the
+    // délai no longer alerts on the dyer; its days beyond 5 push the date the dyer is expected.
+    const suivi = traitement && !lineDone && traitement.delai.replace(/-/g, '') === dateLivRaw ? traitement : null
+    const attente = suivi?.attente ?? null
+    const attendu = suivi && suivi.resteClient > 0 ? suivi.sortie.replace(/-/g, '') : dateLivRaw
+    const urgency = attente ? null : deliveryUrgency(attendu, lineDone ? 1 : 0)
+    const overdue = urgency === 'late' ? deliveryOverdueDays(attendu) : 0
+    const retardClient = Math.max(Number(line.retard_client_jours) || 0, suivi?.retardClient ?? 0)
+    const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
+    return (
+      <Tooltip side="top" content={
+        <DelaiSstDetail delai={dateLivRaw} engagement={dateDelaiRaw} retard={retard} retardClient={retardClient} livreeLe={livreeLe}
+          depasse={!livreeLe ? overdue : 0} reports={line.reports_delai ?? []} />
+      }>
+        <div>
+          <p className="flex items-baseline justify-end gap-2">
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Délai</span>
+            <span className={cn('text-sm font-semibold tabular-nums', SOULIGNE_INFO, urgency === 'late' ? 'text-red-600' : urgency === 'soon' ? 'text-amber-600' : undefined)}>
+              {formatHfsqlDate(dateLivRaw)}
+            </span>
+          </p>
+          {(livreeLe || attente || overdue >= 1 || retard > 0 || retardClient > 0) && (
+            <p className="mt-0.5 flex items-center justify-end gap-1.5 text-[11px] whitespace-nowrap">
+              {livreeLe ? (
+                <span className="inline-flex items-center gap-1 text-green-700">
+                  <CheckCircle2 className="h-3 w-3" />Livrée le {formatHfsqlDate(livreeLe)}
+                </span>
+              ) : attente ? (
+                cycleUrgence === 'late'
+                  ? <span className="font-medium text-red-600">Relancer le client : coloris soumis le {jjmm(attente.depuis)}</span>
+                  : <span className="inline-flex items-center gap-1 text-violet-700"><Send className="h-3 w-3" />Coloris chez le client depuis le {jjmm(attente.depuis)}</span>
+              ) : overdue >= 1 ? (
+                <span className="font-medium text-red-600">Dépassé de {overdue} jour{overdue > 1 ? 's' : ''} : relancer</span>
+              ) : null}
+              {retard > 0 && dateDelaiRaw && (
+                <span className="font-medium text-red-600" title={`Engagement initial : ${formatHfsqlDate(dateDelaiRaw)}`}>
+                  {(livreeLe || attente || overdue >= 1) && <span className="text-muted-foreground font-normal">· </span>}
+                  {livreeLe || attente || overdue >= 1 ? `retard ${retard} j` : `Retard ${retard} j sur l’engagement du ${formatHfsqlDate(dateDelaiRaw)}`}
+                </span>
+              )}
+              {retardClient > 0 && (
+                <span className="font-medium text-violet-700" title="Jours ouvrés pris par le client au-delà de ses 5 pour répondre au coloris : son retard, pas celui du sous-traitant">
+                  {(livreeLe || attente || overdue >= 1 || retard > 0) && <span className="text-muted-foreground font-normal">· </span>}
+                  client +{retardClient} j
+                </span>
+              )}
+            </p>
+          )}
+        </div>
+      </Tooltip>
+    )
+  })() : isAttenteDelai ? (() => {
+    // Bon de commande sent, no délai confirmed yet. Colour mirrors the card urgency frame.
+    const urgency = cycleUrgence !== undefined ? cycleUrgence : attenteDelaiUrgency(dateNotif, bonEnvoyeAt)
+    const label = cycleUrgence !== undefined
+      ? (cycleUrgence === 'late' ? 'À relancer' : 'En attente')
+      : attenteDays ? `Attente ${attenteDays} j` : 'En attente'
+    return (
+      <div>
+        <p className="flex items-baseline justify-end gap-2">
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Délai</span>
+          <span className={cn('inline-flex items-center gap-1 text-sm font-semibold', urgency === 'late' ? 'text-red-600' : urgency === 'soon' ? 'text-amber-600' : 'text-muted-foreground')}>
+            <Hourglass className="h-3 w-3 self-center" />{label}
+          </span>
+        </p>
+        {dateDemRaw && <p className="mt-0.5 text-[11px] text-muted-foreground whitespace-nowrap">Demandé pour le {formatHfsqlDate(dateDemRaw)}</p>}
+      </div>
+    )
+  })() : dateDemRaw ? (
+    <p className="flex items-baseline justify-end gap-2">
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Demandé pour le</span>
+      <span className="text-sm font-semibold tabular-nums text-muted-foreground">{formatHfsqlDate(dateDemRaw)}</span>
+    </p>
+  ) : null
+
   return (
     <div
       className={cn(
@@ -2494,21 +2612,26 @@ function LineCard({
             )}
           </div>
         </div>
-        {isEditing && !linesLocked && (
-          <div className="flex gap-0.5 flex-shrink-0">
-            {linesEditable && (
-              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={(e) => { e.stopPropagation(); onEdit() }}>
-                <Pencil className="h-3 w-3" />
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {delaiCoin && (
+            <div className="text-right" data-tricobot-cible={line.IDligne_commande_sous_traitant}>{delaiCoin}</div>
+          )}
+          {isEditing && !linesLocked && (
+            <div className="flex gap-0.5">
+              {linesEditable && (
+                <Button variant="ghost" size="icon" className="h-6 w-6" onClick={(e) => { e.stopPropagation(); onEdit() }}>
+                  <Pencil className="h-3 w-3" />
+                </Button>
+              )}
+              <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive" onClick={(e) => { e.stopPropagation(); onDelete() }}>
+                <Trash2 className="h-3 w-3" />
               </Button>
-            )}
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive" onClick={(e) => { e.stopPropagation(); onDelete() }}>
-              <Trash2 className="h-3 w-3" />
-            </Button>
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Stat row: Commandé · Affecté · Reçu · Prix u. · Montant, the délai pinned right. */}
+      {/* Stat row: Commandé · Affecté · Reçu · Prix u. · Montant (the délai sits in the top-right corner). */}
       <div className="mt-3 flex flex-wrap items-end gap-x-6 gap-y-1.5">
         <LineStat label="Commandé" value={qty > 0 ? `${fmtNum(qty, isRecti ? 0 : 1)} ${qtyUnit}` : '—'} />
         {/* Affecté: the écru linked to the line. At the dyer, its potential Ml (kg × rendement) against
@@ -2579,53 +2702,6 @@ function LineCard({
         )}
         {totalEur > 0 && <LineStat label="Montant" value={`${fmtNum(totalEur, 2)} €`} />}
 
-        {/* The délai, pinned right: the sous-traitant's engagement (LIVA #1364). It only moves later, by a
-            report with its motif (the hover lists them); a delivery ahead of it is read on the reception. */}
-        <div className="ml-auto text-right" data-tricobot-cible={line.IDligne_commande_sous_traitant}>
-          {dateLivRaw ? (() => {
-            const urgency = deliveryUrgency(dateLivRaw, lineDone ? 1 : 0)
-            const overdue = urgency === 'late' ? deliveryOverdueDays(dateLivRaw) : 0
-            const reports = line.reports_delai ?? []
-            const stat = (
-              <LineStat
-                label="Délai"
-                value={formatHfsqlDate(dateLivRaw)}
-                valueClass={cn(SOULIGNE_INFO, urgency === 'late' ? 'text-red-600' : urgency === 'soon' ? 'text-amber-600' : undefined)}
-              >
-                {retard > 0 && dateDelaiRaw && (
-                  <p className="text-[11px] font-medium text-red-600">Retard {retard} j sur l’engagement du {formatHfsqlDate(dateDelaiRaw)}</p>
-                )}
-                {livreeLe && <p className="text-[11px] text-muted-foreground">Livrée le {formatHfsqlDate(livreeLe)}</p>}
-                {overdue >= 1 && (
-                  <p className="text-[11px] font-medium text-red-600">Dépassé de {overdue} jour{overdue > 1 ? 's' : ''} : relancer</p>
-                )}
-              </LineStat>
-            )
-            return (
-              <Tooltip side="top" content={
-                <DelaiSstDetail delai={dateLivRaw} engagement={dateDelaiRaw} retard={retard} livreeLe={livreeLe}
-                  depasse={!livreeLe ? overdue : 0} reports={reports} />
-              }>{stat}</Tooltip>
-            )
-          })() : isAttenteDelai ? (() => {
-            // Bon de commande sent, no délai confirmed yet. Colour mirrors the card urgency frame.
-            const urgency = cycleUrgence !== undefined ? cycleUrgence : attenteDelaiUrgency(dateNotif, bonEnvoyeAt)
-            const label = cycleUrgence !== undefined
-              ? (cycleUrgence === 'late' ? 'À relancer' : 'En attente')
-              : attenteDays ? `Attente ${attenteDays} j` : 'En attente'
-            return (
-              <LineStat
-                label="Délai"
-                value={<span className="inline-flex items-center gap-1"><Hourglass className="h-3 w-3" />{label}</span>}
-                valueClass={urgency === 'late' ? 'text-red-600' : urgency === 'soon' ? 'text-amber-600' : 'text-muted-foreground'}
-              >
-                {dateDemRaw && <p className="text-[11px] text-muted-foreground">Demandé pour le {formatHfsqlDate(dateDemRaw)}</p>}
-              </LineStat>
-            )
-          })() : dateDemRaw ? (
-            <LineStat label="Demandé pour le" value={formatHfsqlDate(dateDemRaw)} valueClass="text-muted-foreground" />
-          ) : null}
-        </div>
       </div>
 
       {/* Progress gauge, like the client line's: what came back against the order. */}
@@ -2649,13 +2725,15 @@ function LineCard({
 /** The délai's hover: the date, where it stands against the sous-traitant's engagement (LIVA #1364),
  *  and every report with its motif and who it is due to — the same card language as a client line's
  *  « Prête le » hover (Clients › Commandes, DelaiLigneDetail). */
-function DelaiSstDetail({ delai, engagement, retard, livreeLe, depasse, reports }: {
+function DelaiSstDetail({ delai, engagement, retard, retardClient = 0, livreeLe, depasse, reports }: {
   /** YYYYMMDD the current délai */
   delai: string
   /** YYYYMMDD the first délai given, '' when unknown */
   engagement: string
-  /** working days the délai is behind the engagement */
+  /** working days the délai is behind the engagement, the client's days aside */
   retard: number
+  /** working days the client took beyond its 5 to answer a coloris */
+  retardClient?: number
   /** YYYYMMDD the day every écru came back, '' while not delivered */
   livreeLe: string
   /** calendar days past the délai, 0 when not past */
@@ -2685,6 +2763,12 @@ function DelaiSstDetail({ delai, engagement, retard, livreeLe, depasse, reports 
             {retard > 0 ? `${retard} j ouvré${retard > 1 ? 's' : ''}` : 'Aucun'}
           </span>
         </div>
+        {retardClient > 0 && (
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="text-muted-foreground">Réponse coloris du client</span>
+            <span className="font-semibold text-violet-700">+{retardClient} j ouvré{retardClient > 1 ? 's' : ''}</span>
+          </div>
+        )}
       </div>
 
       <div className="mt-2 pt-2 border-t border-border/60">
@@ -2698,8 +2782,10 @@ function DelaiSstDetail({ delai, engagement, retard, livreeLe, depasse, reports 
                 <div className="flex items-center gap-2 tabular-nums">
                   <span className="font-semibold">{jj(r.ancien).slice(0, 5)} → {jj(r.nouveau).slice(0, 5)}</span>
                   <span className={cn('rounded-full border px-1.5 py-0 text-[10px] font-medium',
-                    r.imputable === 'malterre' ? 'border-amber-500/30 bg-amber-500/10 text-amber-800' : 'border-sky-500/25 bg-sky-500/10 text-sky-700')}>
-                    {r.imputable === 'malterre' ? 'Dû à Malterre' : 'Dû au sous-traitant'}
+                    r.imputable === 'malterre' ? 'border-amber-500/30 bg-amber-500/10 text-amber-800'
+                      : r.imputable === 'client' ? 'border-violet-500/25 bg-violet-500/10 text-violet-700'
+                        : 'border-sky-500/25 bg-sky-500/10 text-sky-700')}>
+                    {r.imputable === 'malterre' ? 'Dû à Malterre' : r.imputable === 'client' ? 'Dû au client' : 'Dû au sous-traitant'}
                   </span>
                 </div>
                 <p className="mt-0.5 text-foreground/90 whitespace-pre-wrap">{r.motif}</p>
@@ -6543,10 +6629,12 @@ function LineKindSwitch({ value, onChange }: {
 
 // ── The sous-traitant's délai is an engagement (LIVA #1364) ──────────────
 
-type ImputableDelai = 'sous_traitant' | 'malterre'
+type ImputableDelai = 'sous_traitant' | 'malterre' | 'client'
 const IMPUTABLES_DELAI: { id: ImputableDelai; label: string }[] = [
   { id: 'sous_traitant', label: 'Sous-traitant' },
   { id: 'malterre', label: 'Malterre' },
+  // A coloris answer that took the client more than its 5 working days (Vincent 2026-11-11).
+  { id: 'client', label: 'Client' },
 ]
 
 /** The date a line already holds: its délai, else its engagement (a cleared date). YYYYMMDD or ''. */
@@ -6603,7 +6691,7 @@ function EngagementDelai({ delaiDonne, nouveau, engagement, report, setReport }:
         ))}
       </div>
       <input value={report.motif} onChange={(e) => setReport({ ...report, motif: e.target.value })}
-        placeholder="Motif du report (ex. : retard teinture, fil arrivé en retard…)"
+        placeholder="Motif du report (ex. : retard teinture, fil arrivé en retard, réponse coloris du client…)"
         className="w-full h-8 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
     </div>
   )
@@ -7182,12 +7270,13 @@ function CycleCard({ commande, cycle, isEditing }: {
   isEditing: boolean
 }) {
   const attenteDelai = commande.phase === 'attente_delai' && !!cycle.delai
-  if (!attenteDelai && cycle.lots.length === 0) return null
+  const traitement = !attenteDelai ? cycle.traitement ?? null : null
+  if (!attenteDelai && !traitement && cycle.lots.length === 0) return null
   const delai = cycle.delai
   const jours = delai?.joursDepuisDemande ?? null
   const accordes = delai?.joursAccordes ?? null
   // §41: the colour is the API's (relance due = red), never recomputed here.
-  const niveau = !attenteDelai ? null : cycle.urgence === 'late' ? 'rouge' : cycle.urgence === 'soon' ? 'ambre' : null
+  const niveau = !attenteDelai && !traitement ? null : cycle.urgence === 'late' ? 'rouge' : cycle.urgence === 'soon' ? 'ambre' : null
   const jauge = attenteDelai && jours !== null && accordes !== null && accordes > 0
   const retard = jauge ? jours - accordes : 0
   return (
@@ -7245,24 +7334,171 @@ function CycleCard({ commande, cycle, isEditing }: {
           </div>
         </>
       )}
+      {traitement && <TraitementBloc traitement={traitement} niveau={niveau} solde={cycle.solde} mainClient={cycle.main === 'client'} />}
       {cycle.lots.length > 0 && (
-        <div className={cn('space-y-1.5', attenteDelai && 'mt-3 pt-3 border-t border-border/60')}>
+        <div className={cn('space-y-2.5', (attenteDelai || traitement) && 'mt-3 pt-3 border-t border-border/60')}>
           <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Lots en cours</p>
-          {cycle.lots.map((l) => (
-            <div key={`${l.lot}-${l.idsuivilot}`} className="flex items-center gap-2 text-sm">
-              {l.idsuivilot > 0 ? (
-                <Link to={`/qualite/suivi-lots?lot=${l.idsuivilot}&statut=en_cours`} className="font-medium tabular-nums text-accent hover:underline" title="Ouvrir le lot dans Qualité › Suivi lots">
-                  {l.lot}
-                </Link>
-              ) : (
-                <span className="font-medium tabular-nums">{l.lot}</span>
-              )}
-              <EtapeLotPill etape={l.etape} />
-            </div>
-          ))}
+          {cycle.lots.map((l) => <LotEnCours key={`${l.lot}-${l.idsuivilot}`} lot={l} />)}
         </div>
       )}
     </div>
+  )
+}
+
+/** One open lot of the Prochaines étapes card: its step, and where it stands in the
+ *  days the step gets — the Suivi lots card's segments and thresholds (« en contrôle »
+ *  = 5 working days from the reception; red once used up, amber on the last one),
+ *  so the lot reads the same here and where it is handled. No clock (en reprise,
+ *  reteinture) = the pill alone. */
+function LotEnCours({ lot: l }: { lot: LotCycle }) {
+  const jours = l.jours ?? null
+  const delai = l.delai ?? null
+  const mesure = jours !== null && delai !== null && delai > 0
+  const niveau = !mesure ? null : jours >= delai ? 'rouge' : jours >= delai - 1 ? 'ambre' : null
+  const retard = mesure ? jours - delai : 0
+  const qui = l.main === 'nous' ? null : l.main === 'client' ? 'le client' : 'l’ennoblisseur'
+  return (
+    <div>
+      <div className="flex items-center gap-2 text-sm">
+        {l.idsuivilot > 0 ? (
+          <Link to={`/qualite/suivi-lots?lot=${l.idsuivilot}&statut=en_cours`} className="font-medium tabular-nums text-accent hover:underline" title="Ouvrir le lot dans Qualité › Suivi lots">
+            {l.lot}
+          </Link>
+        ) : (
+          <span className="font-medium tabular-nums">{l.lot}</span>
+        )}
+        <EtapeLotPill etape={l.etape} />
+        {mesure && (
+          <span className="ml-auto flex-shrink-0 text-xs tabular-nums text-muted-foreground">
+            <span className={cn('text-sm font-bold', niveau === 'rouge' ? 'text-red-600' : niveau === 'ambre' ? 'text-amber-600' : 'text-foreground')}>{jours} j</span>
+            {' '}sur {delai}
+          </span>
+        )}
+      </div>
+      {mesure && (
+        <>
+          <div className="mt-1.5 flex gap-1">
+            {Array.from({ length: delai }, (_, i) => (
+              <div key={i} className={cn(
+                'h-1.5 flex-1 rounded-full',
+                i >= jours ? 'bg-zinc-200' : niveau === 'rouge' ? 'bg-red-500' : niveau === 'ambre' ? 'bg-amber-500'
+                  : l.main === 'client' ? 'bg-violet-500' : 'bg-sky-500',
+              )} />
+            ))}
+          </div>
+          {niveau && (
+            <p className={cn('mt-1 text-xs font-medium', niveau === 'rouge' ? 'text-red-700' : 'text-amber-700')}>
+              {niveau === 'ambre'
+                ? `Dernier jour demain : ${qui ? `relancer ${qui}` : 'à traiter'}`
+                : `${qui ? `Relancer ${qui}` : 'À traiter'}${retard > 0 ? ` : ${retard} j de retard` : ' aujourd’hui'}`}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+/** « En traitement » in the Prochaines étapes card (Vincent 2026-11-11): the
+ *  dyer's time from the bon de commande to the earliest open line's délai, one
+ *  segment per working day coloured by WHO HELD THE HAND — sky the dyer, violet
+ *  the client answering a coloris soumission (the dyed matter waits at the dyer;
+ *  pale violet = what is left of its 5 days), grey the days to come. The client's
+ *  days beyond 5 are its own delay: printed, and the date the dyer is expected
+ *  slides by as much. Read from facts (API calendrierTraitement), nothing typed.
+ *  Colour = the order's own (API urgenceCommande, the list card's); the délai
+ *  stays each line's — later lines are only named. No Ml: the line cards carry
+ *  what came back. */
+function TraitementBloc({ traitement, niveau, solde, mainClient }: {
+  traitement: TraitementCycle
+  niveau: 'rouge' | 'ambre' | null
+  solde: boolean
+  /** The order waits on the client (a coloris answer): the chase is the client's. */
+  mainClient: boolean
+}) {
+  const { jours, attente, retardClient, resteClient, joursRestants: restants } = traitement
+  const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
+  const decale = resteClient > 0
+  const teinte = niveau === 'rouge' ? 'red' : niveau === 'ambre' ? 'amber' : null
+  // A dyer's alert tints the dyer's days; the client's days stay violet whoever is chased.
+  const sstClass = !mainClient && teinte === 'red' ? 'bg-red-500' : !mainClient && teinte === 'amber' ? 'bg-amber-500' : 'bg-sky-500'
+  const segClass = (j: TraitementCycle['jours'][number]) =>
+    j === 'client' ? 'bg-violet-500' : j === 'client_prevu' ? 'bg-violet-200' : j === 'sst' ? sstClass : 'bg-zinc-200'
+  const titreJour = (j: TraitementCycle['jours'][number]) =>
+    j === 'client' ? 'Chez le client (réponse coloris)' : j === 'client_prevu' ? 'Réponse du client attendue' : j === 'sst' ? 'Chez l’ennoblisseur' : 'À venir'
+  const clientVu = traitement.joursClient > 0 || !!attente
+  return (
+    <>
+      <div className="flex items-center gap-3">
+        <div className="h-10 w-10 flex-shrink-0 rounded-lg flex items-center justify-center bg-zinc-100">
+          {attente ? <Send className="h-5 w-5 text-violet-600" /> : <Clock className="h-5 w-5 text-primary" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-base font-semibold leading-snug">{solde ? 'Solde chez l’ennoblisseur' : 'En traitement'}</p>
+          <p className="text-xs text-muted-foreground">
+            Sortie prévue le {formatHfsqlDate(traitement.sortie.replace(/-/g, ''))}
+            {decale && <span className="text-violet-700"> ({jjmm(traitement.delai)} + {resteClient} j client)</span>}
+          </p>
+        </div>
+        <div className="flex-shrink-0 text-right">
+          <p className={cn(
+            'text-2xl font-bold tabular-nums leading-none',
+            teinte === 'red' ? 'text-red-600' : teinte === 'amber' ? 'text-amber-600' : 'text-foreground',
+          )}>
+            {restants >= 0 ? `J-${restants}` : `+${-restants} j`}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">{restants >= 0 ? 'jours ouvrés' : 'de retard'}</p>
+        </div>
+      </div>
+      {jours.length > 0 && (
+        <div className="mt-3">
+          <div className={cn('flex', jours.length > 40 ? 'gap-px' : 'gap-0.5')}>
+            {jours.map((j, i) => (
+              <div key={i} title={titreJour(j)} className={cn('h-2 flex-1 rounded-full', segClass(j))} />
+            ))}
+          </div>
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground tabular-nums">
+            <span className="inline-flex items-center gap-1">
+              <span className={cn('h-1.5 w-1.5 rounded-full', sstClass)} />Ennoblisseur {traitement.joursSst} j
+            </span>
+            {clientVu && (
+              <span className="inline-flex items-center gap-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-violet-500" />Client {traitement.joursClient} j
+                {attente && <span>sur {REPONSE_CLIENT_J}</span>}
+              </span>
+            )}
+          </p>
+        </div>
+      )}
+      {(() => {
+        const texte = attente
+          ? teinte === 'red' ? `Relancer le client : réponse coloris attendue depuis le ${jjmm(attente.depuis)}`
+            : teinte === 'amber' ? 'Dernier jour demain : relancer le client pour le coloris'
+              : null
+          // The dyer's délai (the day before, or past: « +N j de retard »): the action is printed on
+          // the list card and in the line's délai corner — not a third time here (Vincent 2026-11-11).
+          : null
+        const autres = traitement.autres.length > 0
+        if (!texte && !autres && retardClient === 0) return null
+        return (
+          <div className="mt-1.5 space-y-0.5 text-xs">
+            {texte && (
+              <p className={cn(teinte === 'red' ? 'text-red-700 font-medium' : 'text-amber-700 font-medium')}>{texte}</p>
+            )}
+            {retardClient > 0 && (
+              <p className="font-medium text-violet-700">
+                Réponse du client : +{retardClient} j ouvré{retardClient > 1 ? 's' : ''} au-delà de ses {REPONSE_CLIENT_J}, son retard sur sa commande
+              </p>
+            )}
+            {autres && (
+              <p className="text-muted-foreground">
+                + {traitement.autres.length} {traitement.autres.length > 1 ? 'autres lignes' : 'autre ligne'} au {traitement.autres.map(jjmm).join(', ')}
+              </p>
+            )}
+          </div>
+        )
+      })()}
+    </>
   )
 }
 
@@ -7560,7 +7796,7 @@ function JournalTab({ commande, isEditing }: { commande: CommandeDetail; isEditi
     staleTime: 0,
     refetchOnMount: 'always',
   })
-  const etapes = commande.cycle && (commande.phase === 'attente_delai' || commande.cycle.lots.length > 0)
+  const etapes = commande.cycle && (commande.phase === 'attente_delai' || !!commande.cycle.traitement || commande.cycle.lots.length > 0)
   return (
     <>
       {etapes && commande.cycle && (

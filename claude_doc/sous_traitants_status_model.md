@@ -241,6 +241,24 @@ measures; only écru still at the dyer (a solde) keeps the order on the dyer's d
 The lot's own step — contrôle ennoblisseur / Malterre, soumissions, reprise — is
 detailed on Suivi lots only) · back to En traitement once every lot is validated while écru is still at the
 dyer (the « solde ») · À clôturer (every lot validated, nothing at the dyer) · Terminée.
+**Journal › « Prochaines étapes » while « En traitement »** (Vincent 2026-11-11): a card « En traitement » with the dyer's
+time from the bon de commande to the earliest open line's délai (J-N, gauge in working days, later lines named
+« + 1 autre ligne au 26/11 »), also on a solde still at the dyer; `EtatCommande.traitement`. Its colour is the order's
+own `urgenceCommande` (the list card's), never recomputed; no Ml (the line cards carry them).
+Each open lot under it shows the Suivi lots card's segments (`EtatLot.fenetre` = `depuisEtape`: days at the step out of
+the days it gets, 5 for the controls; same red / amber thresholds). **The line card's délai sits in its top-right corner**
+(label + date on one line, ONE status line under it: « Livrée le », « Dépassé de N jours : relancer », « retard N j »),
+never in the stat row, where its extra lines pushed the figures down.
+**A coloris soumission at the client is the client's time, inside the dyer's délai** (Vincent 2026-11-11; measured on the
+5 coloris soumissions since 2026-10-30: MATEL submits 2 to 8 working days before its délai and ships 1 to 2 days after the
+OK). The gauge is a calendar of working days coloured by who held the hand (`calendrierTraitement`: sky = dyer, violet =
+client answering, pale violet = what is left of its 5 days, `RELANCE_J.soumis`), read from the soumissions and answers
+recorded, nothing typed. While the answer is waited the order's chase is the CLIENT's (`chasseTraitement`: main `client`,
+relance = sent + 5 working days, « Réponse coloris : relancer le client »), never the dyer's délai. Working days beyond 5
+are the client's own delay (`retardClient`): printed, and the date the dyer is expected slides by as much (`sortie`),
+unless a report already moved the délai. Such a report is due to the **client** (third imputable of a LINE's report,
+migration 0074, pre-filled in the line form), and its days are taken off the delay the dyer carries (`retardClientReports`).
+To do: Clients › Commandes still reads the whole slip as « Retard ennoblisseur ».
 « En réception » existed 2026-10-30 → 11-02 and was merged into En contrôle (Vincent:
 the most important move is a lot's control). The list's search tags are the order steps
 only; the detail panel's « Lots en cours » (step pill, no date) link to Suivi lots.

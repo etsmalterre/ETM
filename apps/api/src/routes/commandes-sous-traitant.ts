@@ -76,7 +76,7 @@ import {
 import { sstDeleteBlocker } from '../lib/sst-delete.js'
 import { isRectiligneType, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
 import { etatsTricotage, familleOfTypeSst, parseFamille, tricoteurIds, type EtatTricotage, type SstFamille, type TricotagePhase } from '../lib/sst-tricotage.js'
-import { cleLot, etatCommande, lireCommandesEnnoblissement, urgenceCommande, type EtapeCommande, type EtapeLot, type EtatCommande } from '../lib/cycle-ennoblissement.js'
+import { calendrierTraitement, cleLot, etatCommande, joursOuvresDepuis, lireCommandesEnnoblissement, urgenceCommande, type EtapeCommande, type EtapeLot, type EtatCommande } from '../lib/cycle-ennoblissement.js'
 import {
   loadRectiligneRefLabels,
   loadRectiligneColorisLabels,
@@ -96,7 +96,7 @@ import { compteursParCommande, ligneModifiee } from '../lib/agents/flux-ennoblis
 import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
 import { fermetures } from '../lib/delais-standards.js'
-import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, refusAvanceDelai, reportsDelaiParLigne, retardDelai } from '../lib/report-delai-sst.js'
+import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, refusAvanceDelai, reportsDelaiParLigne, retardClientReports, retardDelai } from '../lib/report-delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { normaliserLot, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
@@ -946,7 +946,13 @@ function cycleFields(e: EtatCommande) {
     main: e.main,
     relance: e.relance,
     solde: e.solde,
-    lots: e.lots.map((l) => ({ lot: l.lot, idsuivilot: l.idsuivilot, etape: l.etape, main: l.main, relance: l.relance })),
+    // jours / delai: working days at the step against the days it gets (the
+    // Suivi lots card's segments, « en contrôle » = 5 from the reception).
+    lots: e.lots.map((l) => ({
+      lot: l.lot, idsuivilot: l.idsuivilot, etape: l.etape, main: l.main, relance: l.relance,
+      jours: l.fenetre ? joursOuvresDepuis(l.fenetre.depuis, todayIso()) : null,
+      delai: l.fenetre?.delai ?? null,
+    })),
     // joursDepuisDemande: working days since the délai was asked (0 = today).
     // joursAccordes: working days from the demand to the échéance (the card's gauge).
     ...(e.delai ? { delai: {
@@ -954,6 +960,20 @@ function cycleFields(e: EtatCommande) {
       joursDepuisDemande: e.delai.demandeLe ? ouvresEntre(e.delai.demandeLe, todayIso()) : null,
       joursAccordes: e.delai.demandeLe && e.delai.echeance ? ouvresEntre(e.delai.demandeLe, e.delai.echeance) : null,
     } } : {}),
+    // En traitement: each working day from the bon to the sortie, by who held
+    // the hand (dyer / client answering a coloris), and the days left.
+    ...(e.traitement ? { traitement: (() => {
+      const cal = calendrierTraitement(e.traitement, todayIso())
+      return {
+        depuis: e.traitement.depuis,
+        delai: e.traitement.delai,
+        autres: e.traitement.autres,
+        ...cal,
+        joursClient: cal.jours.filter((j) => j === 'client').length,
+        joursSst: cal.jours.filter((j) => j === 'sst').length,
+        joursRestants: ouvresEntre(todayIso(), cal.sortie),
+      }
+    })() } : {}),
   }
 }
 
@@ -2082,9 +2102,18 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
         ref_rendement: refRendement,
         colori_reference: resolveColoris(colId, typeKind, refId) || null,
         ...agg,
-        /** working days the current délai is behind the engagement (date_delai) */
-        retard_jours: retardDelai(l.date_delai, l.date_livraison, fermSst),
-        reports_delai: reportsDelai.get(Number(l.IDligne_commande_sous_traitant)) ?? [],
+        ...(() => {
+          const reports = reportsDelai.get(Number(l.IDligne_commande_sous_traitant)) ?? []
+          const total = retardDelai(l.date_delai, l.date_livraison, fermSst)
+          const client = Math.min(total ?? 0, retardClientReports(reports, fermSst))
+          return {
+            /** working days the current délai is behind the engagement (date_delai), the client's days aside */
+            retard_jours: total === null ? null : total - client,
+            /** …the days of the reports due to the client (late coloris answers) */
+            retard_client_jours: client,
+            reports_delai: reports,
+          }
+        })(),
       }
     })
 

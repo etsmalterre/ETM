@@ -5,9 +5,10 @@
 //     « We never type a date ourselves, except a délai the dyer gave by phone »:
 //     a date typed at the line's creation counts too;
 //   - pushing the date LATER afterwards is a « report »: a motif and who it is due
-//     to (the sous-traitant, or Malterre: yarn not there, client undecided…),
-//     recorded as a `report_delai` row of delai_sst_evenement (append-only,
-//     migration 0073);
+//     to (the sous-traitant, Malterre: yarn not there…, or the CLIENT: its
+//     answer to a coloris soumission took more than its 5 working days —
+//     Vincent 2026-11-11, migration 0074), recorded as a `report_delai` row of
+//     delai_sst_evenement (append-only, migration 0073);
 //   - bringing it EARLIER is refused (Vincent 2026-11-10): the engagement stays
 //     true, a delivery ahead of it is read from the reception (Qualité de
 //     service), never by moving the délai — 30 délais had been set to « the day
@@ -15,7 +16,8 @@
 //     bon de commande is not out yet (Non_Envoye, the date is hypothetical), and
 //     a typo the same day the date was given (delai_recu / report_delai today);
 //   - the delay a line carries = working days from the engagement to the current
-//     date, in the sous-traitant's own calendar. Clients › Commandes prints it
+//     date, in the sous-traitant's own calendar, MINUS the days of the reports
+//     due to the client (retardClientReports): never the sous-traitant's. Clients › Commandes prints it
 //     (« retard MATEL 3 j ») and reads its earliest date from the current délai.
 // The Tricobot Délais skill writing a later date files the report itself, due to
 // the sous-traitant, its motif quoting the mail (lib/agents/flux-ennoblisseur).
@@ -25,7 +27,15 @@ import { mpsPg } from './mps-pg.js'
 import { joursOuvresEntre, type Periode } from './jours-ouvres.js'
 import type { Imputable } from './delai-sst.js'
 
-export const IMPUTABLES_DELAI: readonly Imputable[] = ['sous_traitant', 'malterre']
+/** Who a line's report is due to. The order's « Repousser » (délai not given
+ *  yet, lib/delai-sst.ts) keeps its two: no client waits before the dyeing. */
+export type ImputableReport = Imputable | 'client'
+export const IMPUTABLES_DELAI: readonly ImputableReport[] = ['sous_traitant', 'malterre', 'client']
+
+/** « Du fait du sous-traitant » / « De notre fait » / « Du fait du client ». */
+export function libelleImputable(i: string | null | undefined): string {
+  return i === 'malterre' ? 'De notre fait' : i === 'client' ? 'Du fait du client' : 'Du fait du sous-traitant'
+}
 
 const ymd = (v: unknown): string => {
   const s = typeof v === 'string' ? v.replace(/-/g, '').slice(0, 8) : ''
@@ -87,7 +97,7 @@ export function retardDelai(engagement: unknown, actuel: unknown, fermetures: re
 
 export interface ReportDelai {
   motif: string
-  imputable: Imputable
+  imputable: ImputableReport
 }
 
 /** Reads the `report` object of a request body; null when absent or incomplete. */
@@ -106,7 +116,7 @@ export async function enregistrerReportDelai(p: {
   ancien: string
   nouveau: string
   motif: string
-  imputable: Imputable
+  imputable: ImputableReport
   par: { id: number; nom: string | null } | null
 }, sql: Sql = mpsPg()): Promise<void> {
   const iso = (d: string) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`
@@ -124,8 +134,16 @@ export interface ReportDelaiLigne {
   ancien: string
   nouveau: string
   motif: string
-  imputable: Imputable
+  imputable: ImputableReport
   par: string | null
+}
+
+/** Working days of a line's reports due to the client (its late coloris
+ *  answers): taken off the delay the sous-traitant carries. */
+export function retardClientReports(reports: readonly ReportDelaiLigne[], fermetures: readonly Periode[] = []): number {
+  return reports
+    .filter((r) => r.imputable === 'client' && r.nouveau > r.ancien)
+    .reduce((n, r) => n + joursOuvresEntre(r.ancien, r.nouveau, fermetures), 0)
 }
 
 /** Every report per line, oldest first. */
@@ -133,7 +151,7 @@ export async function reportsDelaiParLigne(ids: readonly number[], sql: Sql = mp
   const out = new Map<number, ReportDelaiLigne[]>()
   const ok = [...new Set(ids.filter((x) => x > 0))]
   if (ok.length === 0) return out
-  const rows = await sql<{ idl: number; le: Date; a: string; n: string; motif: string; imputable: Imputable; par: string | null }[]>`
+  const rows = await sql<{ idl: number; le: Date; a: string; n: string; motif: string; imputable: ImputableReport; par: string | null }[]>`
     SELECT idligne_commande_sous_traitant AS idl, le, to_char(ancien_delai, 'YYYYMMDD') AS a, to_char(delai_donne, 'YYYYMMDD') AS n,
            motif, imputable, par
       FROM delai_sst_evenement

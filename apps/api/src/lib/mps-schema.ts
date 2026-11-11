@@ -1995,6 +1995,18 @@ ${grantApi('SELECT, INSERT', 'atelier_annulation')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE atelier_annulation_id_seq')}
 `,
   },
+  {
+    // A sous-traitant line's report may be due to the CLIENT (Vincent
+    // 2026-11-11, lib/report-delai-sst.ts): its answer to a coloris soumission
+    // took more than its 5 working days while the dyed matter waited at the
+    // dyer. Until now such a report had to blame the dyer or Malterre.
+    name: '0074_report_delai_client',
+    sql: `
+ALTER TABLE delai_sst_evenement DROP CONSTRAINT delai_sst_evenement_imputable_check;
+ALTER TABLE delai_sst_evenement ADD CONSTRAINT delai_sst_evenement_imputable_check
+  CHECK (imputable IN ('sous_traitant', 'malterre', 'client'));
+`,
+  },
 ]
 
 export interface MigrationStatus {

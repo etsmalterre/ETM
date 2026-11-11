@@ -149,6 +149,9 @@ export interface EtatLot {
   relance: string | null
   /** Reprises the lot went through (0 = never reworked). */
   reprises: number
+  /** The step's window (depuisEtape): since when, and the working days it gets.
+   *  null = no date known (en reprise, reteinture). */
+  fenetre: { depuis: string; delai: number } | null
 }
 
 
@@ -282,7 +285,7 @@ export function etatLot(l: LotFait): EtatLot {
   else if (etape === 'en_rame' && l.okRamerLe) relance = plusJoursOuvres(l.okRamerLe, RELANCE_J.en_rame)
   else if (etape === 'refuse_client' && r) relance = plusJoursOuvres(r, RELANCE_J.nous)
   // en_reprise / reteinture: the dyer gives the date back in the point, nothing to compute.
-  return { lot: l.lot, idsuivilot: l.idsuivilot, etape, main: MAIN[etape], relance, reprises: l.reprises ?? 0 }
+  return { lot: l.lot, idsuivilot: l.idsuivilot, etape, main: MAIN[etape], relance, reprises: l.reprises ?? 0, fenetre: depuisEtape(l, etape) }
 }
 
 // ── The order ─────────────────────────────────────────────
@@ -312,6 +315,10 @@ export interface CommandeFait {
   delaiFaits?: FaitsDelai
   /** Earliest délai of a line not delivered yet, 'YYYY-MM-DD'. */
   delai: string | null
+  /** Every distinct délai of a line not delivered yet, sorted ('YYYY-MM-DD'). */
+  delaisLignes?: string[]
+  /** The lines not delivered yet that carry a délai (whose lots wait on whom). */
+  lignesOuvertes?: { id: number; delai: string; reporteClient?: number }[]
   lots: LotFait[]
   /** Écru pieces still at the dyer (handed over, not back dyed): the « solde ». */
   ecruChezTeinturier: number
@@ -327,6 +334,119 @@ export interface EtatCommande {
   solde: boolean
   /** attente_delai only: the délai question (lib/delai-sst.ts). */
   delai?: EtatDelai
+  /** While the dyer works on the order (en traitement, or a solde still at
+   *  the dyer): from the bon de commande to the earliest open line's délai —
+   *  the Journal's « Prochaines étapes » card (Vincent 2026-11-11). */
+  traitement?: EtatTraitement
+}
+
+/** The client answers a coloris soumission while the dyed matter waits at the
+ *  dyer: sent → answered (Vincent 2026-11-11). The dyer's délai holds these
+ *  working days (RELANCE_J.soumis, 5); the hand is the client's meanwhile. */
+export interface AttenteClient {
+  lot: string
+  /** The soumission sent, 'YYYY-MM-DD'. */
+  du: string
+  /** The client's answer, 'YYYY-MM-DD'. null = still waited. */
+  au: string | null
+}
+
+export interface EtatTraitement {
+  /** The bon de commande sent (else the day the délai came back), 'YYYY-MM-DD'. */
+  depuis: string | null
+  /** The earliest open line's délai, 'YYYY-MM-DD'. */
+  delai: string
+  /** The later délais of other open lines, sorted. */
+  autres: string[]
+  /** The coloris answers asked to the client on that line's lots, before their reception. */
+  attentes: AttenteClient[]
+  /** Working days the client took beyond its 5 on the answers given: its own
+   *  delay on its order, never the dyer's. A still-waited answer adds its
+   *  overrun day by day (calendrierTraitement). */
+  retardClient: number
+  /** Working days already given back to the dyer by reports due to the client
+   *  (the délai was moved, lib/report-delai-sst.ts): not pushed a second time. */
+  reporteClient: number
+}
+
+/** Working days an answer took beyond the client's 5 (`fin` = the answer, or today). */
+export function depassementClient(a: AttenteClient, fin: string): number {
+  return Math.max(0, joursOuvresDepuis(a.du, fin) - RELANCE_J.soumis)
+}
+
+function traitementDe(c: CommandeFait): EtatTraitement | undefined {
+  if (!c.delai) return undefined
+  // The délai is each line's: only the lots of the line(s) the card follows.
+  const lignes = c.lignesOuvertes ? new Set(c.lignesOuvertes.filter((l) => l.delai === c.delai).map((l) => l.id)) : null
+  const attentes: AttenteClient[] = c.lots
+    .filter((l) => !lignes || !l.idligne || lignes.has(l.idligne))
+    // A coloris asked on rolls already received is the control's time, not the dyer's.
+    .filter((l) => !!l.coloris.envoyeeLe && (!l.reception || l.coloris.envoyeeLe < l.reception))
+    .map((l) => ({ lot: l.lot, du: l.coloris.envoyeeLe!, au: l.coloris.reponse ? l.coloris.reponse.le.slice(0, 10) : null }))
+    .sort((a, b) => a.du.localeCompare(b.du))
+  return {
+    depuis: c.delaiFaits?.demandeLe ?? c.delaiFaits?.reponduLe ?? null,
+    delai: c.delai,
+    autres: (c.delaisLignes ?? []).filter((d) => d > c.delai!),
+    attentes,
+    retardClient: attentes.reduce((n, a) => n + (a.au ? depassementClient(a, a.au) : 0), 0),
+    reporteClient: Math.max(0, ...(c.lignesOuvertes ?? []).filter((l) => l.delai === c.delai).map((l) => l.reporteClient ?? 0)),
+  }
+}
+
+/** Who holds the hand on one working day of the dyer's time. */
+export type JourTraitement = 'sst' | 'client' | 'client_prevu' | 'avenir'
+
+export interface CalendrierTraitement {
+  /** One entry per working day from the bon (excluded) to the sortie (included);
+   *  empty without a start date. `client_prevu` = what is left of the client's
+   *  5 days, `avenir` = the dyer's days to come. */
+  jours: JourTraitement[]
+  /** The answer still waited: since when, working days so far, and the last of the client's 5 days. */
+  attente: { lot: string; depuis: string; jours: number; fin: string } | null
+  /** The client's delay to date, the waited answer's overrun included. */
+  retardClient: number
+  /** …the part of it no report has put on the délai yet. */
+  resteClient: number
+  /** The délai pushed by that part: when the dyer is expected. */
+  sortie: string
+}
+
+const MAX_JOURS_CALENDRIER = 60
+
+/** The card's gauge: each working day of the dyer's time coloured by who held
+ *  the hand. Read from facts only (soumissions sent, answers recorded). Pure. */
+export function calendrierTraitement(t: EtatTraitement, today: string): CalendrierTraitement {
+  const enAttente = t.attentes.find((a) => !a.au) ?? null
+  const retardClient = t.retardClient + (enAttente ? depassementClient(enAttente, today) : 0)
+  const resteClient = Math.max(0, retardClient - t.reporteClient)
+  const sortie = resteClient > 0 ? plusJoursOuvres(t.delai, resteClient) : t.delai
+  const finAttente = enAttente ? plusJoursOuvres(enAttente.du, RELANCE_J.soumis) : null
+  const jours: JourTraitement[] = []
+  if (t.depuis && t.depuis < sortie) {
+    for (let d = plusJoursOuvres(t.depuis, 1); d <= sortie && jours.length < MAX_JOURS_CALENDRIER; d = plusJoursOuvres(d, 1)) {
+      if (d <= today) jours.push(t.attentes.some((a) => a.du < d && d <= (a.au ?? today)) ? 'client' : 'sst')
+      else jours.push(finAttente && d <= finAttente ? 'client_prevu' : 'avenir')
+    }
+  }
+  return {
+    jours,
+    attente: enAttente ? { lot: enAttente.lot, depuis: enAttente.du, jours: joursOuvresDepuis(enAttente.du, today), fin: finAttente! } : null,
+    retardClient,
+    resteClient,
+    sortie,
+  }
+}
+
+/** Whose move and when to chase while the dyer holds the order (en traitement,
+ *  or a solde): the client while a coloris answer is waited (its 5 days, then
+ *  ours to chase IT — never the dyer for a délai the client is eating), else
+ *  the dyer on its délai pushed by the client's delay. */
+function chasseTraitement(c: CommandeFait, t: EtatTraitement | undefined): { main: Main; relance: string | null } {
+  const enAttente = t?.attentes.find((a) => !a.au)
+  if (enAttente) return { main: 'client', relance: plusJoursOuvres(enAttente.du, RELANCE_J.soumis) }
+  const reste = t ? Math.max(0, t.retardClient - t.reporteClient) : 0
+  return { main: 'teinturier', relance: t && reste > 0 ? plusJoursOuvres(t.delai, reste) : c.delai }
 }
 
 export interface EtatDelai {
@@ -361,7 +481,8 @@ export function etatCommande(c: CommandeFait): EtatCommande {
         delai: { demandeLe: f.demandeLe, echeance: echeanceDelai(f), derniereRelance: r ? { jour: r.jour, canal: r.canal } : null, historique: historiqueDelai(f) },
       }
     }
-    return { etape: 'en_teinture', main: 'teinturier', relance: c.delai, lots: [], solde: false }
+    const t = traitementDe(c)
+    return { etape: 'en_teinture', ...chasseTraitement(c, t), lots: [], solde: false, traitement: t }
   }
   // A received lot still open = « en contrôle ». The order carries no chase of its own
   // then (Vincent 2026-11-03): each lot has its 5-working-day control window and
@@ -371,9 +492,14 @@ export function etatCommande(c: CommandeFait): EtatCommande {
   // back « en traitement » while écru is still at the dyer, else ours to close
   // (Vincent 2026-11-02).
   if (recus.length > 0) {
-    return { etape: 'en_controle', main: solde ? 'teinturier' : null, relance: solde ? c.delai : null, lots: ouverts, solde }
+    if (!solde) return { etape: 'en_controle', main: null, relance: null, lots: ouverts, solde }
+    const t = traitementDe(c)
+    return { etape: 'en_controle', ...chasseTraitement(c, t), lots: ouverts, solde, traitement: t }
   }
-  if (solde || ouverts.length > 0) return { etape: 'en_teinture', main: 'teinturier', relance: c.delai, lots: ouverts, solde }
+  if (solde || ouverts.length > 0) {
+    const t = traitementDe(c)
+    return { etape: 'en_teinture', ...chasseTraitement(c, t), lots: ouverts, solde, traitement: t }
+  }
   // Every lot validated, nothing left at the dyer: ours to close (8565).
   return { etape: 'a_cloturer', main: 'nous', relance: null, lots: ouverts, solde }
 }
@@ -471,6 +597,11 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
   const sql = mpsPg()
 
   const faitsDelaiP = lireFaitsDelai(cmdIds, sql)
+  // Reports of a line's délai due to the client (late coloris answers, migration 0074).
+  const reportsClientP = sql<{ idl: number; a: string; n: string }[]>`
+    SELECT idligne_commande_sous_traitant AS idl, to_char(ancien_delai, 'YYYY-MM-DD') AS a, to_char(delai_donne, 'YYYY-MM-DD') AS n
+      FROM delai_sst_evenement
+     WHERE type = 'report_delai' AND imputable = 'client' AND idcommande_sous_traitant = ANY(${cmdIds})`
   const [entetes, lignes, envoisMail, envoisNature, reponses, oksRamer] = await Promise.all([
     sql<{ id: number; est_soldee: number; idcommande_client: number }[]>`
       SELECT idcommande_sous_traitant AS id, est_soldee,
@@ -505,6 +636,10 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
   ])
 
   const faitsDelai = await faitsDelaiP
+  const reporteClient = new Map<number, number>()
+  for (const r of await reportsClientP) {
+    if (r.a && r.n && r.n > r.a) reporteClient.set(Number(r.idl), (reporteClient.get(Number(r.idl)) ?? 0) + joursOuvresDepuis(r.a, r.n))
+  }
   const lineIds = lignes.map((l) => Number(l.id))
   const [lots, ecru, clientsPieces] = lineIds.length === 0 ? [[], [], []] : await Promise.all([
     sql<{
@@ -711,12 +846,15 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
         ...soumissionsDuLot(k, [], undefined),
       })
     }
-    const delais = sesLignes.filter((l) => !String(l.sstatut ?? '').startsWith('Termin')).map((l) => l.delai).filter((d): d is string => !!d).sort()
+    const ouvertes = sesLignes.filter((l) => !String(l.sstatut ?? '').startsWith('Termin') && !!l.delai)
+    const delais = ouvertes.map((l) => l.delai!).sort()
     out.set(id, {
       est_soldee: Number(e.est_soldee) === 1,
       rangStatut: Math.max(0, ...sesLignes.map((l) => rang(l.sstatut))) as 0 | 1 | 2,
       delaiFaits: faitsDelai.get(id),
       delai: delais[0] ?? null,
+      delaisLignes: [...new Set(delais)],
+      lignesOuvertes: ouvertes.map((l) => ({ id: Number(l.id), delai: l.delai!, reporteClient: reporteClient.get(Number(l.id)) ?? 0 })),
       lots: sesLots,
       ecruChezTeinturier: sesLignes.reduce((n, l) => n + (chezTeinturier.get(Number(l.id)) ?? 0), 0),
     })

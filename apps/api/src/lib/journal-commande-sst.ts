@@ -15,6 +15,7 @@
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 import { lireJournalLot, type AuteurType, type EntreeJournal } from './journal-lot.js'
+import { libelleImputable } from './report-delai-sst.js'
 
 export type EvenementCommandeSst = 'creation' | 'bon_commande' | 'etat'
 
@@ -158,7 +159,7 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
       // A délai pushed back after it was given (LIVA #1364).
       out.push(commande({
         le: iso(d.le), type: 'report', titre: `Délai repoussé du ${d.ancien ? jjmm(d.ancien) : '—'} au ${d.delai ? jjmm(d.delai) : '—'}`,
-        detail: [d.ref?.trim() || null, d.imputable === 'malterre' ? 'De notre fait' : 'Du fait du sous-traitant', d.motif].filter(Boolean).join(' — '),
+        detail: [d.ref?.trim() || null, libelleImputable(d.imputable), d.motif].filter(Boolean).join(' — '),
         par: d.par, auteur: d.par === 'Tricobot' ? 'tricobot' : qui(d.par),
       }))
     } else if (d.type === 'report') {
