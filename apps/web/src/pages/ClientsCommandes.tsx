@@ -396,6 +396,10 @@ interface SupplyTricoRow {
   toute_commande: boolean
   /** the knitter brings the yarn: the only knitting orders a share is typed on (API lib/parts-tricotage.ts) */
   entree?: boolean
+  /** kg of the order's pieces the line already holds, and what is still to come to it */
+  poids_recu?: number
+  poids_reste?: number
+  metrage_reste?: number
   /** the other client lines' reservations on this knitting order */
   autres_reservations: { client_nom: string | null; commande_numero: number | null; article?: string | null; poids: number; toute_commande: boolean }[]
 }
@@ -3171,8 +3175,15 @@ function AffectationDrawer({
                 { key: 'sst', label: 'Tricoteur', align: 'left', render: (r) => r.sous_traitant_nom || '—' },
                 { key: 'dl', label: 'Délai', align: 'left', render: (r) => fmtSupplyDate(r.date_livraison) },
                 { key: 'di', label: 'Poids dispo.', align: 'right', render: (r) => `${fmtNum(r.poids_disponible, 1)} Kg` },
-                { key: 'af', label: 'Réservé', align: 'right', render: (r) => `${fmtNum(r.poids_affecte, 1)} Kg` },
-                { key: 'mp', label: 'Métrage pot.', align: 'right', render: (r) => <span className="font-semibold">{fmtNum(r.metrage_potentiel, 0)} Ml</span> },
+                // What is still to come from the order, as the zone above shows the yarn still to knit: the
+                // pieces already received are tombé de métier now (Ennoblissement tab), never counted twice.
+                { key: 'af', label: 'À recevoir', align: 'right', render: (r) => (
+                  <span title={`Part de la ligne : ${fmtNum(r.poids_affecte, 1)} kg, dont ${fmtNum(r.poids_recu ?? 0, 1)} kg déjà reçus en pièces`}
+                    className={cn((r.poids_recu ?? 0) > 0.05 && SOULIGNE_INFO)}>
+                    {fmtNum(r.poids_reste ?? r.poids_affecte, 1)} Kg
+                  </span>
+                ) },
+                { key: 'mp', label: 'Métrage pot.', align: 'right', render: (r) => <span className="font-semibold">{fmtNum(r.metrage_reste ?? r.metrage_potentiel, 1)} Ml</span> },
               ]}
             />
           </ZoneLigne>

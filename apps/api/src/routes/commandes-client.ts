@@ -34,7 +34,7 @@ import {
   etatReservation, compteDansReserve, RefusReservation, plafondReservation,
 } from '../lib/reservation-fil.js'
 import { lotsLibres, planLancement, ecrireAffectation, messageFilNonCouvert, nomsFils, filsALancer, ordreDeService, filNonReserve } from '../lib/lancement-tricotage.js'
-import { ciblesDuLot, planArbitrage, appliquerArbitrage, RefusArbitrage, sourcesTricotage, fixerFilEnTricotage, type CibleArbitrage, type EffetArbitrage } from '../lib/engagement-tricotage.js'
+import { ciblesDuLot, planArbitrage, appliquerArbitrage, RefusArbitrage, sourcesTricotage, fixerFilEnTricotage, lectureTricotage, type CibleArbitrage, type EffetArbitrage } from '../lib/engagement-tricotage.js'
 import { partsTricotage, filEngageSansPart } from '../lib/parts-tricotage.js'
 import { noterCommandeSst } from '../lib/journal-commande-sst.js'
 import { freinteTricotage, freintesTricotage, origineFreinte, filPourEcru, ecruPourFil, besoinFil, MARGE_SECURITE_FIL, ARRONDI_FIL_KG } from '../lib/freinte-tricotage.js'
@@ -3113,6 +3113,12 @@ interface SupplyTricoRow {
   /** this line takes every piece the exact lines leave (« Toute la commande » / « Tout le reste »,
    *  lib/repartition-tricotage.ts) */
   toute_commande: boolean
+  /** kg of the order's pieces the line already holds, and what is still to come to it: the row shows
+   *  the matter still in the order, as the zone above shows the yarn still to knit (the pieces
+   *  received are tombé de métier now, counted there — never twice). */
+  poids_recu: number
+  poids_reste: number
+  metrage_reste: number
   /** the knitter brings the yarn: the order is an entry point, a share is typed on it. On an order
    *  knitting our yarn, a line's share is the yarn it holds there (lib/parts-tricotage.ts). */
   entree: boolean
@@ -3256,9 +3262,15 @@ async function buildTricotage(ecruRefId: number, rendement: number, coloriIds: n
     articlesDesLignesClient(autresLcc),
   ])
   const sstNames = await resolveMagasinNames(lines.map((l: any) => Number(l.sstid)))
+  // What the line already received of each order it has a share of (lib/engagement-tricotage.ts).
+  const recuDe = new Map<number, number>()
+  for (const lid of affThis.keys()) {
+    recuDe.set(lid, (await lectureTricotage(lid))?.parts.find((p) => p.lcc === ligneId)?.recu ?? 0)
+  }
   return lines.map((l: any) => {
     const lid = Number(l.lid)
     const aff = affThis.get(lid) ?? 0
+    const recu = Math.min(aff, recuDe.get(lid) ?? 0)
     const dispo = Math.max(0, (Number(l.q) || 0) - (allocAll.get(lid) ?? 0))
     return {
       id: lid,
@@ -3270,6 +3282,9 @@ async function buildTricotage(ecruRefId: number, rendement: number, coloriIds: n
       poids_disponible: round2c(dispo),
       poids_affecte: round2c(aff),
       metrage_potentiel: round2c(aff * rendement),
+      poids_recu: round2c(recu),
+      poids_reste: round2c(aff - recu),
+      metrage_reste: round2c((aff - recu) * rendement),
       quantite: round2c(Number(l.q) || 0),
       toute_commande: touteThis.has(lid),
       entree: parts.get(lid)?.entree ?? false,
