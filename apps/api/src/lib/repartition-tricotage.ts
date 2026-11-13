@@ -1,8 +1,9 @@
 // Clients › Commandes: the écru knitted on a knitting order goes to the client lines that reserved it
 // (LIVA #1350, decision Vincent 2026-11-05).
 //
-// A client line reserves knitting on a knitting order (affectation_cmd_tricotage: « knit N kg on this
-// knitting sst line for this client line »). The point of reserving there is to find the knitted
+// A client line has a share of a knitting order: since 2026-11-13 the yarn reserved to it that the
+// order holds (lib/parts-tricotage.ts — a share is typed on the order only when the knitter brings the
+// yarn). The point of a share is to find the knitted
 // pieces ALREADY reserved afterwards: until this rule, the pieces arrived free and someone had to tick
 // them by hand in « Réserver du tombé de métier » (order 3905: 6 of the 7 pieces of order 9126 left
 // free, the gauge still counted 307 Ml « en tricotage » for knitting that was done).
@@ -24,6 +25,7 @@
 
 import { query } from './hfsql-auto.js'
 import { consumedEcruIds } from './fini-sources.js'
+import { partsTricotage } from './parts-tricotage.js'
 
 export interface AllocationRepartition {
   /** IDligne_commande_client */
@@ -101,11 +103,8 @@ export async function allocationsParLigneTricot(lsstIds: readonly number[]): Pro
   const out = new Map<number, AllocationRepartition[]>()
   const u = ids(lsstIds)
   if (u.length === 0) return out
-  const rows = await query<{ lsst: number; lcc: number; poids: number | null; toute: number | null }>(
-    `SELECT IDligne_commande_sous_traitant AS lsst, IDligne_commande_client AS lcc, poids_affecte AS poids,
-            toute_commande AS toute
-       FROM affectation_cmd_tricotage WHERE IDligne_commande_sous_traitant IN (${u.join(',')})`,
-  )
+  const parts = await partsTricotage({ lsst: u })
+  const rows = [...parts.values()].flatMap((k) => k.parts.map((p) => ({ lsst: k.lsst, lcc: p.lcc, poids: p.poids, toute: p.toute ? 1 : 0 })))
   const lccs = ids(rows.map((r) => num(r.lcc)))
   const delai = new Map<number, string>()
   const cmdDe = new Map<number, number>()
@@ -129,6 +128,13 @@ export async function allocationsParLigneTricot(lsstIds: readonly number[]): Pro
     const arr = out.get(num(r.lsst)) ?? []
     arr.push(a)
     out.set(num(r.lsst), arr)
+  }
+  // Our yarn, and the lines' yarn covers the whole order: nothing is knitted for the stock, so the
+  // line due last takes every piece the others leave (lib/parts-tricotage.ts).
+  for (const [lsst, arr] of out) {
+    const k = parts.get(lsst)
+    if (!k || k.source !== 'fil' || !k.couvreTout || arr.length === 0) continue
+    ordreAllocations(arr).at(-1)!.toute = true
   }
   return out
 }

@@ -34,6 +34,9 @@ import {
   etatReservation, compteDansReserve, RefusReservation, plafondReservation,
 } from '../lib/reservation-fil.js'
 import { lotsLibres, planLancement, ecrireAffectation, messageFilNonCouvert, nomsFils, filsALancer, ordreDeService, filNonReserve } from '../lib/lancement-tricotage.js'
+import { ciblesDuLot, planArbitrage, appliquerArbitrage, RefusArbitrage, sourcesTricotage, fixerFilEnTricotage, type CibleArbitrage, type EffetArbitrage } from '../lib/engagement-tricotage.js'
+import { partsTricotage, filEngageSansPart } from '../lib/parts-tricotage.js'
+import { noterCommandeSst } from '../lib/journal-commande-sst.js'
 import { freinteTricotage, freintesTricotage, origineFreinte, filPourEcru, ecruPourFil, besoinFil, MARGE_SECURITE_FIL, ARRONDI_FIL_KG } from '../lib/freinte-tricotage.js'
 import { avancementCommande, commandeIncomplete, etatAffiche, modeLivraisonDe, relanceAppelDe, urgenceCommande, urgenceLigne, type LigneUrgence, type UrgenceCommande } from '../lib/urgence-commande-client.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
@@ -3110,6 +3113,9 @@ interface SupplyTricoRow {
   /** this line takes every piece the exact lines leave (« Toute la commande » / « Tout le reste »,
    *  lib/repartition-tricotage.ts) */
   toute_commande: boolean
+  /** the knitter brings the yarn: the order is an entry point, a share is typed on it. On an order
+   *  knitting our yarn, a line's share is the yarn it holds there (lib/parts-tricotage.ts). */
+  entree: boolean
   /** the other client lines' reservations on this knitting line */
   autres_reservations: { client_nom: string | null; commande_numero: number | null; article: string | null; poids: number; toute_commande: boolean }[]
 }
@@ -3172,7 +3178,7 @@ const round2c = (v: number) => Math.round(v * 100) / 100
 
 /** « REF - coloris » of client lines, as their order prints them (a line waiting for its étude says so):
  *  what tells apart two lines of the same order reserving on one knitting order. */
-async function articlesDesLignesClient(ids: number[]): Promise<Map<number, string>> {
+export async function articlesDesLignesClient(ids: number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>()
   const lccIds = Array.from(new Set(ids.filter((x) => x > 0)))
   if (lccIds.length === 0) return out
@@ -3225,11 +3231,9 @@ async function buildTricotage(ecruRefId: number, rendement: number, coloriIds: n
   // lines' reservations (who, kg, mode) — the dialog's gauge « client A · client B · stock ».
   const touteThis = new Set<number>()
   const autres = new Map<number, { lcc: number; poids: number; toute: boolean }[]>()
+  const parts = await partsTricotage({ lsst: lineIds })
   if (lineIds.length > 0) {
-    const rows = await query<any>(
-      `SELECT IDligne_commande_sous_traitant AS lid, IDligne_commande_client AS lcc, poids_affecte, toute_commande
-         FROM affectation_cmd_tricotage WHERE IDligne_commande_sous_traitant IN (${lineIds.join(',')})`,
-    )
+    const rows = [...parts.values()].flatMap((k) => k.parts.map((p) => ({ lid: k.lsst, lcc: p.lcc, poids_affecte: p.poids, toute_commande: p.toute ? 1 : 0 })))
     for (const r of rows) {
       const lid = Number(r.lid)
       const p = Number(r.poids_affecte) || 0
@@ -3268,6 +3272,7 @@ async function buildTricotage(ecruRefId: number, rendement: number, coloriIds: n
       metrage_potentiel: round2c(aff * rendement),
       quantite: round2c(Number(l.q) || 0),
       toute_commande: touteThis.has(lid),
+      entree: parts.get(lid)?.entree ?? false,
       autres_reservations: (autres.get(lid) ?? []).map((x) => ({
         client_nom: clientByLcc.get(x.lcc) ?? null,
         commande_numero: commandeNumByLcc.get(x.lcc) ?? null,
@@ -4834,18 +4839,9 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/tricotage/orders', async
       dateDemandee: d.date_demandee,
     })
 
-    // Planning allocation to this client line (the "Poids affecté" input) —
-    // the same table the Tricotage tab's affecté column reads.
-    // An order knitted wholly for the line (nothing « pour le stock ») takes every piece it yields:
-    // « Toute la commande » (lib/repartition-tricotage.ts); the Tricotage tab dialog changes it.
-    if (d.poids_affecte !== 0) {
-      const toute = d.poids_stock <= 0 ? 1 : 0
-      await query(
-        `INSERT INTO affectation_cmd_tricotage (poids_affecte, IDligne_commande_sous_traitant, IDligne_commande_client, toute_commande)
-         VALUES (${n(d.poids_affecte)}, ${created.IDligne_commande_sous_traitant}, ${ligneId}, ${toute})`,
-      )
-    }
-
+    // The line's share of the order is the yarn reserved to it that the order takes, just below
+    // (lib/parts-tricotage.ts, 2026-11-13): nothing is typed on the order. Knitted wholly for the line,
+    // its yarn covers the order and it takes every piece (« couvreTout »).
     // One asso row per lot taken; the line's reservations on those lots go to the order.
     await ecrireAffectation({ sstLine: created.IDligne_commande_sous_traitant, ligneClient: ligneId, entrees: plan.entrees })
     // The knitting is launched: a launch date that held it is over (lib/lancement-ligne.ts).
@@ -4889,6 +4885,15 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/tricotage/:sstLineId/affe
     )
     if (lcs.length === 0 || Number(lcs[0].type_kind) !== 1) { res.status(404).json({ error: 'Ligne tricoteur introuvable' }); return }
     const quantite = Number(lcs[0].quantite) || 0
+    // A share is typed on an order only when it lets matter in: the knitter brings the yarn. On an
+    // order knitting OUR yarn, the line reserves the yarn (lib/parts-tricotage.ts, Vincent 2026-11-13).
+    if (!((await partsTricotage({ lsst: [sstLineId] })).get(sstLineId)?.entree ?? false)) {
+      res.status(409).json({
+        error: 'reservation_par_le_fil',
+        message: 'Cette commande tricote notre fil : la ligne réserve le fil du lot (« Fil réservé », lot en tricotage), pas une quantité de la commande.',
+      })
+      return
+    }
 
     // Over-allocation guard: allocations across ALL client lines stay within
     // the knitting order's quantity.
@@ -5081,11 +5086,14 @@ async function besoinsFilDeLigne(ctx: ClientLineContext) {
   if (ecruRefId <= 0) return null
   const metrage = lineDim(ctx.unite) === 'metrage'
   const enKg = (x: number) => (metrage ? (rendement > 0 ? x / rendement : 0) : x)
-  const [pairs, resas, agg, freinte] = await Promise.all([
+  const [pairs, resas, agg, freinte, sansPart] = await Promise.all([
     tricoCompositionPairs(ecruRefId, ecruColoris),
     reservationsDesLignes([ctx.ligneId]),
     lineReservationAggregates([{ id: ctx.ligneId, typeKind: ctx.typeKind, refId: ctx.refId }]),
     freinteTricotage(ecruRefId),
+    // Yarn the line holds in a knitting order that makes no écru share yet (another yarn of the
+    // recipe is missing there): the knitting does not count it, so it stays reserved yarn.
+    filEngageSansPart(ctx.ligneId),
   ])
   const a = agg.get(ctx.ligneId)
   const kgLigne = round2c(enKg(ctx.quantite))
@@ -5095,7 +5103,7 @@ async function besoinsFilDeLigne(ctx: ClientLineContext) {
   const fils = pairs.map((p) => {
     const reserve = round2c(resas
       .filter((r) => r.idref_fil === p.IDref_fil && r.idcolori_fil === p.IDcolori_fil && compteDansReserve(etatReservation(r)))
-      .reduce((x, r) => x + r.quantite, 0))
+      .reduce((x, r) => x + r.quantite, 0) + (sansPart.get(`${p.IDref_fil}:${p.IDcolori_fil}`) ?? 0))
     // Freinte + safety margin, rounded up to the kilo (lib/freinte-tricotage.ts besoinFil).
     const b = besoinFil(kgAProduire, freinte.taux, p.pourcentage / 100)
     const besoin = b.besoin
@@ -5105,7 +5113,7 @@ async function besoinsFilDeLigne(ctx: ClientLineContext) {
     const plafond = plafondReservation(besoin)
     return { refFil: p.IDref_fil, coloriFil: p.IDcolori_fil, pourcentage: p.pourcentage, besoin, calcul, reserve, manque: round2c(Math.max(0, besoin - reserve)), plafond, encorePossible: round2c(Math.max(0, plafond - reserve)) }
   })
-  return { ecruRefId, rendement, ecruColoris, kgLigne, kgAffecte, pairs, resas, fils, freinte }
+  return { ecruRefId, rendement, ecruColoris, kgLigne, kgAffecte, pairs, resas, fils, freinte, sansPart }
 }
 
 /** Per line, the open yarn reservations (supplier order, lot) as the écru they let the line make
@@ -5166,10 +5174,9 @@ async function ordresEnCoursParLigne(lineIds: readonly number[], agg: Map<number
   const ids = [...new Set(lineIds.filter((x) => x > 0))]
   if (ids.length === 0) return out
   const sql = mpsPg()
-  const alloc = await sql<{ lcc: number; lsst: number }[]>`
-    SELECT idligne_commande_client AS lcc, idligne_commande_sous_traitant AS lsst
-      FROM affectation_cmd_tricotage
-     WHERE idligne_commande_client = ANY(${ids as any}) AND idligne_commande_sous_traitant > 0 AND poids_affecte > 0`
+  const miennes = new Set(ids)
+  const alloc = [...(await partsTricotage({ lcc: ids })).values()]
+    .flatMap((k) => k.parts.filter((p) => miennes.has(p.lcc) && p.poids > 0).map((p) => ({ lcc: p.lcc, lsst: k.lsst })))
   const sstIds = new Set<number>(alloc.map((r) => Number(r.lsst)))
   for (const id of ids) for (const k of Object.keys(agg.get(id)?.ecru_chez_sst ?? {})) sstIds.add(Number(k))
   if (sstIds.size === 0) return out
@@ -5386,6 +5393,45 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
       nomsMagasins(lotsReservables.map((l) => l.magasin)),
       resolveSousTraitantTypes(lotsReservables.map((l) => l.magasin)),
     ])
+    // Yarn held by knitting orders of ANOTHER écru can be taken by arbitration (lib/engagement-tricotage.ts);
+    // held by an order of this line's écru, the line reserves on the order itself (Tricotage tab).
+    const engages = lotsReservables.flatMap((l) => l.engagements ?? [])
+    const [nomsEcrus, nomsColorisEcru] = await Promise.all([
+      Promise.all([...new Set(engages.map((e) => e.ecru))].map(async (id) => [id, await resolveEcruRefLabel(id)] as const)).then((x) => new Map(x)),
+      resolveEcruColoris(engages.map((e) => e.coloris)),
+    ])
+    const memeEcru = (e: { ecru: number; coloris: number }) => e.ecru === ecruRefId && (ecruColoris.length === 0 || ecruColoris.includes(e.coloris))
+    // Yarn a knitting order of THIS écru holds: the line reserves it there (what the order knits for
+    // the stock, or another line's share by arbitration) and receives the pieces.
+    const enTricotage = await sourcesTricotage({ ecru: ecruRefId, coloris: ecruColoris, ligne: ligneId })
+    // Who holds each lot's yarn, for the selector's gauge: the other client lines (reserved on the
+    // lot, or their share of a knitting order drawing on it) and what those orders knit for the stock.
+    const lotIds = lotsReservables.map((l) => l.id)
+    const [autresSurLot, ciblesParLot] = await Promise.all([
+      sql<{ lot: number; lcc: number; kg: number }[]>`
+        SELECT idstock_fil AS lot, idligne_commande_client AS lcc, SUM(quantite)::float8 AS kg FROM reservation_fil
+         WHERE idstock_fil IN ${sql([0, ...lotIds])} AND liberee_le IS NULL AND idasso_fil_lignecmdsst = 0
+           AND idligne_commande_client <> ${ligneId}
+         GROUP BY idstock_fil, idligne_commande_client`,
+      Promise.all(lotsReservables.filter((l) => (l.engagements ?? []).length > 0).map(async (l) => [l.id, await ciblesDuLot(l.id)] as const))
+        .then((x) => new Map(x)),
+    ])
+    const tenuParLot = new Map<number, { lignes: Map<number, number>; stock: { commande: number; kg: number }[] }>()
+    for (const l of lotsReservables) {
+      const lignes = new Map<number, number>()
+      const stock: { commande: number; kg: number }[] = []
+      for (const a of autresSurLot) if (Number(a.lot) === l.id) lignes.set(Number(a.lcc), (lignes.get(Number(a.lcc)) ?? 0) + Number(a.kg))
+      for (const c of ciblesParLot.get(l.id) ?? []) {
+        // Écru of the order → yarn of this lot (its share when the order draws the yarn from several lots).
+        const tout = filPourEcru(c.reste * (c.pct / 100), c.freinte)
+        const fil = (ecru: number) => filPourEcru(ecru * (c.pct / 100), c.freinte) * (tout > 0.005 ? Math.min(1, c.engage / tout) : 1)
+        for (const p of c.parts) if (p.lcc !== ligneId) lignes.set(p.lcc, (lignes.get(p.lcc) ?? 0) + fil(p.reste))
+        if (c.stockAVenir > 0.05) stock.push({ commande: c.commande, kg: round2c(fil(c.stockAVenir)) })
+      }
+      tenuParLot.set(l.id, { lignes, stock })
+    }
+    const lccTenus = [...tenuParLot.values()].flatMap((t) => [...t.lignes.keys()])
+    const [quiTient, articlesTenus] = await Promise.all([reservationsClient(lccTenus), articlesDesLignesClient(lccTenus)])
     const fournisseurs = new Map<number, string>()
     const frsIds = [...new Set(lotsReservables.map((l) => l.fournisseur).filter((x) => x > 0))]
     if (frsIds.length > 0) {
@@ -5417,7 +5463,8 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
         besoin_kg: besoinFil(kgLigne, freinte.taux, pourcentage / 100).besoin,
         // How the need still to cover is obtained (on the écru still to make), for the tooltip.
         calcul: besoins?.fils.find((f) => f.refFil === p.refFil && f.coloriFil === p.coloriFil)?.calcul ?? null,
-        reserve_kg: round2c(mesResas.filter((r) => compteDansReserve(etatReservation(r))).reduce((s, r) => s + r.quantite, 0)),
+        reserve_kg: besoins?.fils.find((f) => f.refFil === p.refFil && f.coloriFil === p.coloriFil)?.reserve
+          ?? round2c(mesResas.filter((r) => compteDansReserve(etatReservation(r))).reduce((s, r) => s + r.quantite, 0)),
         stock_kg: round2c(Math.max(0, stock)),
         stock_libre_kg: round2c(Math.max(0, stock - reserveSurLots)),
         // What is still to cover once rolls and knitting orders are counted (the reservation cap).
@@ -5440,8 +5487,47 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
             // Free for anyone else, and what this line already holds on it.
             dispo: round2c(Math.max(0, l.libre - l.reserveLigne)),
             pour_ligne: l.reserveLigne,
+            // The line's yarn of this lot already in knitting orders of its écru (it receives the pieces).
+            en_tricotage: round2c(enTricotage.filter((t) => t.lot === l.id).reduce((x, t) => x + t.mien, 0)),
+            // What the line can add with nobody losing: the lot's free yarn and what those orders knit for the stock.
+            sans_arbitrage: round2c(Math.max(0, l.libre - l.reserveLigne) + enTricotage.filter((t) => t.lot === l.id).reduce((x, t) => x + t.libre, 0)),
+            // What an arbitration can add: other lines' shares of those orders, and the orders of another écru.
+            prenable: round2c((l.engagements ?? []).filter((e) => !memeEcru(e)).reduce((x, e) => x + e.kg, 0)
+              + enTricotage.filter((t) => t.lot === l.id).reduce((x, t) => x + t.autres, 0)),
+            // Who else holds yarn of the lot (the gauge).
+            repartition: [
+              ...[...(tenuParLot.get(l.id)?.lignes ?? [])].filter(([, kg]) => kg > 0.05).map(([lcc, kg]) => ({
+                type: 'ligne' as const,
+                client_nom: quiTient.clientByLcc.get(lcc) ?? null,
+                commande_numero: quiTient.commandeNumByLcc.get(lcc) ?? null,
+                article: articlesTenus.get(lcc) ?? null,
+                kg: round2c(kg),
+              })),
+              ...(tenuParLot.get(l.id)?.stock ?? []).map((x) => ({ type: 'stock' as const, client_nom: null, commande_numero: x.commande, article: null, kg: x.kg })),
+            ],
+            engagements: (l.engagements ?? []).map((e) => ({
+              commande: e.commande,
+              article: [nomsEcrus.get(e.ecru), nomsColorisEcru.get(e.coloris)].filter((x) => x && x.trim()).join(' - '),
+              kg: round2c(e.kg),
+              meme_ecru: memeEcru(e),
+            })),
           }))
-          .filter((l) => l.dispo > 0 || l.pour_ligne > 0),
+          .filter((l) => l.dispo > 0 || l.pour_ligne > 0 || l.prenable > 0 || l.en_tricotage > 0 || l.sans_arbitrage > 0),
+        // Yarn the line holds in a knitting order that makes no écru share yet (inside reserve_kg).
+        sans_part_kg: besoins?.sansPart.get(k) ?? 0,
+        tricotages: enTricotage
+          .filter((t) => t.refFil === p.refFil && t.coloriFil === p.coloriFil && (t.libre > 0.05 || t.mien > 0.05 || t.autres > 0.05))
+          .map((t) => ({
+            IDstock_fil: t.lot,
+            lot: lotLabel.get(t.lot) || String(t.lot),
+            IDligne_commande_sous_traitant: t.lsst,
+            commande: t.commande,
+            libre: t.libre,
+            pour_ligne: t.mien,
+            autres: t.autres,
+            part_ecru: t.partEcru,
+            recu_ecru: t.recuEcru,
+          })),
         commandes: lignesCmd
           .filter((l) => l.idref_fil === p.refFil && l.idcolori_fil === p.coloriFil)
           .map((l) => {
@@ -5513,8 +5599,69 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
 const fixerReservationBody = z.object({
   IDref_fil_commande: z.number().int().positive().optional(),
   IDstock_fil: z.number().int().positive().optional(),
+  // With IDstock_fil: the yarn of that lot held by this knitting line (of the line's écru).
+  IDligne_commande_sous_traitant: z.number().int().positive().optional(),
   kg: z.number().finite().min(0),
+  // The person saw what the knitting orders holding the lot lose, and validated it.
+  arbitrage: z.boolean().optional(),
 }).refine((b) => !!b.IDref_fil_commande !== !!b.IDstock_fil, { message: 'IDref_fil_commande ou IDstock_fil' })
+
+/** A lot's yarn held by knitting orders of another écru, taken for a client line (decision Vincent
+ *  2026-11-13, lib/engagement-tricotage.ts): the plan with the words the dialog prints. */
+async function arbitrageLot(p: { lot: number; ligneId: number; kg: number; ecruRefId: number; ecruColoris: number[] }): Promise<{
+  libre: number
+  actuel: number
+  manque: number
+  plan: ReturnType<typeof planArbitrage> | null
+  cibles: (CibleArbitrage & { ecru: number; coloris: number })[]
+}> {
+  const sql = mpsPg()
+  const [lot] = await sql<{ ref: number; col: number; magasin: number }[]>`
+    SELECT idref_fil AS ref, idcolori_fil AS col, idmagasin AS magasin FROM stock_fil WHERE idstock_fil = ${p.lot}`
+  if (!lot) return { libre: 0, actuel: 0, manque: 0, plan: null, cibles: [] }
+  const [l] = (await lotsLibres({ magasin: Number(lot.magasin) || 0, ligneClient: p.ligneId,
+    paires: [{ refFil: Number(lot.ref), coloriFil: Number(lot.col), pourcentage: 100 }] })).filter((x) => x.id === p.lot)
+  const [{ kg: actuel }] = await sql<{ kg: number }[]>`
+    SELECT COALESCE(SUM(quantite), 0)::float8 AS kg FROM reservation_fil
+     WHERE idligne_commande_client = ${p.ligneId} AND idstock_fil = ${p.lot} AND liberee_le IS NULL AND idasso_fil_lignecmdsst = 0`
+  const libre = round2c(Math.max(0, (l?.libre ?? 0) - (l?.reserveLigne ?? 0)))
+  const manque = round2c(p.kg - Number(actuel) - libre)
+  if (!(manque > 0.005)) return { libre, actuel: Number(actuel), manque: 0, plan: null, cibles: [] }
+  const cibles = (await ciblesDuLot(p.lot)).filter((c) => !(c.ecru === p.ecruRefId && (p.ecruColoris.length === 0 || p.ecruColoris.includes(c.coloris))))
+  // Two centikilos more than asked: each weight is rounded to the centikilo on its way.
+  return { libre, actuel: Number(actuel), manque, plan: planArbitrage(manque + 0.02, cibles), cibles }
+}
+
+/** The effects of an arbitration, with who loses what, for the validation dialog. */
+async function effetsLisibles(effets: readonly EffetArbitrage[], cibles: readonly (CibleArbitrage & { ecru: number; coloris: number })[]) {
+  const lccs = effets.flatMap((e) => e.lignes.map((l) => l.lcc))
+  const [{ clientByLcc, commandeNumByLcc }, articles, nomsColoris] = await Promise.all([
+    reservationsClient(lccs),
+    articlesDesLignesClient(lccs),
+    resolveEcruColoris(cibles.map((c) => c.coloris)),
+  ])
+  const out = []
+  for (const e of effets) {
+    const c = cibles.find((x) => x.lsst === e.lsst)
+    out.push({
+      commande: e.commande,
+      article: c ? [await resolveEcruRefLabel(c.ecru), nomsColoris.get(c.coloris)].filter((x) => x && x.trim()).join(' - ') : '',
+      de: e.deQuantite,
+      a: e.aQuantite,
+      interne: e.interne,
+      fil: e.fil,
+      stock: e.stock,
+      lignes: e.lignes.map((l) => ({
+        client_nom: clientByLcc.get(l.lcc) ?? null,
+        commande_numero: commandeNumByLcc.get(l.lcc) ?? null,
+        article: articles.get(l.lcc) ?? null,
+        delai: c?.parts.find((x) => x.lcc === l.lcc)?.delai || null,
+        perd: l.perd,
+      })),
+    })
+  }
+  return out
+}
 
 commandesClientRouter.put('/:id/lignes/:ligneId/fil/reservations/source', async (req: Request, res: Response) => {
   try {
@@ -5541,16 +5688,131 @@ commandesClientRouter.put('/:id/lignes/:ligneId/fil/reservations/source', async 
       res.status(400).json({ error: 'fil_hors_composition', message: "Ce fil n'entre pas dans la composition de la ligne." })
       return
     }
+    const par = req.userId ? await nomUtilisateur(req.userId) : null
+    // Yarn a knitting order of the line's écru holds: the line takes it there and will receive the
+    // pieces (lib/engagement-tricotage.ts). Beyond what the order knits for the stock, another line
+    // gives up part of its share: validated first.
+    if (parsed.data.IDstock_fil && parsed.data.IDligne_commande_sous_traitant) {
+      const { ecruRefId, ecruColoris } = await resolveTricoEcru(ctx)
+      const r = await fixerFilEnTricotage({
+        ligne: ligneId, lsst: parsed.data.IDligne_commande_sous_traitant, lot: parsed.data.IDstock_fil, kg: parsed.data.kg,
+        max: besoin.encorePossible, arbitrage: parsed.data.arbitrage === true, parId: req.userId ?? 0, par,
+      })
+      if (r.arbitrage) {
+        const fmt = (x: number) => x.toLocaleString('fr-FR', { maximumFractionDigits: 1 })
+        res.status(409).json({
+          error: 'arbitrage_requis',
+          message: `Cette commande de tricotage n'a que ${fmt(r.arbitrage.libre)} kg de ce fil pour le stock : ${fmt(r.arbitrage.kg)} kg sont à reprendre à une autre ligne client.`,
+          arbitrage: {
+            libre: r.arbitrage.libre, kg: r.arbitrage.kg,
+            effets: await effetsLisibles(r.arbitrage.effets, r.arbitrage.cibles.map((c) => ({ ...c, ecru: ecruRefId, coloris: ecruColoris[0] ?? 0 }))),
+          },
+        })
+        return
+      }
+      res.json({ ok: true })
+      return
+    }
+    // One gesture per lot, wherever its yarn is (Vincent 2026-11-13: the screen shows lots, nothing
+    // else): `kg` = what the line holds of the lot, in stock and in the knitting orders of its écru
+    // together. More is taken, in this order: what those orders knit for the stock (the line then
+    // receives the pieces), the lot's free yarn, and beyond, by arbitration — another client line's
+    // share of those orders, then the orders of another écru, which knit less. Nothing is written
+    // before the person validates what an arbitration costs. Less: the free yarn first.
+    if (parsed.data.IDstock_fil) {
+      const lot = parsed.data.IDstock_fil
+      const { ecruRefId, ecruColoris } = await resolveTricoEcru(ctx)
+      const fmt = (x: number) => x.toLocaleString('fr-FR', { maximumFractionDigits: 1 })
+      const qui = { parId: req.userId ?? 0, par }
+      const [etat, tricots] = await Promise.all([
+        arbitrageLot({ lot, ligneId, kg: 0, ecruRefId, ecruColoris }),
+        sourcesTricotage({ ecru: ecruRefId, coloris: ecruColoris, ligne: ligneId }).then((xs) => xs.filter((x) => x.lot === lot)),
+      ])
+      const tenu = round2c(etat.actuel + tricots.reduce((x, t) => x + t.mien, 0))
+      const delta = round2c(parsed.data.kg - tenu)
+      if (delta < -0.005) {
+        let moins = -delta
+        const duLot = Math.min(moins, etat.actuel)
+        if (duLot > 0.005) {
+          await fixerReservation({ ligneClient: ligneId, source: { kind: 'lot', id: lot }, kg: round2c(etat.actuel - duLot), ...qui })
+          moins = round2c(moins - duLot)
+        }
+        for (const t of [...tricots].sort((a, b) => b.mien - a.mien)) {
+          if (!(moins > 0.005)) break
+          const x = Math.min(moins, t.mien)
+          await fixerFilEnTricotage({ ligne: ligneId, lsst: t.lsst, lot, kg: round2c(t.mien - x), arbitrage: false, ...qui })
+          moins = round2c(moins - x)
+        }
+      } else if (delta > 0.005) {
+        if (delta > besoin.encorePossible + 0.05) {
+          res.status(409).json({ error: 'au_dela_du_besoin', message: `La ligne ne peut réserver que ${fmt(Math.max(0, besoin.encorePossible))} kg de plus de ce fil.` })
+          return
+        }
+        let reste = delta
+        const prend = (max: number) => { const x = round2c(Math.max(0, Math.min(reste, max))); reste = round2c(reste - x); return x }
+        const prises = tricots.map((t) => ({ t, stock: prend(t.libre), autres: 0 }))
+        const duLot = prend(etat.libre)
+        for (const p of prises) p.autres = prend(p.t.autres)
+        const autreEcru = reste
+        const planLot = autreEcru > 0.005
+          ? await arbitrageLot({ lot, ligneId, kg: round2c(etat.actuel + duLot + autreEcru), ecruRefId, ecruColoris })
+          : null
+        if (planLot && !planLot.plan?.ok) {
+          const possible = round2c(delta - autreEcru + (planLot.plan?.libere ?? 0))
+          res.status(409).json({ error: 'libre_insuffisant', message: `Ce lot ne peut donner que ${fmt(possible)} kg de plus à la ligne.` })
+          return
+        }
+        const arbitrages = prises.filter((p) => p.autres > 0.005)
+        if ((arbitrages.length > 0 || planLot) && !parsed.data.arbitrage) {
+          const effets = []
+          for (const p of arbitrages) {
+            // Beyond what the order knits for the stock: it answers with the plan, nothing written.
+            const r = await fixerFilEnTricotage({ ligne: ligneId, lsst: p.t.lsst, lot, kg: round2c(p.t.mien + p.stock + p.autres), arbitrage: false, ...qui })
+            if (r.arbitrage) effets.push(...await effetsLisibles(r.arbitrage.effets, r.arbitrage.cibles.map((c) => ({ ...c, ecru: ecruRefId, coloris: ecruColoris[0] ?? 0 }))))
+          }
+          if (planLot?.plan) effets.push(...await effetsLisibles(planLot.plan.effets, planLot.cibles))
+          const libre = round2c(delta - autreEcru - arbitrages.reduce((x, p) => x + p.autres, 0))
+          res.status(409).json({
+            error: 'arbitrage_requis',
+            message: `Ce lot n'a que ${fmt(libre)} kg que personne ne tient : ${fmt(delta - libre)} kg sont à reprendre.`,
+            arbitrage: { libre, kg: round2c(delta - libre), effets },
+          })
+          return
+        }
+        for (const p of prises) {
+          if (!(p.stock + p.autres > 0.005)) continue
+          await fixerFilEnTricotage({ ligne: ligneId, lsst: p.t.lsst, lot, kg: round2c(p.t.mien + p.stock + p.autres), arbitrage: true, ...qui })
+        }
+        if (planLot?.plan) {
+          await appliquerArbitrage(planLot.plan.effets)
+          const numero = (await reservationsClient([ligneId])).commandeNumByLcc.get(ligneId)
+          for (const e of planLot.plan.effets) {
+            await noterCommandeSst({
+              idcommande: e.commande,
+              evenement: 'etat',
+              detail: `Quantité ramenée de ${fmt(e.deQuantite)} à ${fmt(e.aQuantite)} kg : ${fmt(e.fil)} kg de fil repris pour la commande client ${numero ?? ''}`.trim(),
+              par: req.userId ? { id: req.userId, nom: par ?? '' } : null,
+            })
+          }
+        }
+        if (duLot + autreEcru > 0.005) {
+          await fixerReservation({ ligneClient: ligneId, source: { kind: 'lot', id: lot }, kg: round2c(etat.actuel + duLot + autreEcru), max: besoin.encorePossible, ...qui })
+        }
+      }
+      res.json({ ok: true })
+      return
+    }
     await fixerReservation({
       ligneClient: ligneId,
-      source: parsed.data.IDstock_fil ? { kind: 'lot', id: parsed.data.IDstock_fil } : { kind: 'commande', id: parsed.data.IDref_fil_commande! },
+      source: { kind: 'commande', id: parsed.data.IDref_fil_commande! },
       kg: parsed.data.kg,
       max: besoin.encorePossible,
       parId: req.userId ?? 0,
-      par: req.userId ? await nomUtilisateur(req.userId) : null,
+      par,
     })
     res.json({ ok: true })
   } catch (err) {
+    if (err instanceof RefusArbitrage) { res.status(409).json({ error: err.code, message: err.message }); return }
     if (err instanceof RefusReservation) { res.status(409).json({ error: err.code, message: err.message }); return }
     console.error('Error setting a yarn reservation:', err)
     res.status(500).json({ error: 'Internal server error' })

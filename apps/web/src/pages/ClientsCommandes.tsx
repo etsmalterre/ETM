@@ -84,6 +84,7 @@ import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/compone
 import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
 import { FilEnStockZone, FilLigneTab, filLigneQueryKey, tricoteursPrets, useFilLigne, type FilPayload } from '@/components/fils/FilLigneTab'
 import { AffecteGauge, ChoixQuantite, RepartitionCommande, COULEURS_AUTRES_LIGNES, type PartCommande } from '@/components/commandes/ReservationParts'
+import { ReservationsTricotage, type LectureTricotage } from '@/components/commandes/ReservationsTricotage'
 import { EcruLigneZone, PieceEcruLigne, PiecesEcruCarte, lieuxAEnnoblir, matiereEcruQueryKey, useMatiereEcru, type LieuEnnoblisseur } from '@/components/commandes/EcruLigneZone'
 import { BoutonsCommande, ZoneLigne } from '@/components/commandes/ZonesLigne'
 import { LancementLabel, PlanifierBouton, type EtapeLancement } from '@/components/commandes/LancementLigne'
@@ -393,6 +394,8 @@ interface SupplyTricoRow {
   quantite: number
   /** « Toute la commande »: every knitted piece goes to this line (API lib/repartition-tricotage.ts) */
   toute_commande: boolean
+  /** the knitter brings the yarn: the only knitting orders a share is typed on (API lib/parts-tricotage.ts) */
+  entree?: boolean
   /** the other client lines' reservations on this knitting order */
   autres_reservations: { client_nom: string | null; commande_numero: number | null; article?: string | null; poids: number; toute_commande: boolean }[]
 }
@@ -2735,6 +2738,8 @@ function AffectationDrawer({
   const [ennoTarget, setEnnoTarget] = useState<SupplyEnnoRow | null>(null)
   // Tricotage row clicked → adjust this line's planning allocation on that knitting order.
   const [tricoTarget, setTricoTarget] = useState<SupplyTricoRow | null>(null)
+  // A knitting order knitting our yarn: its reservations, read only (the share is the yarn held there).
+  const [tricoVue, setTricoVue] = useState<SupplyTricoRow | null>(null)
   // "Nouvelle commande" on a location row → open the create-order modal scoped to it.
   const [createEnnoLocation, setCreateEnnoLocation] = useState<LieuEnnoblisseur | null>(null)
   // "Nouvelle commande" on a stock-fil location band → knit-order modal
@@ -3130,9 +3135,11 @@ function AffectationDrawer({
               rows={supply?.tricotage ?? []}
               emptyLabel="Aucune commande tricotage en cours"
               emptyIcon={KnitIcon}
-              // A knitting order's share of the line is set here, every line kind (the Ennoblissement
-              // selector offers available écru only since 2026-10-29); the launch already fixes it.
-              onRowClick={setTricoTarget}
+              // A share is typed on a knitting order only when the knitter brings the yarn (an entry
+              // point, Vincent 2026-11-13). On an order knitting our yarn the line's share is the yarn it
+              // holds there (reserved above, on the lot « en tricotage »): the click shows who the order
+              // knits for, read only.
+              onRowClick={(r) => (r.entree ? setTricoTarget(r) : setTricoVue(r))}
               columns={[
                 { key: 'no', label: 'N°', align: 'left', render: (r) => {
                   // The yarn this order took from the line's reservation (it carries the matter now).
@@ -3228,6 +3235,9 @@ function AffectationDrawer({
           onSuccess()
         }}
       />
+    )}
+    {tricoVue && (
+      <ReservationsTricotageDialog row={tricoVue} ligneId={ligne.IDligne_commande_client} onClose={() => setTricoVue(null)} />
     )}
     {tricoTarget && (
       <TricotageAffectationDialog
@@ -5124,6 +5134,61 @@ function EnnoblissementAffectationDialog({
               Enregistrer
             </Button>
           </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── Tricotage: the reservations of a knitting order, read only ──
+// Click a knitting order that knits OUR yarn (Vincent 2026-11-13): who it knits for — each client line
+// holding a share, what it received, what is still to come, the stock — the same table as the order's
+// « Réservations » tab on Sous-traitants › Tricotage, this line's row standing out. Nothing is set
+// here: a line's share is the yarn it holds in the order (« Réserver du fil », lot « en tricotage »).
+// §18.D banded dialog.
+
+function ReservationsTricotageDialog({ row, ligneId, onClose }: { row: SupplyTricoRow; ligneId: number; onClose: () => void }) {
+  const { data, isLoading, isError } = useQuery<{ lecture: LectureTricotage | null }>({
+    queryKey: ['commande-sst-reservations', row.commande_id, row.id],
+    queryFn: () => apiFetch(`/commandes-sous-traitant/${row.commande_id}/lignes/${row.id}/reservations`),
+    staleTime: 0,
+  })
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-4xl w-[94vw] p-0 border-0 bg-primary overflow-hidden max-h-[90dvh] flex flex-col">
+        <div className="flex-shrink-0 flex items-center gap-2.5 rounded-t-lg border-b-2 border-gold bg-primary px-4 py-2.5">
+          <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
+            <KnitIcon className="h-[18px] w-[18px]" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">Réservations — Commande N° {row.commande_id}</h2>
+            <p className="text-xs text-white/70 truncate">
+              {[row.sous_traitant_nom, row.date_commande ? formatHfsqlDate(row.date_commande) : null, `${fmtNum(row.quantite, 1)} kg`,
+                row.date_livraison ? `délai ${formatHfsqlDate(row.date_livraison)}` : null].filter(Boolean).join(' · ')}
+            </p>
+          </div>
+          <Button variant="ghost" size="icon" title="Fermer" onClick={onClose}
+            className="h-8 w-8 flex-shrink-0 text-white/80 hover:bg-white/15 hover:text-white">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto bg-zinc-100 p-4 space-y-2 scrollbar-transparent">
+          {isLoading && <div className="flex items-center justify-center py-10"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>}
+          {isError && (
+            <div className="flex flex-col items-center justify-center py-8 text-destructive">
+              <AlertCircle className="h-6 w-6 mb-2" />
+              <p className="text-sm">Erreur de chargement</p>
+            </div>
+          )}
+          {!isLoading && !isError && <ReservationsTricotage lecture={data?.lecture ?? null} ligneCourante={ligneId} />}
+        </div>
+        <div className="flex-shrink-0 flex items-center gap-3 rounded-b-lg border-t border-border/60 bg-zinc-200 px-4 py-3">
+          <p className="min-w-0 text-xs text-muted-foreground">
+            La part d'une ligne est le fil qu'elle tient dans la commande : elle se règle dans « Fil réservé », sur le lot en tricotage.
+          </p>
+          <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+            <Button variant="outline" onClick={onClose}>Fermer</Button>
           </div>
         </div>
       </DialogContent>

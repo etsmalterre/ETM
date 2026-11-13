@@ -51,6 +51,8 @@ import { recalcLignePrix, hasTariffData, calcTarifSSTBreakdown, type PrixBreakdo
 import { resolveSearch, type SearchHits } from '../lib/sst-search-cache.js'
 import { consumedEcruIds, deleteFiniSources, insertFiniSources, loadFiniSources, probeFiniSourceTable, FiniSourceUnavailableError } from '../lib/fini-sources.js'
 import { reserverPiecesTricotees } from '../lib/repartition-tricotage.js'
+import { lectureTricotage } from '../lib/engagement-tricotage.js'
+import { convertirPartsEnFil } from '../lib/parts-tricotage.js'
 import { reservationsClient } from '../lib/reservations-client.js'
 import { horsRefParEcru, horsRefParFini, type FilHorsRef } from '../lib/hors-ref-trm.js'
 import {
@@ -5986,6 +5988,9 @@ interface StockFilLite {
   colori_reference?: string | null
   fournisseur_nom?: string | null
   magasin_nom?: string | null
+  /** Yarn kg of this lot the line still needs: what it has left to knit × the yarn's share
+   *  ÷ (1 − freinte) (lib/engagement-tricotage.ts). 0 on a lot that does not feed the line. */
+  besoin_kg?: number
   /** Sum of asso_fil_lignecmdsst.quantite for (this lot, this line) — kg
    *  of yarn currently affected from this lot to the line. 0 means not
    *  affected. Used by the Stock fil tab to render the "affecté X kg"
@@ -6244,6 +6249,49 @@ interface CompositionPairLite {
   colori_reference: string | null
 }
 
+/** A knitting line read whole for the drawer's « Réservations » tab: the client lines holding a
+ *  share of it, what each already received, what goes to stock (lib/engagement-tricotage.ts). */
+interface LectureTricotagePayload {
+  quantite: number
+  tricote: number
+  reste: number
+  chez_tricoteur: number
+  a_venir: number
+  sur_promesse: number
+  parts: { lcc: number; client_nom: string | null; commande_numero: number | null; article: string | null; delai: string | null; reserve: number; recu: number; reste: number; toute: boolean }[]
+  autres: { lcc: number; client_nom: string | null; commande_numero: number | null; article: string | null; don: boolean; recu: number }[]
+  stock: { recu: number; a_venir: number }
+}
+
+async function lecturePourTiroir(ligneId: number): Promise<{ lecture: LectureTricotagePayload | null; besoinParLot: Map<number, number> }> {
+  const l = await lectureTricotage(ligneId)
+  if (!l) return { lecture: null, besoinParLot: new Map() }
+  const lccs = [...l.parts.map((p) => p.lcc), ...l.autres.map((a) => a.lcc)].filter((x) => x > 0)
+  // commandes-client.ts imports this file: its label helper is loaded when the route runs, not when
+  // the module is evaluated.
+  const { articlesDesLignesClient } = await import('./commandes-client.js')
+  const [{ clientByLcc, commandeNumByLcc }, articles] = await Promise.all([reservationsClient(lccs), articlesDesLignesClient(lccs)])
+  const qui = (lcc: number) => ({
+    client_nom: clientByLcc.get(lcc) ?? null,
+    commande_numero: commandeNumByLcc.get(lcc) ?? null,
+    article: articles.get(lcc) ?? null,
+  })
+  return {
+    besoinParLot: l.engagement,
+    lecture: {
+      quantite: l.ligne.quantite,
+      tricote: l.ligne.tricote,
+      reste: l.ligne.reste,
+      chez_tricoteur: l.chezTricoteur,
+      a_venir: l.aVenir,
+      sur_promesse: l.surPromesse,
+      parts: l.parts.map((p) => ({ lcc: p.lcc, ...qui(p.lcc), delai: /^\d{8}$/.test(p.delai) ? p.delai : null, reserve: p.reserve, recu: p.recu, reste: p.reste, toute: p.toute })),
+      autres: l.autres.map((a) => ({ lcc: a.lcc, ...qui(a.lcc), don: a.don, recu: a.recu })),
+      stock: { recu: l.stock.recu, a_venir: l.stock.aVenir },
+    },
+  }
+}
+
 async function fetchPiecesFilPayload(ctx: TricoteurLineContext, ligneId: number): Promise<{
   ecruProduced: StockEcruLite[]
   stockFil: StockFilLite[]
@@ -6259,6 +6307,8 @@ async function fetchPiecesFilPayload(ctx: TricoteurLineContext, ligneId: number)
    *  to enforce coverage on the Stock fil tab: Affecter / Finir le lot
    *  only enable when the user has selected at least one lot per pair. */
   compositionPairs: CompositionPairLite[]
+  /** Who the line knits for and what it still has to knit (lib/engagement-tricotage.ts). */
+  lecture: LectureTricotagePayload | null
   /** The line has no coloris, so no composition to cover (LIVA #1215) —
    *  the drawer asks for one instead of offering yarn. */
   coloris_manquant: boolean
@@ -6359,6 +6409,7 @@ async function fetchPiecesFilPayload(ctx: TricoteurLineContext, ligneId: number)
         targetQtyKg: Number(lineQtyRow[0]?.quantite) || 0,
         affectations: await loadAffectationsForLine(ligneId),
         compositionPairs: [],
+        lecture: (await lecturePourTiroir(ligneId)).lecture,
         coloris_manquant: !(ctx.IDcolori_ecru > 0),
       }
     }
@@ -6445,9 +6496,11 @@ async function fetchPiecesFilPayload(ctx: TricoteurLineContext, ligneId: number)
   for (const a of affectations) {
     affecteByLot.set(a.IDstock_fil, (affecteByLot.get(a.IDstock_fil) ?? 0) + a.quantite)
   }
+  const { lecture, besoinParLot } = await lecturePourTiroir(ligneId)
   const stockFilWithAffecte = stockFil.map((r) => ({
     ...r,
     affecte_kg: affecteByLot.get(r.IDstock_fil) ?? 0,
+    besoin_kg: besoinParLot.get(Number(r.IDstock_fil)) ?? 0,
   }))
 
   // Resolve composition-pair labels. Independent lookup (the pair's yarn
@@ -6487,9 +6540,29 @@ async function fetchPiecesFilPayload(ctx: TricoteurLineContext, ligneId: number)
     targetQtyKg,
     affectations,
     compositionPairs,
+    lecture,
     coloris_manquant: false,
   }
 }
+
+// Who a knitting line knits for, alone: the « Réservations » window of Clients › Commandes (the
+// drawer's own tab reads it inside pieces-fil).
+commandesSousTraitantRouter.get(
+  '/:commandeId/lignes/:ligneId/reservations',
+  async (req: Request, res: Response) => {
+    try {
+      const commandeId = parseInt(req.params.commandeId, 10)
+      const ligneId = parseInt(req.params.ligneId, 10)
+      if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+      const ctx = await loadTricoteurLineContext(commandeId, ligneId)
+      if (!ctx) { res.status(404).json({ error: 'Line not found, not a tricoteur line, or does not belong to commande' }); return }
+      res.json({ lecture: (await lecturePourTiroir(ligneId)).lecture })
+    } catch (err) {
+      console.error('Error reading knitting line reservations:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  },
+)
 
 commandesSousTraitantRouter.get(
   '/:commandeId/lignes/:ligneId/pieces-fil',
@@ -6601,6 +6674,9 @@ commandesSousTraitantRouter.post(
            VALUES (${entry.IDstock_fil}, ${ligneId}, ${n(entry.quantite)})`,
         )
       }
+      // The line now knits OUR yarn: a share that was typed on it (it had no lot yet) becomes yarn
+      // it holds for the client line (lib/parts-tricotage.ts).
+      await convertirPartsEnFil([ligneId], true)
 
       res.json({
         ok: true,
@@ -6644,6 +6720,10 @@ commandesSousTraitantRouter.delete(
       await query(
         `DELETE FROM asso_fil_lignecmdsst WHERE IDligne_commande_sous_traitant = ${ligneId}`,
       )
+      // The yarn the order held for client lines goes back to its lots, still reserved to them.
+      await mpsPg()`
+        UPDATE reservation_fil SET idligne_commande_sous_traitant = 0, idasso_fil_lignecmdsst = 0
+         WHERE idligne_commande_sous_traitant = ${ligneId} AND liberee_le IS NULL`
 
       res.json({ ok: true, payload: await fetchPiecesFilPayload(ctx, ligneId) })
     } catch (err) {

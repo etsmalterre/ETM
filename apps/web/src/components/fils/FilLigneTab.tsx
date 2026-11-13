@@ -70,6 +70,38 @@ interface LotReservable {
   dispo: number
   /** what this line holds on it */
   pour_ligne: number
+  /** the line's yarn of this lot already in knitting orders of its écru (it receives the pieces) */
+  en_tricotage?: number
+  /** what the line can add with nobody losing: the lot's free yarn + what those orders knit for the stock */
+  sans_arbitrage?: number
+  /** what an arbitration can add: other lines' shares of those orders, and the orders of another écru,
+   *  which then knit less (API lib/engagement-tricotage.ts) */
+  prenable?: number
+  /** who else holds yarn of the lot: client lines, and knitting « pour le stock » (the gauge) */
+  repartition?: PartLot[]
+  /** the knitting orders holding yarn of the lot */
+  engagements?: EngagementLot[]
+}
+
+interface EngagementLot { commande: number; article: string; kg: number; meme_ecru: boolean }
+interface PartLot { type: 'ligne' | 'stock'; client_nom: string | null; commande_numero: number | null; article: string | null; kg: number }
+
+/** What an arbitration costs (API 409 `arbitrage_requis`): each knitting order knits less, some client
+ *  lines lose a share of it. */
+interface PlanArbitrage {
+  libre: number
+  kg: number
+  effets: {
+    commande: number
+    article: string
+    de: number
+    a: number
+    fil: number
+    stock: number
+    lignes: { client_nom: string | null; commande_numero: number | null; article: string | null; delai: string | null; perd: number }[]
+    /** the order knits as much: the yarn changes hands between two client lines of it */
+    interne?: boolean
+  }[]
 }
 
 export interface FilYarn {
@@ -87,6 +119,24 @@ export interface FilYarn {
   calcul: { kg_ecru: number; fil: number; avec_marge: number; besoin: number } | null
   lots: LotReservable[]
   commandes: CommandeFilLigne[]
+  /** the yarn knitting orders of the line's écru hold, lot by lot: reserved there, the line receives
+   *  the pieces (API lib/engagement-tricotage.ts) */
+  tricotages?: {
+    IDstock_fil: number
+    lot: string
+    IDligne_commande_sous_traitant: number
+    commande: number
+    /** what the order knits for the stock, in yarn: free for the line */
+    libre: number
+    pour_ligne: number
+    /** what other client lines hold there: theirs unless an arbitration is validated */
+    autres: number
+    /** the line's share of that order (écru kg) and the pieces of it already received */
+    part_ecru?: number
+    recu_ecru?: number
+  }[]
+  /** yarn the line holds in a knitting order that makes no share yet (another yarn is missing there) */
+  sans_part_kg?: number
 }
 
 interface Reservation {
@@ -135,6 +185,14 @@ interface Source {
   /** free for anyone else */
   libre: number
   pour_ligne: number
+  /** what an arbitration can add on a lot (0 on a supplier order) */
+  prenable: number
+  engagements: EngagementLot[]
+  /** inside pour_ligne: the line's yarn of the lot already in knitting orders (not « en stock ») */
+  enTricotage: number
+  /** the lot's free yarn, and who else holds yarn of it (the gauge) */
+  libreLot: number
+  repartition: PartLot[]
 }
 
 
@@ -167,8 +225,14 @@ function sourcesDuFil(y: FilYarn): SourceFil[] {
       fournisseur: l.fournisseur,
       date: l.date_entree ? formatHfsqlDate(l.date_entree) : '—',
       total: l.stock,
-      libre: l.dispo,
-      pour_ligne: l.pour_ligne,
+      // One row per lot: its yarn in stock and in knitting orders of the line's écru together.
+      libre: l.sans_arbitrage ?? l.dispo,
+      pour_ligne: l.pour_ligne + (l.en_tricotage ?? 0),
+      prenable: l.prenable ?? 0,
+      engagements: l.engagements ?? [],
+      enTricotage: l.en_tricotage ?? 0,
+      libreLot: l.dispo,
+      repartition: l.repartition ?? [],
     })),
     ...y.commandes
       .filter((c) => c.libre > 0 || c.pour_ligne > 0)
@@ -187,6 +251,11 @@ function sourcesDuFil(y: FilYarn): SourceFil[] {
         totalTitre: `${fmtNum(c.quantite, 1)} kg commandés, ${fmtNum(c.recu, 1)} kg reçus`,
         libre: c.libre,
         pour_ligne: c.pour_ligne,
+        prenable: 0,
+        engagements: [],
+        enTricotage: 0,
+        libreLot: c.libre,
+        repartition: [],
       })),
   ]
 }
@@ -254,10 +323,11 @@ type Forme = 'lot' | 'commande'
 
 const FORME = {
   lot: {
-    titre: 'Fil réservé en stock',
+    // In stock or already in a knitting order: the line's yarn, wherever it is (Vincent 2026-11-13).
+    titre: 'Fil réservé',
     libelle: 'En stock',
     reserverTitre: 'Cliquer pour réserver ou retirer des lots en stock chez les tricoteurs',
-    selecteur: 'Réserver du fil en stock',
+    selecteur: 'Réserver du fil',
     selecteurSous: 'lots chez les tricoteurs',
     rien: 'Rien à tricoter',
     figees: ['consommee'] as EtatReservation[],
@@ -298,10 +368,10 @@ function FilFormeZone({ commandeId, ligneId, soldee, forme }: { commandeId: numb
   else {
     const kgAffecte = data.kg_affecte ?? 0
     const tenues = yarns.flatMap(sourcesDuFil).filter((s) => s.kind === forme && s.pour_ligne > 0)
-    // Yarn a knitting order took is carried by that order (bottom zone, its lots in the row's hover):
-    // never listed again up here (Vincent 2026-10-29, top = what still waits, bottom = the orders).
+    // The zone shows the line's matter for as long as it is yarn (Vincent 2026-11-13): a knitting
+    // order only transforms it. The yarn the line holds in an order stays listed here, « en
+    // tricotage », and goes down as the pieces are delivered (they then show as tombé de métier).
     const figees = forme === 'lot' ? [] : (data.reservations ?? []).filter((r) => F.figees.includes(r.etat))
-    const partiAuTricotage = forme === 'lot' && (data.reservations ?? []).some((r) => r.etat === 'consommee')
     // On order, the need is what the stock leaves: nothing to order when the lots cover it.
     const besoinDe = forme === 'lot' ? besoinTotal : (y: FilYarn) => Math.max(0, besoinTotal(y) - enStock(y))
     // Nothing of this form to hold (need 0, nothing held): one sober line in the same clickable block,
@@ -313,12 +383,11 @@ function FilFormeZone({ commandeId, ligneId, soldee, forme }: { commandeId: numb
     }
     contenu = (
       <>
-        <BesoinsFil yarns={yarns} data={data} kgAffecte={kgAffecte} libelle={F.libelle}
+        <BesoinsFil yarns={yarns} data={data} kgAffecte={kgAffecte}
           tenu={forme === 'lot' ? enStock : enCommande} besoinDe={besoinDe}
           details={(y) => tenues.filter((t) => t.yarn === y)}
           vide={!rienAReserver ? undefined
             // No yarn need at all: the fini / écru already held covers the line, whatever the form.
-            : partiAuTricotage && yarns.every((y) => besoinTotal(y) <= 0.05) ? 'Rien à tricoter : le fil réservé est parti dans la commande de tricotage'
             : yarns.every((y) => besoinTotal(y) <= 0.05) ? `${forme === 'lot' ? 'Rien à tricoter' : 'Rien à commander'} : la matière déjà réservée couvre la ligne`
             : F.rien}
           onClick={soldee ? undefined : () => setSelecteur(true)} titre={F.reserverTitre} />
@@ -762,24 +831,30 @@ function ReservationCommandeFilDialog({ data, yarn, commande: c, commandeId, lig
   )
 }
 
-/** What each yarn of the line still needs — the whole line has its matter only when all are covered.
- *  `tenu` / `besoinDe` = what counts as held / needed for this form; `details` = the sources held, shown
- *  as a count only (Vincent 2026-10-28, « on simplifie tout »: which ones is a click away); `onClick`
- *  makes the whole block the way to reserve (hover: gold edge + pencil). */
-function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, vide, onClick, titre, libelle = 'Réservé' }: {
+/** The line's reserved yarn, as simply as it can be said (Vincent 2026-11-13): one row per yarn lot
+ *  the line holds — in stock or already in a knitting order, the same matter — with its kg, and at the
+ *  right what that yarn makes, in the line's unit (« potentiel »: the scarcest yarn of the recipe
+ *  decides, after the freinte). A yarn still to reserve adds one muted row with what is missing (the
+ *  calculation in its hover). `onClick` makes the whole block the way to reserve (hover: gold edge +
+ *  pencil); `vide` = nothing to hold: one sober line. */
+function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, vide, onClick, titre }: {
   yarns: FilYarn[]
   data: FilPayload
   kgAffecte: number
   tenu?: (y: FilYarn) => number
-  /** the need shown (on order: what the stock leaves); default the yarn's whole need */
+  /** the need shown; default the yarn's whole need */
   besoinDe?: (y: FilYarn) => number
+  /** the lots the line holds (their yarn in stock and in knitting together) */
   details?: (y: FilYarn) => SourceFil[]
-  /** nothing of this form to hold: this one line instead of the yarns */
+  /** nothing to hold: this one line instead of the yarns */
   vide?: string
   onClick?: () => void
   titre?: string
-  libelle?: string
 }) {
+  const lotsDe = (y: FilYarn) => details?.(y) ?? []
+  // A fini line reads in Ml (its rendement), a tombé de métier in kg of écru.
+  const metrage = (data.rendement ?? 0) > 0
+  const potentiel = filEnUniteLigne(data, metrage, (y) => lotsDe(y).reduce((x, l) => x + l.pour_ligne, 0))
   return (
     <div
       role={onClick ? 'button' : undefined}
@@ -788,7 +863,7 @@ function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, vide, onC
       onClick={onClick}
       onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } } : undefined}
       className={cn(
-        'group relative rounded-lg border border-border/60 bg-card shadow-sm divide-y divide-border/40 transition-colors',
+        'group relative flex rounded-lg border border-border/60 bg-card shadow-sm transition-colors',
         onClick && 'cursor-pointer hover:border-accent/60 hover:bg-accent/[0.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
       )}
     >
@@ -796,39 +871,53 @@ function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, vide, onC
         <Pencil className="absolute -top-2 -right-2 h-5 w-5 p-1 rounded-full bg-accent text-accent-foreground shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" />
       )}
       {vide && <p className="px-3 py-2.5 text-xs text-muted-foreground">{vide}</p>}
-      {!vide && yarns.map((y) => {
-        // The need (it stays the denominator when the line holds more, up to + 10 %).
-        const aCouvrir = besoinDe ? besoinDe(y) : besoinTotal(y)
-        const tient = tenu ? tenu(y) : y.reserve_kg
-        const couvert = tenu ? tient >= aCouvrir - 0.05 : y.manque_kg <= 0.05
-        // Still held while the line needs none of it (reserved before the launch took the whole
-        // reservation, or the line's quantity went down): yarn blocked for nothing, to release.
-        const enTrop = !!tenu && aCouvrir <= 0.05 && tient > 0.05
-        const pct = Math.round(y.pourcentage * 10) / 10
-        const sources = details?.(y) ?? []
-        return (
-          <div key={`${y.IDref_fil}:${y.IDcolori_fil}`} className="px-2.5 py-2 text-xs">
-            <div className="flex items-center gap-2">
-              <BobineIcon className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
-              <span className="min-w-0 truncate font-medium">{nomDuFil(y)}</span>
-              <span className="flex-shrink-0 text-muted-foreground">
-                · {fmtNum(pct, Number.isInteger(pct) ? 0 : 1)} %
-                {sources.length > 0 && <> · {sources.length} {sources[0].kind === 'lot' ? `lot${sources.length > 1 ? 's' : ''}` : `commande${sources.length > 1 ? 's' : ''}`}</>}
-              </span>
-              <span title={enTrop ? 'La ligne n’a plus besoin de ce fil : cliquez pour le libérer' : undefined}
-                className={cn('ml-auto flex-shrink-0 inline-flex items-center gap-1 tabular-nums',
-                  enTrop ? 'text-amber-700 font-medium' : couvert ? 'text-green-700 font-medium' : 'text-muted-foreground')}>
-                {couvert && !enTrop && <CheckCircle2 className="h-3.5 w-3.5" />}
-                {libelle} {fmtNum(tient, 1)} /{' '}
-                <BesoinFilTooltip yarn={y} data={data} kgAffecte={kgAffecte}>
-                  <span className="underline decoration-dotted decoration-muted-foreground/60 underline-offset-2 cursor-help">{fmtNum(aCouvrir, 1)} kg</span>
-                </BesoinFilTooltip>
-                {enTrop && <span> · en trop</span>}
-              </span>
-            </div>
-          </div>
-        )
-      })}
+      {!vide && (
+        <div className="min-w-0 flex-1 divide-y divide-border/40">
+          {yarns.flatMap((y) => {
+            const aCouvrir = besoinDe ? besoinDe(y) : besoinTotal(y)
+            const tient = tenu ? tenu(y) : y.reserve_kg
+            const reste = Math.max(0, aCouvrir - tient)
+            // Held in stock while the line needs none of it: yarn blocked for nothing, to release.
+            const enTrop = !!tenu && aCouvrir <= 0.05 && tient > 0.05
+            const pct = Math.round(y.pourcentage * 10) / 10
+            const nom = <><span className="min-w-0 truncate font-medium">{nomDuFil(y)}</span>
+              <span className="flex-shrink-0 text-muted-foreground">· {fmtNum(pct, Number.isInteger(pct) ? 0 : 1)} %</span></>
+            const cle = `${y.IDref_fil}:${y.IDcolori_fil}`
+            return [
+              ...lotsDe(y).map((l) => (
+                <div key={`${cle}:${l.kind}:${l.id}`} className="flex items-center gap-2 px-2.5 py-2 text-xs">
+                  <BobineIcon className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
+                  {nom}
+                  <span className="flex-shrink-0 text-muted-foreground">· lot {l.numero}</span>
+                  <span title={enTrop && l.pour_ligne - l.enTricotage > 0.05 ? 'La ligne n’a plus besoin de ce fil : cliquez pour le libérer' : undefined}
+                    className={cn('ml-auto flex-shrink-0 tabular-nums font-medium', enTrop && l.pour_ligne - l.enTricotage > 0.05 && 'text-amber-700')}>
+                    {fmtNum(l.pour_ligne, 1)} kg{enTrop && l.pour_ligne - l.enTricotage > 0.05 ? ' · en trop' : ''}
+                  </span>
+                </div>
+              )),
+              ...(reste > 0.05 ? [(
+                <div key={`${cle}:reste`} className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
+                  <BobineIcon className="h-3.5 w-3.5 flex-shrink-0 opacity-50" />
+                  {nom}
+                  <span className="ml-auto flex-shrink-0 tabular-nums">
+                    reste à réserver{' '}
+                    <BesoinFilTooltip yarn={y} data={data} kgAffecte={kgAffecte}>
+                      <span className="underline decoration-dotted decoration-muted-foreground/60 underline-offset-2 cursor-help">{fmtNum(reste, 1)} kg</span>
+                    </BesoinFilTooltip>
+                  </span>
+                </div>
+              )] : []),
+            ]
+          })}
+        </div>
+      )}
+      {!vide && potentiel > 0.05 && (
+        <div className="flex-shrink-0 flex flex-col items-end justify-center border-l border-border/40 px-3.5 py-2"
+          title="Ce que le fil réservé permet de faire : le fil le plus rare de la recette décide, freinte de tricotage déduite">
+          <span className="text-base font-bold tabular-nums leading-tight">{fmtNum(potentiel, 1)} {metrage ? 'Ml' : 'kg'}</span>
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">potentiel</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -838,7 +927,12 @@ function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, vide, onC
  *  yarn still lacks on that source, within what is free on it — no kilos to type; the kg stay editable
  *  on a ticked row for the rare case. What the line already holds starts ticked: unticking releases it,
  *  so the same screen reserves and corrects. One « Réserver » applies every change (the API's per-source
- *  route, releases first so the need + 10 % cap never refuses a move). §18.D banded. */
+ *  route, releases first so the need + 10 % cap never refuses a move). §18.D banded.
+ *
+ *  A lot whose yarn is held by a knitting order of another écru is listed too (Vincent 2026-11-13):
+ *  taking more than it has free makes that order knit less. Nothing is written before the person has
+ *  seen who loses what and validated it (API 409 `arbitrage_requis`, then the same call with
+ *  `arbitrage: true`). */
 function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onDone, onClose }: {
   open: boolean
   data: FilPayload
@@ -852,8 +946,12 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
 }) {
   const F = FORME[forme]
   const yarns = data.yarns ?? []
-  const sourcesDe = (y: FilYarn) => sourcesDuFil(y).filter((x) => x.kind === forme && (x.libre > 0.05 || x.pour_ligne > 0))
+  const sourcesDe = (y: FilYarn) => sourcesDuFil(y).filter((x) => x.kind === forme && (x.libre > 0.05 || x.pour_ligne > 0 || x.prenable > 0.05))
   const cle = (x: SourceFil) => `${x.kind}:${x.id}`
+  // What a source can give the line: what is free on it, its own hold, and what knitting orders can give back.
+  const prenableDe = (x: SourceFil) => x.libre + x.pour_ligne + x.prenable
+  // The changes still to apply once an arbitration is validated, and what it costs.
+  const [arbitrage, setArbitrage] = useState<{ ordre: { x: SourceFil; kg: number }[]; plan: PlanArbitrage } | null>(null)
   // kg the line takes per source, as typed (string); absent = not ticked.
   const [choix, setChoix] = useState<Map<string, string>>(new Map())
   const [ouvertPour, setOuvertPour] = useState(false)
@@ -866,6 +964,7 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
       for (const y of yarns) for (const x of sourcesDe(y)) if (x.pour_ligne > 0) m.set(cle(x), fmtSaisie(x.pour_ligne))
       setChoix(m)
       setErreur(null)
+      setArbitrage(null)
     }
   }
   const kgDe = (x: SourceFil) => {
@@ -875,14 +974,24 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
   // What the other form already holds counts as covered (in stock, what is on order; on order, the lots).
   const autreForme = (y: FilYarn) => (forme === 'lot' ? enCommande(y) : enStock(y))
   const cibleDe = (y: FilYarn) => Math.max(0, besoinTotal(y) - autreForme(y))
-  const prisDe = (y: FilYarn, sauf?: string) => sourcesDe(y).filter((x) => cle(x) !== sauf && choix.has(cle(x))).reduce((s, x) => s + kgDe(x), 0)
+  // Yarn held in a knitting order is already taken off the need by its share: only what a tick adds
+  // (or releases) there counts, plus the yarn held there that makes no share yet.
+  const prisDe = (y: FilYarn, sauf?: string) => (y.sans_part_kg ?? 0) + sourcesDe(y).filter((x) => cle(x) !== sauf).reduce((s, x) =>
+    s + (choix.has(cle(x)) ? kgDe(x) : 0) - x.enTricotage, 0)
   // The most this source may take: what is free on it (the line's own hold included) and the yarn's
   // need + 10 % less what the other sources and the other form hold.
-  const maxDe = (y: FilYarn, x: SourceFil) => Math.max(0, Math.min(x.libre + x.pour_ligne, y.plafond_kg - autreForme(y) - prisDe(y, cle(x))))
+  const maxDe = (y: FilYarn, x: SourceFil) => {
+    const place = y.plafond_kg - autreForme(y) - prisDe(y, cle(x))
+    // The line keeps what it holds in knitting; the cap bounds the rest.
+    return x.enTricotage + Math.max(0, Math.min(prenableDe(x) - x.enTricotage, place))
+  }
   const cocher = (y: FilYarn, x: SourceFil) => setChoix((prev) => {
     const next = new Map(prev)
     if (next.has(cle(x))) next.delete(cle(x))
-    else next.set(cle(x), fmtSaisie(Math.min(x.libre + x.pour_ligne, Math.max(0, cibleDe(y) - prisDe(y, cle(x))))))
+    else {
+      const manque = Math.max(0, cibleDe(y) - prisDe(y, cle(x)))
+      next.set(cle(x), fmtSaisie(x.enTricotage + Math.min(prenableDe(x) - x.enTricotage, manque)))
+    }
     return next
   })
   const saisir = (x: SourceFil, v: string) => setChoix((prev) => new Map(prev).set(cle(x), v))
@@ -894,30 +1003,41 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
   const depassement = yarns.find((y) => sourcesDe(y).some((x) => choix.has(cle(x)) && kgDe(x) > maxDe(y, x) + 0.05))
   // A knitting order leaves from ONE knitter with all its yarn: warn, never block, when the lots ticked sit at several.
   const tricoteurs = forme === 'lot'
-    ? [...new Set(toutes.filter((x) => choix.has(cle(x)) && kgDe(x) > 0).map((x) => x.groupe))]
+    ? [...new Set(toutes.filter((x) => x.kind === 'lot' && choix.has(cle(x)) && kgDe(x) > 0).map((x) => x.groupe))]
     : []
 
-  const appliquer = async () => {
+  // `valide` = the first change is an arbitration the person has just validated.
+  const appliquer = async (ordre: { x: SourceFil; kg: number }[], valide = false) => {
     setEnCours(true)
     setErreur(null)
+    let i = 0
     try {
-      // Releases first, then the takes: the cap is checked against what is already held.
-      const ordre = [...changements].sort((a, b) => (a.kg - a.x.pour_ligne) - (b.kg - b.x.pour_ligne))
-      for (const { x, kg } of ordre) {
+      for (; i < ordre.length; i++) {
+        const { x, kg } = ordre[i]
         await apiFetch(`/commandes-client/${commandeId}/lignes/${ligneId}/fil/reservations/source`, {
           method: 'PUT',
-          body: JSON.stringify(x.kind === 'lot' ? { IDstock_fil: x.id, kg } : { IDref_fil_commande: x.id, kg }),
+          body: JSON.stringify(x.kind === 'lot' ? { IDstock_fil: x.id, kg, arbitrage: valide && i === 0 } : { IDref_fil_commande: x.id, kg }),
         })
       }
+      setArbitrage(null)
       onDone()
       onClose()
     } catch (e) {
-      setErreur((e as { body?: { message?: string } })?.body?.message ?? 'La réservation a échoué')
+      const body = (e as { body?: { error?: string; message?: string; arbitrage?: PlanArbitrage } })?.body
+      if (body?.error === 'arbitrage_requis' && body.arbitrage) {
+        // What came before is applied; this change and the next ones wait for the validation.
+        setArbitrage({ ordre: ordre.slice(i), plan: body.arbitrage })
+      } else {
+        setArbitrage(null)
+        setErreur(body?.message ?? 'La réservation a échoué')
+      }
       onDone()
     } finally {
       setEnCours(false)
     }
   }
+  // Releases first, then the takes: the cap is checked against what is already held.
+  const reserver = () => appliquer([...changements].sort((a, b) => (a.kg - a.x.pour_ligne) - (b.kg - b.x.pour_ligne)))
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o && !enCours) onClose() }}>
@@ -940,7 +1060,8 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto bg-zinc-100 p-4 space-y-4 scrollbar-transparent">
-          {yarns.map((y) => {
+          {arbitrage && <ArbitrageFil lot={arbitrage.ordre[0]?.x.numero ?? ''} kg={arbitrage.ordre[0]?.kg ?? 0} plan={arbitrage.plan} />}
+          {!arbitrage && yarns.map((y) => {
             const sources = sourcesDe(y)
             const cible = cibleDe(y)
             const pris = prisDe(y)
@@ -957,7 +1078,8 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
                   <span className={cn('ml-auto flex-shrink-0 normal-case tracking-normal tabular-nums inline-flex items-center gap-1',
                     couvert ? 'text-green-700 font-semibold' : 'text-muted-foreground')}>
                     {couvert
-                      ? <><CheckCircle2 className="h-3.5 w-3.5" />{fmtNum(pris, 1)} kg</>
+                      // Nothing left to reserve and nothing ticked beyond: nothing to say.
+                      ? (pris > 0.05 ? <><CheckCircle2 className="h-3.5 w-3.5" />{fmtNum(pris, 1)} kg</> : null)
                       : pris > 0.05
                         ? <>{fmtNum(pris, 1)} kg sur {fmtNum(cible, 1)}</>
                         : <>{fmtNum(reste, 1)} kg à réserver</>}
@@ -994,7 +1116,7 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
                           onClick={ouvrable ? () => cocher(y, x) : undefined}
                           onKeyDown={ouvrable ? (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); cocher(y, x) } } : undefined}
                           className={cn(
-                            'flex items-center gap-3 px-3.5 py-2.5 select-none transition-colors',
+                            'flex items-start gap-3 px-3.5 py-2.5 select-none transition-colors',
                             ouvrable && 'cursor-pointer',
                             coche ? 'bg-accent/[0.07]' : 'hover:bg-zinc-50',
                             efface && 'opacity-50',
@@ -1005,16 +1127,19 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
                             {coche && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
                           </span>
                           <div className="min-w-0 flex-1">
-                            <p className="text-sm font-medium tabular-nums">{x.kind === 'lot' ? `Lot ${x.numero}` : `Commande N° ${x.numero}`}</p>
+                            <p className="text-sm font-medium tabular-nums">{x.kind === 'commande' ? `Commande N° ${x.numero}` : `Lot ${x.numero}`}</p>
                             <p className="text-[11px] text-muted-foreground truncate">
                               {x.kind === 'lot'
                                 ? `${x.groupe} · ${x.fournisseur || 'fournisseur inconnu'} · entré le ${x.date}`
                                 : `${x.fournisseur || 'fournisseur inconnu'} · prévue ${x.date === 'sans date' ? 'sans date' : `le ${x.date}`}`}
                             </p>
+                            {x.kind === 'lot' && <JaugeLot source={x} kgLigne={coche ? kgDe(x) : 0} />}
                           </div>
                           {coche ? (
                             <span className="flex-shrink-0 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                              <span className="text-[11px] text-muted-foreground tabular-nums" title={x.totalTitre}>sur {fmtNum(x.libre + x.pour_ligne, 1)} kg</span>
+                              {x.kind === 'commande' && (
+                                <span className="text-[11px] text-muted-foreground tabular-nums" title={x.totalTitre}>sur {fmtNum(x.libre + x.pour_ligne, 1)} kg libres</span>
+                              )}
                               <span className="relative inline-block">
                                 <input
                                   type="text" inputMode="decimal" value={choix.get(cle(x)) ?? ''} disabled={enCours}
@@ -1041,7 +1166,7 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
               </section>
             )
           })}
-          {forme === 'lot' && tricoteurs.length > 1 && (
+          {!arbitrage && forme === 'lot' && tricoteurs.length > 1 && (
             <p className="flex items-start gap-1.5 rounded-lg border-l-4 border-l-amber-500/60 border border-border/60 bg-card p-2.5 text-xs">
               <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0 text-amber-600" />
               Lots chez plusieurs tricoteurs ({tricoteurs.join(', ')}) : un tricotage part de chez un seul tricoteur, avec tout son fil.
@@ -1055,24 +1180,143 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
               <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" /><span className="break-words">{erreur}</span>
             </p>
           )}
-          {depassement && (
+          {!arbitrage && depassement && (
             <p className="flex items-start gap-1.5 text-xs text-destructive">
               <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
-              {nomDuFil(depassement)} : au plus le besoin + 10 %, et ce qui est libre sur chaque {forme === 'lot' ? 'lot' : 'commande'}.
+              {nomDuFil(depassement)} : au plus le besoin + 10 %, et ce que chaque {forme === 'lot' ? 'lot' : 'commande'} peut donner.
             </p>
           )}
           <div className="flex items-center gap-2">
-            <div className="ml-auto flex items-center gap-2">
-              <Button variant="outline" onClick={onClose} disabled={enCours}>Annuler</Button>
-              <Button onClick={appliquer} disabled={soldee || enCours || changements.length === 0 || !!depassement}>
-                {enCours ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <BobineIcon className="h-3.5 w-3.5 mr-1.5" />}
-                Réserver
-              </Button>
-            </div>
+            {arbitrage ? (
+              <div className="ml-auto flex items-center gap-2">
+                <Button variant="outline" onClick={() => setArbitrage(null)} disabled={enCours}>Retour</Button>
+                <Button onClick={() => appliquer(arbitrage.ordre, true)} disabled={soldee || enCours}>
+                  {enCours ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Check className="h-3.5 w-3.5 mr-1.5" />}
+                  Valider l'arbitrage
+                </Button>
+              </div>
+            ) : (
+              <div className="ml-auto flex items-center gap-2">
+                <Button variant="outline" onClick={onClose} disabled={enCours}>Annuler</Button>
+                <Button onClick={reserver} disabled={soldee || enCours || changements.length === 0 || !!depassement}>
+                  {enCours ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <BobineIcon className="h-3.5 w-3.5 mr-1.5" />}
+                  Réserver
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** Who holds a lot's yarn (Vincent 2026-11-13: one gauge per lot, nothing else to read), in the app's
+ *  one répartition format — the bar, then one row per client line (who · « REF - coloris » · kg),
+ *  ending on « Stock »: the same component as the répartition of a yarn supplier order
+ *  (components/commandes/ReservationParts). This line is gold and moves with the kg typed; « Stock »
+ *  is what no client line holds: the lot's free yarn and what knitting orders make for the stock. */
+function JaugeLot({ source: x, kgLigne }: { source: SourceFil; kgLigne: number }) {
+  // What the line adds comes off the free yarn first (beyond, an arbitration says who loses).
+  const libre = Math.max(0, x.libreLot - Math.max(0, kgLigne - x.pour_ligne))
+  const autres = x.repartition.filter((p) => p.type === 'ligne')
+  const stock = libre + x.repartition.filter((p) => p.type === 'stock').reduce((t, p) => t + p.kg, 0)
+  const parts: PartCommande[] = [
+    { cle: 'moi', nom: 'Cette ligne', kg: kgLigne, couleur: 'bg-accent', fort: true },
+    ...autres.map((p, i) => ({
+      cle: `l${i}`,
+      nom: p.client_nom || 'Client',
+      detail: p.commande_numero ? `N° ${p.commande_numero}` : undefined,
+      article: p.article ?? undefined,
+      kg: p.kg,
+      couleur: COULEURS_AUTRES_LIGNES[i % COULEURS_AUTRES_LIGNES.length],
+    })),
+  ]
+  const total = parts.reduce((t, p) => t + p.kg, 0) + stock
+  if (!(total > 0.05)) return null
+  return (
+    <div className="mt-2.5">
+      <RepartitionCommande titre="Répartition du lot" total={total} parts={parts} reste={{ nom: 'Stock', kg: stock }} />
+    </div>
+  )
+}
+
+/** What taking yarn held by knitting orders costs, before anything is written (Vincent 2026-11-13): each
+ *  order with its quantity before → after, and the client lines that lose a share of it. */
+function ArbitrageFil({ lot, kg, plan }: { lot: string; kg: number; plan: PlanArbitrage }) {
+  const th = 'px-2.5 py-2 font-semibold whitespace-nowrap'
+  const td = 'px-2.5 py-1.5 whitespace-nowrap'
+  return (
+    <>
+      <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card p-3 shadow-sm">
+        <p className="text-sm font-semibold">Réserver {fmtNum(kg, 1)} kg sur le lot {lot}</p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Le lot n'a que {fmtNum(plan.libre, 1)} kg que personne ne tient : {fmtNum(plan.kg, 1)} kg sont repris à ceux qui les tiennent.
+          {' '}Rien n'est écrit avant votre validation.
+        </p>
+      </div>
+      {plan.effets.map((e) => (
+        <div key={e.commande} className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+          <div className="flex items-center gap-3 px-3.5 py-2.5">
+            <div className="h-8 w-8 rounded-md flex items-center justify-center flex-shrink-0 bg-zinc-100 text-muted-foreground">
+              <KnitIcon className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold truncate">Commande de tricotage N° {e.commande}</p>
+              <p className="text-[11px] text-muted-foreground truncate">
+                {e.article || 'tombé de métier'} · {e.interne ? `${fmtNum(e.fil, 1)} kg de fil changent de ligne client` : `rend ${fmtNum(e.fil, 1)} kg de fil`}
+              </p>
+            </div>
+            {e.interne ? (
+              <p className="flex-shrink-0 text-right tabular-nums">
+                <span className="text-xl font-bold">{fmtNum(e.a, 1)} kg</span>
+                <span className="block text-[11px] text-muted-foreground">quantité inchangée</span>
+              </p>
+            ) : (
+              <p className="flex-shrink-0 text-right tabular-nums">
+                <span className="text-sm text-muted-foreground line-through">{fmtNum(e.de, 1)} kg</span>
+                <span className="mx-1.5 text-muted-foreground">→</span>
+                <span className="text-xl font-bold">{fmtNum(e.a, 1)} kg</span>
+              </p>
+            )}
+          </div>
+          <table className="w-full text-xs border-t border-border/40">
+            <thead className="bg-zinc-200/60 border-b border-border/60">
+              <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                <th className={cn(th, 'text-left')}>Qui reçoit moins</th>
+                <th className={cn(th, 'text-left')}>Article</th>
+                <th className={cn(th, 'text-left')}>Prête le</th>
+                <th className={cn(th, 'text-right')}>Perd</th>
+              </tr>
+            </thead>
+            <tbody>
+              {e.stock > 0.05 && (
+                <tr className="border-b border-border/40 last:border-0">
+                  <td className={cn(td, 'font-medium')}>Stock</td>
+                  <td className={cn(td, 'text-muted-foreground')} colSpan={2}>ce qu'aucune ligne client ne réservait</td>
+                  <td className={cn(td, 'text-right tabular-nums font-semibold')}>{fmtNum(e.stock, 1)} kg</td>
+                </tr>
+              )}
+              {e.lignes.map((l, i) => (
+                <tr key={i} className="border-b border-border/40 last:border-0">
+                  <td className={td}>
+                    <span className="font-medium">{l.client_nom || 'Client'}</span>
+                    {l.commande_numero ? <span className="text-muted-foreground tabular-nums"> · Cde {l.commande_numero}</span> : null}
+                  </td>
+                  <td className={td}>{l.article || '—'}</td>
+                  <td className={cn(td, 'text-muted-foreground tabular-nums')}>{l.delai ? formatHfsqlDate(l.delai) : 'sans date'}</td>
+                  <td className={cn(td, 'text-right tabular-nums font-semibold')}>{fmtNum(l.perd, 1)} kg</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+      <p className="px-1 text-[11px] text-muted-foreground">
+        Les kilos perdus sont en tombé de métier. {plan.effets.some((e) => !e.interne) ? "La commande du tricoteur baisse d'autant ; les" : 'Les'} lignes client
+        qui perdent une part la retrouvent « à tricoter », à couvrir avec un autre fil.
+      </p>
+    </>
   )
 }
 

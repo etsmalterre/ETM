@@ -86,7 +86,8 @@ import { HorsRefBadge, type FilHorsRef } from '@/components/shared/HorsRef'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { lireReception, ouvertes, tricobotAttend, TricobotAvatar, useCompteursTricobot, useSaisiesTricobot, type CompteurTricobot, type SaisieTricobot } from '@/components/tricobot/SaisiesTricobot'
 import { TricobotPriseEnMain } from '@/components/tricobot/TricobotPriseEnMain'
-import { RollTable } from '@/components/stock/RollTable'
+import { CaseACocher, RollTable } from '@/components/stock/RollTable'
+import { ReservationsTricotage, type LectureTricotage } from '@/components/commandes/ReservationsTricotage'
 import { EtatPill } from '@/lib/etat-stock-fini'
 import { RollDefautsIcon, RollObservationsIcon } from '@/components/stock/RollNoteIcons'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
@@ -502,10 +503,14 @@ interface StockFilLite {
   colori_reference?: string | null
   fournisseur_nom?: string | null
   magasin_nom?: string | null
-  /** Kg of this lot currently affected to the line via asso_fil_lignecmdsst.
-   *  0 means not affected. > 0 puts an "affecté X kg" chip on the row. */
+  /** Kg of this lot planned for the line the day the yarn was affected
+   *  (asso_fil_lignecmdsst). > 0 = the lot feeds the line. */
   affecte_kg?: number
+  /** Yarn kg of this lot the line still needs: what it has left to knit ×
+   *  the yarn's share ÷ (1 − freinte). 0 on a lot that does not feed it. */
+  besoin_kg?: number
 }
+
 
 interface TricoteurAffectationRow {
   IDasso_fil_ligneCmdSST: number
@@ -534,6 +539,8 @@ interface TricoteurPiecesPayload {
   /** Required composition pairs for this line's écru — every pair must
    *  have at least one selected lot before Affecter/Finir enable. */
   compositionPairs: TricoteurCompositionPair[]
+  /** Who the line knits for and what it still has to knit. */
+  lecture?: LectureTricotage | null
   /** The line has no coloris — no composition to cover until one is chosen
    *  (LIVA #1215). */
   coloris_manquant?: boolean
@@ -3551,7 +3558,9 @@ function PiecesDrawer({
   )
 }
 
-// Tricoteur drawer (line.type === 1). Two tabs:
+// Tricoteur drawer (line.type === 1). Three tabs:
+//   • Réservations — who the line knits for: the client lines holding a
+//     share of it, what each already received, what goes to stock.
 //   • Réception — stock_ecru rolls produced for this line. "+ Créer rouleau"
 //     button opens the TricoteurReceptionDialog.
 //   • Stock fil — every stock_fil row whose (IDref_fil, IDcolori_fil)
@@ -3577,7 +3586,7 @@ function TricoteurDrawer({
     queryFn: () => apiFetch(`/commandes-sous-traitant/${commandeId}/lignes/${ligne.IDligne_commande_sous_traitant}/pieces-fil`),
   })
 
-  const [activeTab, setActiveTab] = useState<'reception' | 'stock-fil'>('reception')
+  const [activeTab, setActiveTab] = useState<'reservations' | 'reception' | 'stock-fil'>('reservations')
   const [selectedLotIds, setSelectedLotIds] = useState<Set<number>>(new Set())
   const [planError, setPlanError] = useState<string | null>(null)
   const [showDesaffecterConfirm, setShowDesaffecterConfirm] = useState(false)
@@ -3592,14 +3601,36 @@ function TricoteurDrawer({
   const totalKgStock = stockFil.reduce((s, r) => s + (Number(r.stock) || 0), 0)
   const hasAffectations = affectations.length > 0
 
-  const toggleLot = useCallback((id: number) => {
+  // Plain click toggles the lot and becomes the anchor; Shift+click applies the
+  // range from the anchor, in the table's order (mps_designer §44).
+  const lastSelectedLotIdRef = useRef<number | null>(null)
+  const toggleLot = useCallback((id: number, shiftKey: boolean) => {
+    setPlanError(null)
+    const ids = stockFil.map((r) => r.IDstock_fil)
+    const anchor = lastSelectedLotIdRef.current
+    if (shiftKey && anchor !== null && anchor !== id) {
+      const a = ids.indexOf(anchor)
+      const b = ids.indexOf(id)
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a]
+        setSelectedLotIds((prev) => {
+          const next = new Set(prev)
+          const deselect = prev.has(id)
+          for (let i = lo; i <= hi; i++) {
+            if (deselect) next.delete(ids[i]); else next.add(ids[i])
+          }
+          return next
+        })
+        return
+      }
+    }
     setSelectedLotIds((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id); else next.add(id)
       return next
     })
-    setPlanError(null)
-  }, [])
+    lastSelectedLotIdRef.current = id
+  }, [stockFil])
 
   // Coverage — every required composition pair must have at least one
   // selected lot in the same (IDref_fil, IDcolori_fil) bucket. Without
@@ -3660,6 +3691,7 @@ function TricoteurDrawer({
     ),
     onSuccess: (resp: any) => {
       setSelectedLotIds(new Set())
+      lastSelectedLotIdRef.current = null
       setPlanError(null)
       if (resp?.payload) queryClient.setQueryData(queryKey, resp.payload)
       // Refresh the parent detail too (line qty may have changed in 'finir' mode).
@@ -3684,6 +3716,7 @@ function TricoteurDrawer({
     ),
     onSuccess: (resp: any) => {
       setSelectedLotIds(new Set())
+      lastSelectedLotIdRef.current = null
       setPlanError(null)
       setShowDesaffecterConfirm(false)
       if (resp?.payload) queryClient.setQueryData(queryKey, resp.payload)
@@ -3697,6 +3730,7 @@ function TricoteurDrawer({
   })
 
   const tabs = [
+    { key: 'reservations' as const, label: 'Réservations', icon: Users },
     { key: 'reception' as const, label: 'Réception', icon: TmRollIcon },
     { key: 'stock-fil' as const, label: 'Stock fil', icon: BobineIcon },
   ]
@@ -3804,6 +3838,10 @@ function TricoteurDrawer({
           </div>
         )}
 
+        {!isLoading && !isError && activeTab === 'reservations' && (
+          <ReservationsTricotage lecture={data?.lecture ?? null} />
+        )}
+
         {!isLoading && !isError && activeTab === 'reception' && (
           <>
             <div className="flex items-center justify-between mb-1.5">
@@ -3885,8 +3923,9 @@ function TricoteurDrawer({
                   : `${stockFil.length} bobine${stockFil.length > 1 ? 's' : ''} · ${fmtNum(totalKgStock, 1)} kg`}
               </h3>
               {hasAffectations && (
-                <span className="text-[10px] uppercase tracking-wide text-green-700 font-semibold">
-                  Affectés · {fmtNum(affectations.reduce((s, a) => s + a.quantite, 0), 1)} kg
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold"
+                  title="Le fil que la commande doit encore tirer de ses lots : ce qui reste à tricoter × la part du fil ÷ (1 − freinte)">
+                  Reste à tricoter · {fmtNum(stockFil.reduce((s, r) => s + (Number(r.besoin_kg) || 0), 0), 1)} kg de fil
                 </span>
               )}
             </div>
@@ -3896,17 +3935,12 @@ function TricoteurDrawer({
                 <p className="text-sm">Aucun stock disponible</p>
               </div>
             ) : (
-              <div className="space-y-2">
-                {stockFil.map((row) => (
-                  <StockFilRow
-                    key={row.IDstock_fil}
-                    row={row}
-                    selectable={!commandeSoldee && !hasAffectations}
-                    selected={selectedLotIds.has(row.IDstock_fil)}
-                    onToggle={() => toggleLot(row.IDstock_fil)}
-                  />
-                ))}
-              </div>
+              <StockFilTable
+                rows={stockFil}
+                selectable={!commandeSoldee && !hasAffectations}
+                selected={selectedLotIds}
+                onToggle={toggleLot}
+              />
             )}
           </>
         )}
@@ -3943,73 +3977,96 @@ function TricoteurDrawer({
   )
 }
 
-function StockFilRow({
-  row, selectable = false, selected = false, onToggle,
+// The yarn lots of a knitting line as a table — same look as the shared roll
+// table of the Réception tab (components/stock/RollTable): light-navy header,
+// one line per lot, nothing truncated (scrolls sideways). Beside each lot's
+// stock, what the line still needs of it (« Reste à tricoter ») — never the kg
+// planned the day the yarn was affected, which no longer says anything once
+// the knitting has started (order 9147: 2 752 kg « affectés » on a lot of
+// 1 690 kg). No supplier lot number nor emplacement here (Vincent
+// 2026-11-13): they are read on Fils › Stock.
+function StockFilTable({
+  rows, selectable, selected, onToggle,
 }: {
-  row: StockFilLite
-  /** When true, the whole card toggles selection on click and a checkbox
-   *  leads the row. Set to false when affectations already exist (the
-   *  buttons switch to Désaffecter; selection becomes irrelevant). */
-  selectable?: boolean
-  selected?: boolean
-  onToggle?: () => void
+  rows: StockFilLite[]
+  /** When true, a row toggles selection on click and a tick leads it. False
+   *  when affectations already exist (the buttons switch to Désaffecter;
+   *  selection becomes irrelevant) or the order is closed. */
+  selectable: boolean
+  selected: Set<number>
+  /** shiftKey: the caller's §44 range handler. */
+  onToggle: (id: number, shiftKey: boolean) => void
 }) {
-  const refLabel = row.ref_fil_reference || `Ref #${row.IDref_fil}`
-  const lotChips = [
-    row.lot ? `lot ${row.lot}` : '',
-    row.lot_frs ? `lot frs ${row.lot_frs}` : '',
-  ].filter((s) => s.length > 0)
-  const affecteKg = Number(row.affecte_kg) || 0
-
+  const avecBesoin = rows.some((r) => (Number(r.affecte_kg) || 0) > 0)
+  const th = 'px-2.5 py-2 font-semibold whitespace-nowrap'
+  const td = 'px-2.5 py-1.5 whitespace-nowrap'
   return (
-    <div
-      onClick={selectable ? onToggle : undefined}
-      className={cn(
-        'rounded-lg border bg-card shadow-sm p-3 transition-colors select-none',
-        selectable && 'cursor-pointer hover:border-accent/40',
-        selected ? 'border-accent ring-1 ring-accent/40 bg-accent/[0.03]' : 'border-border/60',
-        affecteKg > 0 && !selected && 'border-green-500/40 bg-green-500/[0.03]',
-      )}
-    >
-      <div className="flex items-center gap-3">
-        {selectable && (
-          <Checkbox
-            checked={selected}
-            onClick={(e) => { e.stopPropagation(); onToggle?.() }}
-            className="flex-shrink-0"
-          />
-        )}
-        <div className="h-10 w-10 rounded-md bg-zinc-100 flex items-center justify-center flex-shrink-0">
-          <BobineIcon className="h-6 w-6 text-muted-foreground" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-semibold truncate">
-              {refLabel}
-              {row.colori_reference && (
-                <span className="text-muted-foreground"> / {row.colori_reference}</span>
-              )}
-            </span>
-            {lotChips.map((c) => (
-              <span key={c} className="text-xs text-muted-foreground truncate">· {c}</span>
-            ))}
-            {affecteKg > 0 && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-green-700 bg-green-500/10 border border-green-500/30 rounded px-1.5 py-0.5">
-                affecté {fmtNum(affecteKg, 1)} kg
-              </span>
+    <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-x-auto scrollbar-transparent">
+      <table className="w-full text-xs">
+        <thead className="bg-primary/10 border-b border-primary/10">
+          <tr className="text-[10px] uppercase tracking-wide text-primary/80">
+            {selectable && <th className="px-2.5 py-2 w-10" />}
+            <th className={cn(th, 'text-left')}>Fil</th>
+            <th className={cn(th, 'text-left')}>Lot</th>
+            <th className={cn(th, 'text-right')}>Stock</th>
+            {avecBesoin && (
+              <th className={cn(th, 'text-right')} title="Le fil que la commande doit encore tirer de ce lot">Reste à tricoter</th>
             )}
-          </div>
-          <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground tabular-nums flex-wrap">
-            {Number(row.stock) > 0 && (
-              <span className="font-medium text-foreground">{fmtNum(Number(row.stock), 1)} kg</span>
-            )}
-            {row.fournisseur_nom && <span>· {row.fournisseur_nom}</span>}
-            {row.magasin_nom && <span>· {row.magasin_nom}</span>}
-            {row.emplacement && <span>· {row.emplacement}</span>}
-            {row.date_entree && <span>· entré {formatHfsqlDate(row.date_entree)}</span>}
-          </div>
-        </div>
-      </div>
+            <th className={cn(th, 'pl-5 text-left')}>Fournisseur</th>
+            <th className={cn(th, 'text-left')}>Magasin</th>
+            <th className={cn(th, 'text-left')}>Entré le</th>
+            <th className="px-2.5 py-2 w-full" />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const coche = selectable && selected.has(row.IDstock_fil)
+            const alimente = (Number(row.affecte_kg) || 0) > 0
+            const besoinKg = Number(row.besoin_kg) || 0
+            return (
+              <tr
+                key={row.IDstock_fil}
+                onClick={selectable ? (e) => onToggle(row.IDstock_fil, e.shiftKey) : undefined}
+                className={cn(
+                  'border-b border-border/40 last:border-0',
+                  selectable && 'cursor-pointer select-none',
+                  coche ? 'bg-accent/10' : selectable && 'hover:bg-accent/5',
+                )}
+              >
+                {selectable && (
+                  <td className="px-2.5 py-1.5 text-center">
+                    <CaseACocher etat={coche ? 'oui' : 'non'} />
+                  </td>
+                )}
+                <td className={td}>
+                  <span className="flex items-center gap-2 font-medium">
+                    <BobineIcon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                    <span>
+                      {row.ref_fil_reference || `Ref #${row.IDref_fil}`}
+                      {row.colori_reference ? ` - ${row.colori_reference}` : ''}
+                    </span>
+                  </span>
+                </td>
+                <td className={cn(td, 'tabular-nums')}>{row.lot || '—'}</td>
+                <td className={cn(td, 'text-right tabular-nums')}>
+                  {Number(row.stock) > 0 ? `${fmtNum(Number(row.stock), 1)} kg` : '—'}
+                </td>
+                {avecBesoin && (
+                  <td className={cn(td, 'text-right tabular-nums font-medium')}>
+                    {alimente ? `${fmtNum(besoinKg, 1)} kg` : ''}
+                  </td>
+                )}
+                <td className={cn(td, 'pl-5 text-muted-foreground')}>{row.fournisseur_nom || '—'}</td>
+                <td className={cn(td, 'text-muted-foreground')}>{row.magasin_nom || '—'}</td>
+                <td className={cn(td, 'text-muted-foreground tabular-nums')}>
+                  {row.date_entree ? formatHfsqlDate(row.date_entree) : '—'}
+                </td>
+                <td className={td} />
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }

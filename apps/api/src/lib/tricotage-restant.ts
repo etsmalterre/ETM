@@ -1,6 +1,8 @@
 // Clients › Commandes: what is still to KNIT for a client line, in écru kg (2026-10-26).
 //
-// affectation_cmd_tricotage is the planning: « knit N kg on this knitting sst line for this client
+// A client line's share of a knitting order (lib/parts-tricotage.ts: the yarn reserved to it that the
+// order holds; typed on the order, affectation_cmd_tricotage, only when the knitter brings the yarn)
+// is the planning: « knit N kg on this knitting sst line for this client
 // line ». It is never cleared once the knitting is done, so reading it as « en tricotage » counted the
 // matter twice: once planned, once as the pieces it became (order 3885, 119B: 327 kg on line 9023,
 // knitted, dyed into the 15 « Prêt » rolls → gauge 1 346,3 / 761,6 Ml). Measured on prod that day:
@@ -18,6 +20,7 @@
 
 import { query } from './hfsql-auto.js'
 import { allocationsParLigneTricot, repartir } from './repartition-tricotage.js'
+import { partsTricotage } from './parts-tricotage.js'
 
 export interface AllocationTricotage {
   /** IDligne_commande_client */
@@ -64,12 +67,10 @@ async function queryIn<T>(ids: readonly number[], sql: (inList: string) => strin
 
 /** Écru kg still to knit per client line (absent = nothing). Flat queries, merged in JS. */
 export async function kgATricoterParLigne(lineIds: readonly number[]): Promise<Map<number, number>> {
-  const rows = await queryIn<{ lcc: number; lsst: number; poids_affecte: number | null }>(lineIds, (inl) =>
-    `SELECT IDligne_commande_client AS lcc, IDligne_commande_sous_traitant AS lsst, poids_affecte
-     FROM affectation_cmd_tricotage WHERE IDligne_commande_client IN (${inl})`)
-  const allocations = rows
-    .map((r) => ({ lcc: num(r.lcc), lsst: num(r.lsst), poids: num(r.poids_affecte) }))
-    .filter((a) => a.lcc > 0 && a.lsst > 0 && a.poids > 0)
+  const demandees = new Set(lineIds)
+  const allocations = [...(await partsTricotage({ lcc: lineIds })).values()]
+    .flatMap((k) => k.parts.map((p) => ({ lcc: p.lcc, lsst: k.lsst, poids: p.poids })))
+    .filter((a) => demandees.has(a.lcc) && a.lsst > 0 && a.poids > 0)
   if (allocations.length === 0) return new Map()
 
   const lignes = await queryIn<{ id: number; cmd: number; sstatut: string | null }>(allocations.map((a) => a.lsst), (inl) =>

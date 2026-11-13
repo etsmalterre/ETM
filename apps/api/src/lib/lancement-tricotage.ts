@@ -13,9 +13,11 @@
 // lib/reservation-fil.ts) and is launched once the lot is in.
 //
 // « Libre » on a lot = its stock minus what is already promised elsewhere:
-//   - open OFs still to knit from it (asso_fil_of × what the OF has left to produce),
-//   - affectations of open knitting lines no OF knits yet (asso_fil_lignecmdsst — once an OF
-//     runs, the OF term above holds them, never both),
+//   - what the open knitting lines drawing on it still have to knit, in yarn
+//     (lib/engagement-tricotage.ts, 2026-11-13: the order's quantity less what is knitted — never
+//     the asso row's kg, a plan frozen the day the yarn was affected, nor the OFs' total, which TRM
+//     may plan larger than the order),
+//   - open OFs of TRM's own orders still to knit from it (asso_fil_of × what the OF has left),
 //   - yarn reserved on it for OTHER client lines (reservation_fil, state « lot »).
 // The client line's own reservation stays inside its libre and is taken first.
 //
@@ -27,6 +29,8 @@
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 import { filPourEcru, ecruPourFil, freintesTricotage } from './freinte-tricotage.js'
+import { engagementParLot, lignesTricotage } from './engagement-tricotage.js'
+import { partsTricotage } from './parts-tricotage.js'
 
 const round2 = (x: number) => Math.round(x * 100) / 100
 
@@ -53,6 +57,8 @@ export interface LotLibre {
   libre: number
   /** kg reserved on this lot for the client line launching (already inside `libre`) */
   reserveLigne: number
+  /** the open knitting lines holding yarn of the lot, with the kg each still needs */
+  engagements?: { lsst: number; commande: number; ecru: number; coloris: number; kg: number }[]
 }
 
 export interface EntreePlan {
@@ -204,7 +210,11 @@ export async function lotsLibres(p: { magasin: number | null; paires: readonly P
   if (lots.length === 0) return []
   const ids = lots.map((l) => Number(l.id))
 
-  const [ofs, assos, resas] = await Promise.all([
+  // The open knitting lines drawing on these lots hold what they still have to knit; their OFs are
+  // inside that, so the OF term below keeps to the OFs of TRM's own orders.
+  const tricotages = await lignesTricotage({ lots: ids }, sql)
+  const ofsTenus = [0, ...tricotages.flatMap((k) => k.ofs)]
+  const [ofs, resas] = await Promise.all([
     // What open OFs still have to knit, apportioned to each lot by the OF's composition (écru kg,
     // turned into yarn below with each écru's freinte).
     sql<{ lot: number; ecru: number; kg: number }[]>`
@@ -214,20 +224,8 @@ export async function lotsLibres(p: { magasin: number | null; paires: readonly P
         JOIN ordre_fabrication o ON o.idordre_fabrication = a.idordre_fabrication AND o.est_termine = 0
         LEFT JOIN (SELECT idordre_fabrication, SUM(poids) AS kg FROM stock_ecru GROUP BY idordre_fabrication) p
                ON p.idordre_fabrication = o.idordre_fabrication
-       WHERE a.idstock_fil = ANY(${ids})
+       WHERE a.idstock_fil = ANY(${ids}) AND NOT (o.idordre_fabrication = ANY(${ofsTenus}))
        GROUP BY a.idstock_fil, o.idref_ecru`,
-    // Affectations of open knitting lines that no OF knits yet.
-    sql<{ lot: number; kg: number }[]>`
-      SELECT a.idstock_fil AS lot, SUM(a.quantite)::float8 AS kg
-        FROM asso_fil_lignecmdsst a
-        JOIN ligne_commande_sous_traitant l ON l.idligne_commande_sous_traitant = a.idligne_commande_sous_traitant
-        JOIN commande_sous_traitant c ON c.idcommande_sous_traitant = l.idcommande_sous_traitant
-       WHERE a.idstock_fil = ANY(${ids}) AND c.est_soldee = 0 AND COALESCE(l.sstatut, '') NOT LIKE 'Termin%'
-         AND NOT EXISTS (
-           SELECT 1 FROM ligne_commande_client m
-             JOIN ordre_fabrication o ON o.idligne_commande_client = m.idligne_commande_client
-            WHERE m.idligne_commande_etm = l.idligne_commande_sous_traitant)
-       GROUP BY a.idstock_fil`,
     sql<{ lot: number; ligne: number; kg: number }[]>`
       SELECT idstock_fil AS lot, idligne_commande_client AS ligne, SUM(quantite)::float8 AS kg
         FROM reservation_fil
@@ -240,7 +238,15 @@ export async function lotsLibres(p: { magasin: number | null; paires: readonly P
     const kg = filPourEcru(Number(r.kg) || 0, freintes.get(Number(r.ecru))?.taux ?? 0)
     ofKg.set(Number(r.lot), (ofKg.get(Number(r.lot)) ?? 0) + kg)
   }
-  const assoKg = new Map(assos.map((r) => [Number(r.lot), Number(r.kg) || 0]))
+  const engagements = new Map<number, NonNullable<LotLibre['engagements']>>()
+  for (const k of tricotages) {
+    for (const [lot, kg] of engagementParLot(k)) {
+      const arr = engagements.get(lot) ?? []
+      arr.push({ lsst: k.id, commande: k.commande, ecru: k.ecru, coloris: k.coloris, kg })
+      engagements.set(lot, arr)
+    }
+  }
+  const assoKg = new Map([...engagements].map(([lot, arr]) => [lot, arr.reduce((s, e) => s + e.kg, 0)]))
   const autres = new Map<number, number>()
   const miennes = new Map<number, number>()
   for (const r of resas) {
@@ -263,6 +269,7 @@ export async function lotsLibres(p: { magasin: number | null; paires: readonly P
       stock: round2(stock),
       libre,
       reserveLigne: round2(Math.min(libre, miennes.get(id) ?? 0)),
+      engagements: engagements.get(id) ?? [],
     }
   })
 }
@@ -428,7 +435,14 @@ export async function repartitionLot(lotId: number): Promise<{ stock: number; pa
   if (!lot) return { stock: 0, parts: [], exces: 0 }
   const stock = round2(Number(lot.stock) || 0)
 
-  const [ofs, assos, resas] = await Promise.all([
+  // The open knitting lines drawing on the lot, each with the yarn it still needs (their OFs inside).
+  const tricotages = await lignesTricotage({ lots: [lotId] }, sql)
+  const ofsTenus = [0, ...tricotages.flatMap((k) => k.ofs)]
+  const assos = tricotages
+    .map((k) => ({ cmd: k.commande, ligne: k.id, kg: engagementParLot(k).get(lotId) ?? 0 }))
+    .filter((a) => a.kg > 0.005)
+    .sort((a, b) => a.cmd - b.cmd)
+  const [ofs, resas] = await Promise.all([
     sql<{ id: number; ecru: number; kg: number; numero: number | null }[]>`
       SELECT o.idordre_fabrication AS id, o.idref_ecru AS ecru,
              (GREATEST(0, o.quantite - COALESCE(p.kg, 0)) * a.pourcentage / 100)::float8 AS kg,
@@ -439,20 +453,8 @@ export async function repartitionLot(lotId: number): Promise<{ stock: number; pa
                ON p.idordre_fabrication = o.idordre_fabrication
         LEFT JOIN ligne_commande_client lc ON lc.idligne_commande_client = o.idligne_commande_client
         LEFT JOIN commande_client cc ON cc.idcommande_client = lc.idcommande_client
-       WHERE a.idstock_fil = ${lotId}
+       WHERE a.idstock_fil = ${lotId} AND NOT (o.idordre_fabrication = ANY(${ofsTenus}))
        ORDER BY o.idordre_fabrication`,
-    sql<{ cmd: number; ligne: number; kg: number }[]>`
-      SELECT l.idcommande_sous_traitant AS cmd, l.idligne_commande_sous_traitant AS ligne, SUM(a.quantite)::float8 AS kg
-        FROM asso_fil_lignecmdsst a
-        JOIN ligne_commande_sous_traitant l ON l.idligne_commande_sous_traitant = a.idligne_commande_sous_traitant
-        JOIN commande_sous_traitant c ON c.idcommande_sous_traitant = l.idcommande_sous_traitant
-       WHERE a.idstock_fil = ${lotId} AND c.est_soldee = 0 AND COALESCE(l.sstatut, '') NOT LIKE 'Termin%'
-         AND NOT EXISTS (
-           SELECT 1 FROM ligne_commande_client m
-             JOIN ordre_fabrication o ON o.idligne_commande_client = m.idligne_commande_client
-            WHERE m.idligne_commande_etm = l.idligne_commande_sous_traitant)
-       GROUP BY l.idcommande_sous_traitant, l.idligne_commande_sous_traitant
-       ORDER BY l.idcommande_sous_traitant`,
     sql<{ numero: number; client: string | null; kg: number }[]>`
       SELECT cc.numero, cl.nom AS client, SUM(r.quantite)::float8 AS kg
         FROM reservation_fil r
@@ -468,20 +470,24 @@ export async function repartitionLot(lotId: number): Promise<{ stock: number; pa
   const freintes = await freintesTricotage(ofs.map((o) => Number(o.ecru) || 0))
   for (const o of ofs) o.kg = filPourEcru(Number(o.kg) || 0, freintes.get(Number(o.ecru))?.taux ?? 0)
 
-  // Who a knitting order not started yet is for (« Affecté à la commande … » of its launch).
+  // Who each knitting order is for (the client lines holding a share of it).
   const lignes = assos.map((a) => Number(a.ligne))
   const pour = new Map<number, string[]>()
   if (lignes.length > 0) {
-    const rows = await sql<{ ligne: number; numero: number; client: string | null }[]>`
-      SELECT t.idligne_commande_sous_traitant AS ligne, cc.numero, cl.nom AS client
-        FROM affectation_cmd_tricotage t
-        JOIN ligne_commande_client lc ON lc.idligne_commande_client = t.idligne_commande_client
+    const parts = [...(await partsTricotage({ lsst: lignes }, sql)).values()].flatMap((k) => k.parts.map((p) => ({ ligne: k.lsst, lcc: p.lcc })))
+    const noms = await sql<{ lcc: number; numero: number; client: string | null }[]>`
+      SELECT lc.idligne_commande_client AS lcc, cc.numero, cl.nom AS client
+        FROM ligne_commande_client lc
         JOIN commande_client cc ON cc.idcommande_client = lc.idcommande_client
         LEFT JOIN client cl ON cl.idclient = cc.idclient
-       WHERE t.idligne_commande_sous_traitant = ANY(${lignes}) AND t.poids_affecte > 0`
+       WHERE lc.idligne_commande_client = ANY(${[0, ...parts.map((p) => p.lcc)]})`
+    const rows = parts.flatMap((p) => noms.filter((n) => Number(n.lcc) === p.lcc).map((n) => ({ ligne: p.ligne, numero: n.numero, client: n.client })))
     for (const r of rows) {
       const arr = pour.get(Number(r.ligne)) ?? []
-      arr.push(`${String(r.client ?? '').trim() || 'client'} (cde ${r.numero})`)
+      const qui = `${String(r.client ?? '').trim() || 'client'} (cde ${r.numero})`
+      // Several lines of one client order hold a share: named once.
+      if (arr.includes(qui)) continue
+      arr.push(qui)
       pour.set(Number(r.ligne), arr)
     }
   }
