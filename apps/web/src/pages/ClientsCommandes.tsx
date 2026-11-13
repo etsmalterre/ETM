@@ -83,6 +83,7 @@ import { AvancementPill, EtatLigneTag, StatutLignePill, STATUT_LIGNE_META, type 
 import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
 import { FilEnStockZone, FilLigneTab, filLigneQueryKey, tricoteursPrets, useFilLigne, type FilPayload } from '@/components/fils/FilLigneTab'
+import { AffecteGauge, ChoixQuantite, RepartitionCommande, COULEURS_AUTRES_LIGNES, type PartCommande } from '@/components/commandes/ReservationParts'
 import { EcruLigneZone, PieceEcruLigne, PiecesEcruCarte, lieuxAEnnoblir, matiereEcruQueryKey, useMatiereEcru, type LieuEnnoblisseur } from '@/components/commandes/EcruLigneZone'
 import { BoutonsCommande, ZoneLigne } from '@/components/commandes/ZonesLigne'
 import { LancementLabel, PlanifierBouton, type EtapeLancement } from '@/components/commandes/LancementLigne'
@@ -393,7 +394,7 @@ interface SupplyTricoRow {
   /** « Toute la commande »: every knitted piece goes to this line (API lib/repartition-tricotage.ts) */
   toute_commande: boolean
   /** the other client lines' reservations on this knitting order */
-  autres_reservations: { client_nom: string | null; commande_numero: number | null; poids: number; toute_commande: boolean }[]
+  autres_reservations: { client_nom: string | null; commande_numero: number | null; article?: string | null; poids: number; toute_commande: boolean }[]
 }
 interface SupplyEnnoRow {
   id: number
@@ -3172,7 +3173,20 @@ function AffectationDrawer({
       )}
 
       {tab === 'fil' && (
-        <FilLigneTab commandeId={commandeId} ligneId={ligne.IDligne_commande_client} soldee={soldee} planifier={planifier('fil')} />
+        <FilLigneTab
+          commandeId={commandeId} ligneId={ligne.IDligne_commande_client} soldee={soldee} planifier={planifier('fil')}
+          clientNom={clientNom}
+          articleLabel={[ligne.ref_label, ligne.colori_reference].filter(Boolean).join(' - ') || null}
+          // The reservation dialog's footer: the line's gauge, as on the line card (every stage but the yarn).
+          jauge={{
+            horsFil: ligne.avancement
+              ? ligne.avancement.expedie + ligne.avancement.pret + ligne.avancement.ennoblissement + ligne.avancement.tricotage
+              : reserved,
+            cible: target,
+            uniteLabel,
+            metrage: dim === 'metrage',
+          }}
+        />
       )}
 
       {tab === 'exped' && (
@@ -3227,6 +3241,7 @@ function AffectationDrawer({
         uniteLabel={uniteLabel}
         rendement={queryClient.getQueryData<FilPayload>(filLigneQueryKey(commandeId, ligne.IDligne_commande_client))?.rendement ?? 0}
         refLabel={ligne.ref_label}
+        articleLabel={[ligne.ref_label, ligne.colori_reference].filter(Boolean).join(' - ') || null}
         onClose={() => setTricoTarget(null)}
         onSuccess={() => {
           // The allocation feeds the supply table AND the line's combined
@@ -5123,12 +5138,14 @@ function EnnoblissementAffectationDialog({
 // allocation is a weight, not rolls (production hasn't happened yet).
 
 function TricotageAffectationDialog({
-  commandeId, ligneId, row, clientNom, reserved, target, dim, uniteLabel, rendement, refLabel, onClose, onSuccess,
+  commandeId, ligneId, row, clientNom, reserved, target, dim, uniteLabel, rendement, refLabel, articleLabel, onClose, onSuccess,
 }: {
   commandeId: number
   ligneId: number
   row: SupplyTricoRow
   clientNom?: string
+  /** this line's « REF - coloris », printed on its row of the order's répartition */
+  articleLabel?: string | null
   /** Combined affecté already on the line / commanded qty, in the line's dim. */
   reserved: number
   target: number
@@ -5198,16 +5215,17 @@ function TricotageAffectationDialog({
 
   // The order's gauge: this line, the other lines, what is left for stock.
   const moi = clientNom ?? 'Cette commande'
-  const COULEURS = ['bg-primary', 'bg-accent-blue', 'bg-teal']
-  const segments = [
-    { cle: 'moi', nom: 'Cette ligne', detail: '', kg: value, tag: null as string | null, couleur: 'bg-accent' },
+  const COULEURS = COULEURS_AUTRES_LIGNES
+  const segments: PartCommande[] = [
+    { cle: 'moi', nom: 'Cette ligne', detail: '', article: articleLabel ?? '', kg: value, couleur: 'bg-accent', fort: true },
     ...autres.map((a, i) => ({
       cle: `a${i}`,
       nom: a.client_nom ?? 'Autre client',
       detail: a.commande_numero ? `N° ${a.commande_numero}` : '',
+      // what tells apart two lines of the same order
+      article: a.article ?? '',
       // a line on « tout le reste » gives way to this exact reservation
       kg: a.toute_commande ? Math.max(0, quantite - exactesAutres - value) : Number(a.poids) || 0,
-      tag: a.toute_commande ? 'tout le reste' : null,
       couleur: COULEURS[i % COULEURS.length],
     })),
   ]
@@ -5248,31 +5266,20 @@ function TricotageAffectationDialog({
               window holds this one decision, a frame would separate it from nothing (Vincent 2026-11-13). */}
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">Réserver pour {moi}</p>
-            <div className="flex gap-1 rounded-md p-1 bg-white border border-border/60 shadow-sm">
-              {([
-                ...(besoinPossible ? [['besoin', 'Besoin de la ligne', `${fmtNum(besoinKg, 1)} kg`] as const] : []),
-                ['toute', libelleToute, `${fmtNum(resteDispo, 1)} kg`],
-                ['exacte', 'Autre quantité', 'à saisir'],
-              ] as const).map(([k, label, detail]) => {
-                const off = k === 'toute' && !toutePossible
-                return (
-                  <button
-                    key={k}
-                    type="button"
-                    disabled={busy || off}
-                    title={off ? (resteAutre ? `${resteAutre.client_nom ?? 'Une autre commande'} prend déjà tout le reste` : 'Plus rien à réserver sur cette commande') : undefined}
-                    onClick={() => setMode(k)}
-                    className={cn(
-                      'flex-1 min-w-0 px-2 py-1.5 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
-                      mode === k ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10',
-                    )}
-                  >
-                    <span className={cn('block text-sm truncate', mode === k && 'font-medium')}>{label}</span>
-                    <span className={cn('block text-xs tabular-nums truncate', mode === k ? 'font-semibold' : 'opacity-80')}>{detail}</span>
-                  </button>
-                )
-              })}
-            </div>
+            <ChoixQuantite
+              mode={mode}
+              onChange={setMode}
+              disabled={busy}
+              options={[
+                ...(besoinPossible ? [{ cle: 'besoin' as const, label: 'Besoin de la ligne', detail: `${fmtNum(besoinKg, 1)} kg` }] : []),
+                {
+                  cle: 'toute' as const, label: libelleToute, detail: `${fmtNum(resteDispo, 1)} kg`, off: !toutePossible,
+                  titre: toutePossible ? undefined
+                    : resteAutre ? `${resteAutre.client_nom ?? 'Une autre commande'} prend déjà tout le reste` : 'Plus rien à réserver sur cette commande',
+                },
+                { cle: 'exacte' as const, label: 'Autre quantité', detail: 'à saisir' },
+              ]}
+            />
             {mode === 'exacte' && (
               <div className="pt-1">
                 <TricoWeightField
@@ -5299,33 +5306,12 @@ function TricotageAffectationDialog({
           {/* 2 · what becomes of the knitting order, in kg: this line, the other lines, stock. It moves with
               the choice above and stands for the sentence that used to explain it (Vincent 2026-11-13).
               Labelled, since the footer carries another bar: the LINE's cover, in its own unit. */}
-          <div className="space-y-1.5">
-            <p className="text-xs font-medium text-muted-foreground">Répartition de la commande de tricotage</p>
-            <div className="h-2.5 rounded-full bg-white border border-border/60 overflow-hidden flex">
-              {quantite > 0 && segments.filter((s) => s.kg > 0).map((s) => (
-                <div key={s.cle} title={`${s.nom} : ${fmtNum(s.kg, 1)} kg`} className={cn('h-full transition-all', s.couleur)} style={{ width: `${Math.min(100, (s.kg / quantite) * 100)}%` }} />
-              ))}
-              {quantite > 0 && stock > 0 && (
-                <div title={`Stock : ${fmtNum(stock, 1)} kg`} className="h-full transition-all bg-zinc-300" style={{ width: `${Math.min(100, (stock / quantite) * 100)}%` }} />
-              )}
-            </div>
-            <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-              {segments.map((s) => (
-                <li key={s.cle} className="flex items-center gap-1.5 tabular-nums min-w-0">
-                  <span className={cn('h-2.5 w-2.5 rounded-sm flex-shrink-0', s.couleur)} />
-                  <span className={cn('truncate', s.cle === 'moi' && 'font-medium')}>{s.nom}</span>
-                  {s.detail && <span className="text-muted-foreground truncate">· {s.detail}</span>}
-                  <span className="flex-shrink-0 font-semibold">{fmtNum(Math.max(0, s.kg), 1)} kg</span>
-                  {s.tag && <span className="text-[10px] rounded border border-border/60 bg-white px-1 text-muted-foreground flex-shrink-0">{s.tag}</span>}
-                </li>
-              ))}
-              <li className="flex items-center gap-1.5 tabular-nums text-muted-foreground">
-                <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0 bg-zinc-300" />
-                <span>Stock</span>
-                <span className="flex-shrink-0 font-semibold">{fmtNum(stock, 1)} kg</span>
-              </li>
-            </ul>
-          </div>
+          <RepartitionCommande
+            titre="Répartition de la commande de tricotage"
+            total={quantite}
+            parts={segments}
+            reste={{ nom: 'Stock', kg: stock }}
+          />
         </div>
 
         <div className="flex-shrink-0 rounded-b-lg px-4 py-3 border-t border-border/60 bg-zinc-200">
@@ -5334,8 +5320,9 @@ function TricotageAffectationDialog({
               <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span className="break-words">{error}</span>
             </div>
           )}
-          {/* an empty field needs no sentence (Vincent 2026-11-13): that reason stays on the button's hover */}
-          {!error && pourquoiGrise && !(sansChangement && current === 0) && (
+          {/* nothing changed (empty field, or what is already saved) needs no sentence (Vincent 2026-11-13):
+              that reason stays on the button's hover */}
+          {!error && pourquoiGrise && !sansChangement && (
             <p className="mb-2 text-right text-[11px] text-muted-foreground">{pourquoiGrise}</p>
           )}
           <div className="flex items-center gap-3">
@@ -5395,34 +5382,6 @@ function GroupBandRow({ label, colSpan, tiroir = false }: { label: string; colSp
         {label}
       </td>
     </tr>
-  )
-}
-
-// Shared footer gauge of the create-order modals: projected affecté vs the
-// commanded quantity, with a mini progress bar (legacy: "801 / 800 Ml affecté
-// à la commande de Le slip Français", green once covered). `libelle` replaces
-// the words after the figures.
-function AffecteGauge({
-  projected, target, uniteLabel, clientNom, libelle,
-}: {
-  projected: number
-  target: number
-  uniteLabel: string
-  clientNom?: string
-  libelle?: string
-}) {
-  const covered = target > 0 && projected >= target
-  const pct = target > 0 ? Math.min(100, Math.max(0, (projected / target) * 100)) : 0
-  return (
-    <div className="min-w-0 flex-1">
-      <p className={cn('text-xs font-medium tabular-nums truncate', covered ? 'text-green-600' : 'text-muted-foreground')}>
-        <span className={cn('font-bold', !covered && 'text-foreground')}>{fmtNum(projected, 1)}</span>
-        {' / '}{fmtNum(target, 1)} {uniteLabel} {libelle ?? `affecté à la commande${clientNom ? ` de ${clientNom}` : ''}`}
-      </p>
-      <div className="h-1.5 mt-1.5 rounded-full bg-white overflow-hidden">
-        <div className={cn('h-full rounded-full transition-all', covered ? 'bg-green-500' : 'bg-accent')} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
   )
 }
 

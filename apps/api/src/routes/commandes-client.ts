@@ -3111,7 +3111,7 @@ interface SupplyTricoRow {
    *  lib/repartition-tricotage.ts) */
   toute_commande: boolean
   /** the other client lines' reservations on this knitting line */
-  autres_reservations: { client_nom: string | null; commande_numero: number | null; poids: number; toute_commande: boolean }[]
+  autres_reservations: { client_nom: string | null; commande_numero: number | null; article: string | null; poids: number; toute_commande: boolean }[]
 }
 interface SupplyEnnoRow {
   id: number
@@ -3170,6 +3170,32 @@ function sstatutLabel(raw: unknown): string {
 }
 const round2c = (v: number) => Math.round(v * 100) / 100
 
+/** « REF - coloris » of client lines, as their order prints them (a line waiting for its étude says so):
+ *  what tells apart two lines of the same order reserving on one knitting order. */
+async function articlesDesLignesClient(ids: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
+  const lccIds = Array.from(new Set(ids.filter((x) => x > 0)))
+  if (lccIds.length === 0) return out
+  const rows = await query<any>(
+    `SELECT IDligne_commande_client AS lcc, TYPE AS type_kind, IDreference, IDcolori, IDetude_col
+       FROM ligne_commande_client WHERE IDligne_commande_client IN (${lccIds.join(',')})`,
+  )
+  const maps = await resolveLineLabels(rows.map((r: any) => ({
+    IDreference: Number(r.IDreference) || 0, IDcolori: Number(r.IDcolori) || 0, type_kind: Number(r.type_kind) || 0,
+  })))
+  for (const r of rows) {
+    const typeKind = Number(r.type_kind) || 0
+    const refId = Number(r.IDreference) || 0
+    const colId = Number(r.IDcolori) || 0
+    const coloris = colId === 0 && (Number(r.IDetude_col) || 0) > 0
+      ? LIBELLE_COLORIS_EN_ETUDE
+      : resolveColorisLabel(maps, colId, typeKind, refId)
+    const article = [resolveRefLabel(maps, refId, typeKind).label, coloris].filter((s) => s && s.trim()).join(' - ')
+    if (article) out.set(Number(r.lcc), article)
+  }
+  return out
+}
+
 async function buildTricotage(ecruRefId: number, rendement: number, coloriIds: number[], ligneId: number): Promise<SupplyTricoRow[]> {
   // Coloris filter: a tricoteur line's IDColoris is the colori_ecru being
   // knitted. Without it, a 029/gris-anthracite knitting order leaks into the
@@ -3220,7 +3246,11 @@ async function buildTricotage(ecruRefId: number, rendement: number, coloriIds: n
       }
     }
   }
-  const { clientByLcc, commandeNumByLcc } = await reservationsClient([...autres.values()].flat().map((x) => x.lcc))
+  const autresLcc = [...autres.values()].flat().map((x) => x.lcc)
+  const [{ clientByLcc, commandeNumByLcc }, articleByLcc] = await Promise.all([
+    reservationsClient(autresLcc),
+    articlesDesLignesClient(autresLcc),
+  ])
   const sstNames = await resolveMagasinNames(lines.map((l: any) => Number(l.sstid)))
   return lines.map((l: any) => {
     const lid = Number(l.lid)
@@ -3241,6 +3271,7 @@ async function buildTricotage(ecruRefId: number, rendement: number, coloriIds: n
       autres_reservations: (autres.get(lid) ?? []).map((x) => ({
         client_nom: clientByLcc.get(x.lcc) ?? null,
         commande_numero: commandeNumByLcc.get(x.lcc) ?? null,
+        article: articleByLcc.get(x.lcc) ?? null,
         poids: round2c(x.poids),
         toute_commande: x.toute,
       })),
@@ -5320,6 +5351,18 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
         SELECT 'col', idcolori_fil, reference FROM colori_fil WHERE idcolori_fil IN ${sql([0, ...paires.map((p) => p.coloriFil)])}`,
     ])
     const attenteParCmd = new Map(attente.map((a) => [Number(a.cmd), Number(a.kg)]))
+    // Who else waits on each order line (the reservation dialog's répartition): the other client lines.
+    const autresSurCmd = await sql<{ cmd: number; lcc: number; kg: number }[]>`
+      SELECT idref_fil_commande AS cmd, idligne_commande_client AS lcc, SUM(quantite)::float8 AS kg FROM reservation_fil
+       WHERE idref_fil_commande IN ${sql([0, ...cmdIds])} AND idstock_fil = 0 AND liberee_le IS NULL
+         AND idligne_commande_client <> ${ligneId}
+       GROUP BY idref_fil_commande, idligne_commande_client
+       ORDER BY idligne_commande_client`
+    const autresLcc = autresSurCmd.map((a) => Number(a.lcc))
+    const [{ clientByLcc, commandeNumByLcc }, articleByLcc] = await Promise.all([
+      reservationsClient(autresLcc),
+      articlesDesLignesClient(autresLcc),
+    ])
     const nomRef = new Map(noms.filter((n) => n.kind === 'ref').map((n) => [Number(n.id), (n.label ?? '').trim()]))
     const nomCol = new Map(noms.filter((n) => n.kind === 'col').map((n) => [Number(n.id), (n.label ?? '').trim()]))
     // Stock on hand: net of what open OFs still draw (legacy « disponible ») and of the lots'
@@ -5414,6 +5457,12 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
               reserve: round2c(attenteParCmd.get(l.id) ?? 0),
               libre: round2c(Math.max(0, reste - (attenteParCmd.get(l.id) ?? 0))),
               pour_ligne: mienSurCmd.get(l.id) ?? 0,
+              autres_reservations: autresSurCmd.filter((a) => Number(a.cmd) === l.id).map((a) => ({
+                client_nom: clientByLcc.get(Number(a.lcc)) ?? null,
+                commande_numero: commandeNumByLcc.get(Number(a.lcc)) ?? null,
+                article: articleByLcc.get(Number(a.lcc)) ?? null,
+                kg: round2c(Number(a.kg)),
+              })),
             }
           }),
       }

@@ -14,13 +14,14 @@
 // A reservation never goes beyond what the line needs + 10 % (all forms together).
 import { useState, type ComponentType, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Check, CheckCircle2, Loader2, Pencil, X } from 'lucide-react'
+import { AlertCircle, Check, CheckCircle2, Loader2, Pencil, Save, X } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
 import { KnitIcon } from '@/components/icons/KnitIcon'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Tooltip } from '@/components/ui/tooltip'
 import { ZoneLigne } from '@/components/commandes/ZonesLigne'
+import { AffecteGauge, ChoixQuantite, RepartitionCommande, COULEURS_AUTRES_LIGNES, type PartCommande } from '@/components/commandes/ReservationParts'
 import { apiFetch } from '@/lib/api'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
@@ -41,6 +42,18 @@ interface CommandeFilLigne {
   libre: number
   /** what this line holds on it */
   pour_ligne: number
+  /** what the other client lines hold on it (still waiting): the reservation dialog's répartition */
+  autres_reservations?: { client_nom: string | null; commande_numero: number | null; article: string | null; kg: number }[]
+}
+
+/** The client line's own gauge, for the reservation dialog's footer: what its other stages already
+ *  cover (shipped, ready, at the dyer, being knitted) and its quantity, in the line's unit. */
+export interface JaugeLigne {
+  horsFil: number
+  cible: number
+  uniteLabel: string
+  /** a line in Ml (its yarn counts through the rendement) */
+  metrage: boolean
 }
 
 interface LotReservable {
@@ -361,46 +374,32 @@ function FilFormeZone({ commandeId, ligneId, soldee, forme }: { commandeId: numb
 /** The « Fil » tab (Vincent 2026-10-30): yarn is reserved on supplier ORDERS, not on physical matter,
  *  so matter and orders are one list. Per yarn of the recipe a band with what the line holds on order
  *  against its need (what the stock leaves), then every supplier order of that yarn the line can use,
- *  first to arrive on top (« Pour la ligne » shows which ones it uses). A click on a row reserves
- *  what is still missing (within what is free there, no kilos to type) or releases what the line holds
- *  there: the API's per-source route, same rules as the selector (need + 10 % cap). */
-export function FilLigneTab({ commandeId, ligneId, soldee, planifier }: {
+ *  first to arrive on top (« Pour la ligne » shows which ones it uses). A click on a row opens the
+ *  order's reservation dialog (Vincent 2026-11-13, same window as a knitting order's): how much the
+ *  line takes there, who else holds yarn on that order, and the line's own gauge. */
+export function FilLigneTab({ commandeId, ligneId, soldee, planifier, clientNom, articleLabel, jauge }: {
   commandeId: number
   ligneId: number
   soldee: boolean
   /** « Planifier » (the line's launch date): ordering the yarn can be the next step to hold */
   planifier?: ReactNode
+  /** the client of the order, and the line's « REF - coloris » (the reservation dialog) */
+  clientNom?: string
+  articleLabel?: string | null
+  jauge?: JaugeLigne
 }) {
   const { data, isLoading, isError } = useFilLigne(commandeId, ligneId)
   const refresh = useRafraichirFil(commandeId, ligneId)
-  const [enCours, setEnCours] = useState<number | null>(null)
-  const [erreur, setErreur] = useState<string | null>(null)
+  // The supplier order line whose reservation dialog is open.
+  const [cible, setCible] = useState<number | null>(null)
   const aujourdhui = new Date().toISOString().slice(0, 10).replace(/-/g, '')
   const yarns = data?.yarns ?? []
   const applicable = !!data?.applicable && yarns.length > 0
+  const yarnCible = cible === null ? undefined : yarns.find((y) => y.commandes.some((c) => c.IDref_fil_commande === cible))
+  const commandeCible = yarnCible?.commandes.find((c) => c.IDref_fil_commande === cible)
 
   // On order, the need is what the stock leaves (the Tricotage tab holds the lots).
   const besoinCommande = (y: FilYarn) => Math.max(0, besoinTotal(y) - enStock(y))
-  const aReserverSur = (y: FilYarn, c: CommandeFilLigne) =>
-    Math.max(0, Math.min(c.libre, besoinCommande(y) - enCommande(y), y.plafond_kg - enStock(y) - enCommande(y)))
-
-  const basculer = async (y: FilYarn, c: CommandeFilLigne) => {
-    const kg = c.pour_ligne > 0 ? 0 : Math.round(aReserverSur(y, c) * 100) / 100
-    if (c.pour_ligne <= 0 && kg <= 0.05) return
-    setEnCours(c.IDref_fil_commande)
-    setErreur(null)
-    try {
-      await apiFetch(`/commandes-client/${commandeId}/lignes/${ligneId}/fil/reservations/source`, {
-        method: 'PUT',
-        body: JSON.stringify({ IDref_fil_commande: c.IDref_fil_commande, kg }),
-      })
-    } catch (e) {
-      setErreur((e as { body?: { message?: string } })?.body?.message ?? 'La réservation a échoué')
-    } finally {
-      refresh()
-      setEnCours(null)
-    }
-  }
 
   const liberees = (data?.reservations ?? []).filter((r) => r.etat === 'liberee')
 
@@ -410,11 +409,6 @@ export function FilLigneTab({ commandeId, ligneId, soldee, planifier }: {
   else if (!applicable) contenu = <PasDeFil />
   else contenu = (
     <>
-      {erreur && (
-        <p className="mb-2 flex items-start gap-1.5 text-xs text-destructive">
-          <AlertCircle className="h-3.5 w-3.5 mt-px flex-shrink-0" /><span className="break-words">{erreur}</span>
-        </p>
-      )}
       {/* One table per yarn of the recipe (Vincent 2026-10-30): the yarn and what the line holds of it
           as the table's title, its usable supplier orders below. */}
       <div className="space-y-3">
@@ -467,20 +461,18 @@ export function FilLigneTab({ commandeId, ligneId, soldee, planifier }: {
                   </tr>
                 ) : lignes.map((c) => {
                   const utilisee = c.pour_ligne > 0
-                  const kg = aReserverSur(y, c)
-                  const cliquable = !soldee && enCours === null && (utilisee || kg > 0.05)
+                  const cliquable = !soldee
                   // Late = the supplier's date has passed (or none given): chasing it is ours, but only
                   // when the line waits on it (red = a Malterre action).
                   const enRetard = utilisee && (!c.date_livraison || c.date_livraison < aujourdhui)
                   const titre = soldee ? undefined
-                    : utilisee ? `Cliquer pour libérer les ${fmtNum(c.pour_ligne, 1)} kg réservés sur cette commande`
-                    : kg > 0.05 ? `Cliquer pour réserver ${fmtNum(kg, 1)} kg sur cette commande`
-                    : 'Le fil de la ligne est déjà couvert'
+                    : utilisee ? 'Cliquer pour modifier ou libérer la réservation de la ligne sur cette commande'
+                    : 'Cliquer pour réserver du fil de cette commande pour la ligne'
                   return (
                     <tr key={c.IDref_fil_commande} title={titre}
                       role={cliquable ? 'button' : undefined} tabIndex={cliquable ? 0 : undefined}
-                      onClick={cliquable ? () => basculer(y, c) : undefined}
-                      onKeyDown={cliquable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); basculer(y, c) } } : undefined}
+                      onClick={cliquable ? () => setCible(c.IDref_fil_commande) : undefined}
+                      onKeyDown={cliquable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setCible(c.IDref_fil_commande) } } : undefined}
                       className={cn('border-b border-border/40 last:border-0 select-none transition-colors',
                         utilisee ? 'bg-accent/[0.07]' : 'text-muted-foreground',
                         cliquable && 'cursor-pointer hover:bg-accent/10')}>
@@ -495,8 +487,7 @@ export function FilLigneTab({ commandeId, ligneId, soldee, planifier }: {
                         {fmtNum(c.libre, 1)} kg
                       </td>
                       <td className={cn('px-2.5 py-2 whitespace-nowrap text-right tabular-nums', utilisee && 'font-bold text-foreground')}>
-                        {enCours === c.IDref_fil_commande ? <Loader2 className="inline h-3.5 w-3.5 animate-spin text-accent" />
-                          : utilisee ? `${fmtNum(c.pour_ligne, 1)} kg` : '—'}
+                        {utilisee ? `${fmtNum(c.pour_ligne, 1)} kg` : '—'}
                       </td>
                     </tr>
                   )
@@ -537,10 +528,237 @@ export function FilLigneTab({ commandeId, ligneId, soldee, planifier }: {
   return (
     <div className="flex-1 overflow-y-auto p-3 scrollbar-transparent">
       <ZoneLigne kind="commandes" seule titre="Commandes de fil" actions={planifier ?? undefined}
-        aide="Le fil se commande dans Fils › Commandes ; un clic sur une commande y réserve ce qui manque à la ligne, ou libère ce qu’elle y tient">
+        aide="Le fil se commande dans Fils › Commandes ; un clic sur une commande ouvre sa réservation pour la ligne">
         {contenu}
       </ZoneLigne>
+      {data && yarnCible && commandeCible && (
+        <ReservationCommandeFilDialog
+          key={commandeCible.IDref_fil_commande}
+          data={data}
+          yarn={yarnCible}
+          commande={commandeCible}
+          commandeId={commandeId}
+          ligneId={ligneId}
+          clientNom={clientNom}
+          articleLabel={articleLabel}
+          jauge={jauge}
+          onDone={refresh}
+          onClose={() => setCible(null)}
+        />
+      )}
     </div>
+  )
+}
+
+/** The reserved yarn as the écru it lets the line make, in the line's unit: the scarcest yarn of the
+ *  recipe decides, after the freinte de tricotage — the rule of the order's gauge (« Fil réservé »,
+ *  API filReserveParLigne), replayed here to project a reservation before it is saved. */
+function filEnUniteLigne(data: FilPayload, metrage: boolean, reserveDe: (y: FilYarn) => number): number {
+  let kg = Infinity
+  for (const y of data.yarns ?? []) {
+    if (!(y.pourcentage > 0)) continue
+    const r = reserveDe(y)
+    // + the centime a reservation of the rounded need may lack (as the API does)
+    kg = Math.min(kg, r > 0 ? (r + 0.01) / (y.pourcentage / 100) : 0)
+  }
+  if (!Number.isFinite(kg) || !(kg > 0)) return 0
+  kg *= 1 - (data.freinte_tricotage?.taux ?? 0)
+  return metrage ? kg * (data.rendement ?? 0) : kg
+}
+
+type ModeReservation = 'besoin' | 'tout' | 'exacte' | 'rien'
+
+/** « Réservation — Commande de fil N° … » (Vincent 2026-11-13): the Fil tab's row dialog, the twin of a
+ *  knitting order's. 1 · how much the line takes on this supplier order: its need (what its other
+ *  sources leave), everything free there when that stays within need + 10 %, another quantity, or
+ *  nothing (release). 2 · the order's répartition: this line, the other client lines waiting on it,
+ *  what is free. Footer: the client line's own gauge, with the yarn this choice adds. Saved through
+ *  the API's per-source route (same caps). */
+function ReservationCommandeFilDialog({ data, yarn, commande: c, commandeId, ligneId, clientNom, articleLabel, jauge, onDone, onClose }: {
+  data: FilPayload
+  yarn: FilYarn
+  commande: CommandeFilLigne
+  commandeId: number
+  ligneId: number
+  clientNom?: string
+  articleLabel?: string | null
+  jauge?: JaugeLigne
+  /** after saving (or a refusal): refresh the yarn */
+  onDone: () => void
+  onClose: () => void
+}) {
+  const r2 = (x: number) => Math.round(x * 100) / 100
+  const tient = c.pour_ligne
+  const autres = c.autres_reservations ?? []
+  // What the line may take here: what is free on the order, its own hold included.
+  const dispoIci = r2(c.libre + tient)
+  // On order, the need is what the stock leaves; here, what the other supplier orders leave of it.
+  const besoinIci = r2(Math.max(0, besoinTotal(yarn) - enStock(yarn) - (enCommande(yarn) - tient)))
+  // Never beyond the yarn's need + 10 %, every source together (API plafondReservation).
+  const maxIci = r2(Math.max(0, Math.min(dispoIci, yarn.plafond_kg - (yarn.reserve_kg - tient))))
+  const besoinPossible = besoinIci > 0.05 && besoinIci <= dispoIci + 0.005
+  // Everything free there: when it is less than the need, or a little more (a whole 660 kg order for 650 kg).
+  const toutPossible = dispoIci > 0.05 && dispoIci <= maxIci + 0.005 && Math.abs(dispoIci - besoinIci) > 0.005
+  const libelleTout = autres.length > 0 || c.recu > 0.005 ? 'Tout le reste' : 'Toute la commande'
+
+  const [mode, setMode] = useState<ModeReservation>(() => {
+    if (tient > 0) {
+      if (besoinPossible && Math.abs(tient - besoinIci) < 0.005) return 'besoin'
+      if (toutPossible && Math.abs(tient - dispoIci) < 0.005) return 'tout'
+      return 'exacte'
+    }
+    return besoinPossible ? 'besoin' : toutPossible ? 'tout' : 'exacte'
+  })
+  const [valueStr, setValueStr] = useState(() => (tient > 0 ? fmtSaisie(tient) : ''))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const parsed = parseFloat(valueStr.replace(',', '.').replace(/\s/g, ''))
+  const saisi = Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+  // What the line holds on this order once saved, kg.
+  const value = r2(mode === 'besoin' ? besoinIci : mode === 'tout' ? dispoIci : mode === 'rien' ? 0 : saisi)
+  const over = mode === 'exacte' && saisi > maxIci + 0.005
+  const sansChangement = Math.abs(value - tient) <= 0.005
+  const canSubmit = !busy && !over && !sansChangement
+  // Why « Enregistrer » is greyed, on its hover: a disabled button with no reason reads as broken.
+  const pourquoiGrise = busy ? null
+    : over ? 'La quantité dépasse le maximum pour la ligne sur cette commande.'
+    : sansChangement ? (tient > 0 ? 'Déjà enregistré : changez la quantité.' : 'Saisissez une quantité.')
+    : null
+
+  // The order's répartition, on what is still to receive: this line, the other lines, what is free.
+  const parts: PartCommande[] = [
+    { cle: 'moi', nom: 'Cette ligne', article: articleLabel ?? '', kg: value, couleur: 'bg-accent', fort: true },
+    ...autres.map((a, i) => ({
+      cle: `a${i}`,
+      nom: a.client_nom ?? 'Autre client',
+      detail: a.commande_numero ? `N° ${a.commande_numero}` : '',
+      article: a.article ?? '',
+      kg: a.kg,
+      couleur: COULEURS_AUTRES_LIGNES[i % COULEURS_AUTRES_LIGNES.length],
+    })),
+  ]
+  const libre = r2(Math.max(0, c.reste - parts.reduce((s, p) => s + Math.max(0, p.kg), 0)))
+
+  // The client line's gauge with this choice: its other stages + the yarn reserved, as écru.
+  const projete = jauge
+    ? jauge.horsFil + filEnUniteLigne(data, jauge.metrage, (y) => (y === yarn ? y.reserve_kg + (value - tient) : y.reserve_kg))
+    : 0
+
+  const enregistrer = async () => {
+    if (!canSubmit) return
+    setError(null)
+    setBusy(true)
+    try {
+      await apiFetch(`/commandes-client/${commandeId}/lignes/${ligneId}/fil/reservations/source`, {
+        method: 'PUT',
+        body: JSON.stringify({ IDref_fil_commande: c.IDref_fil_commande, kg: value }),
+      })
+      onDone()
+      onClose()
+    } catch (e) {
+      setError((e as { body?: { message?: string } })?.body?.message ?? 'La réservation a échoué')
+      onDone()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o && !busy) onClose() }}>
+      <DialogContent className="max-w-lg p-0 border-0 bg-primary overflow-hidden flex flex-col">
+        <div className="flex-shrink-0 flex items-center gap-2.5 rounded-t-lg border-b-2 border-gold bg-primary px-4 py-2.5">
+          <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
+            <BobineIcon className="h-[18px] w-[18px]" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">
+              Réservation — Commande de fil N° {c.IDcommande_fil}
+            </h2>
+            <p className="text-xs text-white/70 truncate">
+              {c.fournisseur || 'Fournisseur'} · {c.date_livraison ? formatHfsqlDate(c.date_livraison) : 'sans date'} · {fmtNum(c.quantite, 1)} kg de {nomDuFil(yarn)}
+            </p>
+          </div>
+          <Button variant="ghost" size="icon" title="Fermer" disabled={busy} onClick={onClose}
+            className="h-8 w-8 flex-shrink-0 text-white/80 hover:bg-white/15 hover:text-white">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="p-4 bg-zinc-100 space-y-3">
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">Réserver pour {clientNom ?? 'cette ligne'}</p>
+            <ChoixQuantite
+              mode={mode}
+              onChange={setMode}
+              disabled={busy}
+              options={[
+                ...(besoinPossible ? [{ cle: 'besoin' as const, label: 'Besoin de la ligne', detail: `${fmtNum(besoinIci, 1)} kg` }] : []),
+                ...(toutPossible ? [{ cle: 'tout' as const, label: libelleTout, detail: `${fmtNum(dispoIci, 1)} kg` }] : []),
+                { cle: 'exacte' as const, label: 'Autre quantité', detail: 'à saisir' },
+                // the words of a knitting order (Vincent 2026-11-13): what no line reserves is « stock », never « libre »
+                ...(tient > 0 ? [{ cle: 'rien' as const, label: 'Ne rien réserver', detail: '0 kg' }] : []),
+              ]}
+            />
+            {mode === 'exacte' && (
+              <div className="pt-1 space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Quantité réservée</label>
+                <div className="relative">
+                  <input
+                    type="text" inputMode="decimal" value={valueStr} disabled={busy} placeholder="0" autoFocus
+                    onChange={(e) => setValueStr(e.target.value)}
+                    // what the line already holds is pre-filled: selected, so typing replaces it
+                    onFocus={(e) => e.target.select()}
+                    className="w-full h-10 pl-3 pr-10 text-base font-semibold text-right tabular-nums rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">kg</span>
+                </div>
+                {/* the most the line may take here: said when the need + 10 % cap lowers it below what is
+                    free on the order (already in the répartition), or once the typed quantity goes past it */}
+                {(over || maxIci < dispoIci - 0.005) && (
+                  <div className={cn('flex items-baseline justify-between gap-2 text-[11px] tabular-nums', over ? 'text-destructive font-medium' : 'text-muted-foreground')}
+                    title="Au plus le besoin de la ligne en ce fil + 10 %, et ce qu’aucune autre ligne ne réserve sur la commande">
+                    <span>Maximum pour la ligne sur cette commande</span>
+                    <span>{fmtNum(maxIci, 1)} kg</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <RepartitionCommande
+            titre={c.recu > 0.005 ? `Répartition du fil encore à recevoir · ${fmtNum(c.recu, 1)} kg déjà reçus` : 'Répartition de la commande de fil'}
+            total={c.reste}
+            parts={parts}
+            reste={{ nom: 'Stock', kg: libre }}
+          />
+        </div>
+
+        <div className="flex-shrink-0 rounded-b-lg px-4 py-3 border-t border-border/60 bg-zinc-200">
+          {!!error && (
+            <div className="mb-2 flex items-start gap-1.5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span className="break-words">{error}</span>
+            </div>
+          )}
+          <div className="flex items-center gap-3">
+            {jauge
+              ? <AffecteGauge projected={projete} target={jauge.cible} uniteLabel={jauge.uniteLabel} libelle="réservé pour la ligne" />
+              : <div className="flex-1" />}
+            <div className="flex gap-2 flex-shrink-0">
+              <Button variant="outline" onClick={onClose} disabled={busy}>Annuler</Button>
+              {/* the span carries the reason: a disabled button shows no tooltip */}
+              <span title={pourquoiGrise ?? undefined}>
+                <Button onClick={enregistrer} disabled={!canSubmit}>
+                  {busy
+                    ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Enregistrement…</>
+                    : <><Save className="h-3.5 w-3.5 mr-1.5" />Enregistrer</>}
+                </Button>
+              </span>
+            </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
