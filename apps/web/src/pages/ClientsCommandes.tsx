@@ -5151,8 +5151,28 @@ function TricotageAffectationDialog({
   const toutePossible = !resteAutre && resteDispo > 0.005
   const libelleToute = autres.length > 0 ? 'Tout le reste' : 'Toute la commande'
 
-  const [mode, setMode] = useState<'toute' | 'exacte'>(() => {
-    if (current !== 0) return row.toute_commande && toutePossible ? 'toute' : 'exacte'
+  // An exact reservation is bounded by the other exact ones; a line on « tout le reste » gives way but
+  // must keep something.
+  const maxExacte = Math.round((quantite - exactesAutres - (resteAutre ? 0.01 : 0)) * 100) / 100
+  // « Besoin de la ligne » (Vincent 2026-11-13): what the line still misses once everything it holds
+  // elsewhere is counted, in kg of this order, rounded up to the kilo — 2 000 Ml on a 2 645 kg order
+  // = 564 kg, a figure the person had to work out by hand. Saved as an exact quantity. Offered only
+  // when the order holds more than that, otherwise « Toute la commande » says the same.
+  const dejaAilleurs = reserved - (dim === 'metrage' ? current * rendement : current)
+  const manque = Math.max(0, target - dejaAilleurs)
+  const besoinKg = dim === 'metrage'
+    ? (rendement > 0 ? Math.ceil(manque / rendement - 0.005) : 0)
+    : Math.ceil(manque - 0.005)
+  const besoinPossible = besoinKg > 0 && besoinKg <= maxExacte + 0.005 && (!!resteAutre || besoinKg < resteDispo - 0.005)
+
+  const [mode, setMode] = useState<'besoin' | 'toute' | 'exacte'>(() => {
+    if (current !== 0) {
+      if (row.toute_commande && toutePossible) return 'toute'
+      return besoinPossible && Math.abs(current - besoinKg) < 0.005 ? 'besoin' : 'exacte'
+    }
+    // Nothing reserved yet: the need when the order is clearly bigger than it (over 10 %, the yarn
+    // tab's tolerance), the whole order when it was sized for the line.
+    if (besoinPossible && (!toutePossible || autres.length > 0 || resteDispo > besoinKg * 1.1)) return 'besoin'
     return toutePossible && autres.length === 0 ? 'toute' : 'exacte'
   })
   const [valueStr, setValueStr] = useState(() => (current !== 0 && !row.toute_commande ? String(current) : ''))
@@ -5162,11 +5182,8 @@ function TricotageAffectationDialog({
   const parsed = parseFloat(valueStr.replace(',', '.'))
   const saisi = Number.isFinite(parsed) ? parsed : 0
   // What the line reserves once saved, kg.
-  const value = mode === 'toute' ? resteDispo : saisi
+  const value = mode === 'toute' ? resteDispo : mode === 'besoin' ? besoinKg : saisi
   const delta = value - current
-  // An exact reservation is bounded by the other exact ones; a line on « tout le reste » gives way but
-  // must keep something.
-  const maxExacte = Math.round((quantite - exactesAutres - (resteAutre ? 0.01 : 0)) * 100) / 100
   const over = mode === 'exacte' && saisi > maxExacte + 0.005
   const projected = dim === 'metrage' ? reserved + delta * rendement : reserved + delta
   const modeChange = (mode === 'toute') !== (current !== 0 && row.toute_commande)
@@ -5183,7 +5200,7 @@ function TricotageAffectationDialog({
   const moi = clientNom ?? 'Cette commande'
   const COULEURS = ['bg-primary', 'bg-accent-blue', 'bg-teal']
   const segments = [
-    { cle: 'moi', nom: moi, detail: 'cette ligne', kg: value, tag: mode === 'toute' ? libelleToute.toLowerCase() : null, couleur: 'bg-accent' },
+    { cle: 'moi', nom: 'Cette ligne', detail: '', kg: value, tag: null as string | null, couleur: 'bg-accent' },
     ...autres.map((a, i) => ({
       cle: `a${i}`,
       nom: a.client_nom ?? 'Autre client',
@@ -5221,20 +5238,22 @@ function TricotageAffectationDialog({
         <BandeauDialog
           icon={KnitIcon}
           titre={`Réservation — Commande N° ${row.commande_id}`}
-          sousTitre={<>
-            {row.sous_traitant_nom || 'Tricoteur'} · {fmtSupplyDate(row.date_commande)} · {fmtNum(quantite, 1)} kg
-            {row.etat_label && <> · <SupplyEtatPill label={row.etat_label} /></>}
-          </>}
+          sousTitre={<>{row.sous_traitant_nom || 'Tricoteur'} · {fmtSupplyDate(row.date_commande)} · {fmtNum(quantite, 1)} kg</>}
           disabled={busy}
           onClose={onClose}
         />
 
         <div className="p-4 bg-zinc-100 space-y-3">
-          {/* 1 · the mode, then the kg only for an exact quantity */}
-          <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card shadow-sm p-3 space-y-2">
+          {/* 1 · how much: each choice carries its kg, a field only for another quantity. No card: the
+              window holds this one decision, a frame would separate it from nothing (Vincent 2026-11-13). */}
+          <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">Réserver pour {moi}</p>
-            <div className="flex gap-1 rounded-md bg-zinc-100 p-1">
-              {([['toute', libelleToute], ['exacte', 'Quantité exacte']] as const).map(([k, label]) => {
+            <div className="flex gap-1 rounded-md p-1 bg-white border border-border/60 shadow-sm">
+              {([
+                ...(besoinPossible ? [['besoin', 'Besoin de la ligne', `${fmtNum(besoinKg, 1)} kg`] as const] : []),
+                ['toute', libelleToute, `${fmtNum(resteDispo, 1)} kg`],
+                ['exacte', 'Autre quantité', 'à saisir'],
+              ] as const).map(([k, label, detail]) => {
                 const off = k === 'toute' && !toutePossible
                 return (
                   <button
@@ -5244,30 +5263,16 @@ function TricotageAffectationDialog({
                     title={off ? (resteAutre ? `${resteAutre.client_nom ?? 'Une autre commande'} prend déjà tout le reste` : 'Plus rien à réserver sur cette commande') : undefined}
                     onClick={() => setMode(k)}
                     className={cn(
-                      'flex-1 px-2 py-1.5 text-sm rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
-                      mode === k ? 'bg-accent text-accent-foreground shadow-sm font-medium' : 'text-muted-foreground hover:bg-accent/10',
+                      'flex-1 min-w-0 px-2 py-1.5 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
+                      mode === k ? 'bg-accent text-accent-foreground shadow-sm' : 'text-muted-foreground hover:bg-accent/10',
                     )}
                   >
-                    {label}
+                    <span className={cn('block text-sm truncate', mode === k && 'font-medium')}>{label}</span>
+                    <span className={cn('block text-xs tabular-nums truncate', mode === k ? 'font-semibold' : 'opacity-80')}>{detail}</span>
                   </button>
                 )
               })}
             </div>
-            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Info className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
-              {mode === 'toute'
-                ? (autres.length > 0 ? 'Toutes les pièces non réservées, surplus compris.' : 'Toutes les pièces, surplus compris.')
-                : <>La quantité saisie, le surplus part {resteAutre ? <>à {resteAutre.client_nom ?? 'l’autre commande'}</> : 'en stock'}.</>}
-            </p>
-            {mode === 'toute' && (
-              <div className="flex items-baseline justify-between gap-2 border-t border-border/40 pt-2 text-sm tabular-nums">
-                <span className="text-xs text-muted-foreground">Prévu</span>
-                <span className="font-semibold">
-                  {fmtNum(resteDispo, 1)} kg
-                  {rendement > 0 && <span className="ml-1.5 text-xs font-normal text-muted-foreground">≈ {fmtNum(resteDispo * rendement, 1)} Ml</span>}
-                </span>
-              </div>
-            )}
             {mode === 'exacte' && (
               <div className="pt-1">
                 <TricoWeightField
@@ -5279,36 +5284,45 @@ function TricotageAffectationDialog({
                   refLabel={refLabel}
                   autoFocus
                 />
-                <div className={cn('flex items-baseline justify-between gap-2 text-[11px] tabular-nums', over ? 'text-destructive font-medium' : 'text-muted-foreground')}>
-                  <span>Maximum sur cette commande</span>
-                  <span>{fmtNum(Math.max(0, maxExacte), 1)} kg</span>
-                </div>
+                {/* the maximum is the order's kg, already in the band: said here only when other lines'
+                    reservations lower it, or once the typed quantity goes past it (Vincent 2026-11-13) */}
+                {(over || Math.abs(maxExacte - quantite) > 0.005) && (
+                  <div className={cn('flex items-baseline justify-between gap-2 text-[11px] tabular-nums', over ? 'text-destructive font-medium' : 'text-muted-foreground')}>
+                    <span>Maximum sur cette commande</span>
+                    <span>{fmtNum(Math.max(0, maxExacte), 1)} kg</span>
+                  </div>
+                )}
               </div>
             )}
           </div>
 
-          {/* 2 · who the order's pieces will go to */}
-          <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3 space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">Réservations de la commande N° {row.commande_id}</p>
-            <div className="h-2.5 rounded-full bg-zinc-200 overflow-hidden flex">
+          {/* 2 · what becomes of the knitting order, in kg: this line, the other lines, stock. It moves with
+              the choice above and stands for the sentence that used to explain it (Vincent 2026-11-13).
+              Labelled, since the footer carries another bar: the LINE's cover, in its own unit. */}
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-muted-foreground">Répartition de la commande de tricotage</p>
+            <div className="h-2.5 rounded-full bg-white border border-border/60 overflow-hidden flex">
               {quantite > 0 && segments.filter((s) => s.kg > 0).map((s) => (
-                <div key={s.cle} className={cn('h-full transition-all', s.couleur)} style={{ width: `${Math.min(100, (s.kg / quantite) * 100)}%` }} />
+                <div key={s.cle} title={`${s.nom} : ${fmtNum(s.kg, 1)} kg`} className={cn('h-full transition-all', s.couleur)} style={{ width: `${Math.min(100, (s.kg / quantite) * 100)}%` }} />
               ))}
+              {quantite > 0 && stock > 0 && (
+                <div title={`Stock : ${fmtNum(stock, 1)} kg`} className="h-full transition-all bg-zinc-300" style={{ width: `${Math.min(100, (stock / quantite) * 100)}%` }} />
+              )}
             </div>
-            <ul className="space-y-1 text-xs">
+            <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
               {segments.map((s) => (
-                <li key={s.cle} className="flex items-center gap-2 tabular-nums">
+                <li key={s.cle} className="flex items-center gap-1.5 tabular-nums min-w-0">
                   <span className={cn('h-2.5 w-2.5 rounded-sm flex-shrink-0', s.couleur)} />
                   <span className={cn('truncate', s.cle === 'moi' && 'font-medium')}>{s.nom}</span>
                   {s.detail && <span className="text-muted-foreground truncate">· {s.detail}</span>}
-                  {s.tag && <span className="text-[10px] rounded border border-border/60 bg-zinc-100 px-1 text-muted-foreground flex-shrink-0">{s.tag}</span>}
-                  <span className="ml-auto flex-shrink-0">{fmtNum(Math.max(0, s.kg), 1)} kg</span>
+                  <span className="flex-shrink-0 font-semibold">{fmtNum(Math.max(0, s.kg), 1)} kg</span>
+                  {s.tag && <span className="text-[10px] rounded border border-border/60 bg-white px-1 text-muted-foreground flex-shrink-0">{s.tag}</span>}
                 </li>
               ))}
-              <li className="flex items-center gap-2 tabular-nums text-muted-foreground">
-                <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0 bg-zinc-200 border border-border/60" />
+              <li className="flex items-center gap-1.5 tabular-nums text-muted-foreground">
+                <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0 bg-zinc-300" />
                 <span>Stock</span>
-                <span className="ml-auto flex-shrink-0">{fmtNum(stock, 1)} kg</span>
+                <span className="flex-shrink-0 font-semibold">{fmtNum(stock, 1)} kg</span>
               </li>
             </ul>
           </div>
@@ -5320,7 +5334,8 @@ function TricotageAffectationDialog({
               <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span className="break-words">{error}</span>
             </div>
           )}
-          {!error && pourquoiGrise && (
+          {/* an empty field needs no sentence (Vincent 2026-11-13): that reason stays on the button's hover */}
+          {!error && pourquoiGrise && !(sansChangement && current === 0) && (
             <p className="mb-2 text-right text-[11px] text-muted-foreground">{pourquoiGrise}</p>
           )}
           <div className="flex items-center gap-3">
