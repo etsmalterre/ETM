@@ -70,7 +70,9 @@ import {
   Cog,
   Users,
   Gift,
+  Zap,
 } from 'lucide-react'
+import { UrgenceDialog, jjmmIso, type UrgenceLigne } from '@/components/sst/UrgenceDialog'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -156,6 +158,9 @@ interface CommandeListRow {
    *  (lib/sst-tricotage.ts) and the kg gauge of the card. */
   urgence?: 'late' | 'soon' | null
   jauge?: JaugeTricotage
+  /** Tricotage only: an urgency asked of the knitter on a line without a délai (API lib/urgence-sst.ts):
+   *  its answer is awaited, or it is ours to chase (the card is then red). */
+  urgence_demandee?: 'attente' | 'a_relancer' | null
   /** Ennoblissement only: whose move, chase date, open lots and their step. */
   main?: MainCycle | null
   relance?: string | null
@@ -244,6 +249,8 @@ interface LigneCommande {
   /** YYYYMMDD the date we asked for (proposed at the launch from the doctrine, migration 0048); the
    *  partner's own délai stays date_livraison */
   date_demandee?: string | null
+  /** Knitting line without a délai: the urgency asked of the knitter and still awaited, null without one */
+  urgence?: UrgenceLigne | null
   date_reception: string | null
   commentaire: string | null
   sstatut: string | null
@@ -730,6 +737,8 @@ function raisonCarte(row: CommandeListRow, urgence: 'late' | 'soon' | null, tric
     if ((tricobot!.bl ?? 0) >= tricobot!.aValider + tricobot!.aide) return 'Tricobot : réception à valider'
     return `Tricobot : ${tricobot!.aValider + tricobot!.aide > 1 ? 'délais à valider' : 'délai à valider'}`
   }
+  // An urgency asked of the knitter whose answer did not come (API lib/urgence-sst.ts).
+  if (row.urgence_demandee === 'a_relancer') return 'Urgence demandée : relancer le tricoteur'
   if (!urgence) return null
   const quand = (iso: string | null | undefined) => {
     if (!iso) return ''
@@ -1935,6 +1944,8 @@ function LignesSection({
   const enRevue = !isEditing && saisiesOuvertes.some((x) => x.statut === 'a_revoir')
   const lignesTricobot = new Set(saisiesOuvertes.map((x) => x.idligne))
   const [deleteLineConfirmId, setDeleteLineConfirmId] = useState<number | null>(null)
+  /** the knitting line whose urgency dialog is open */
+  const [urgenceLigneId, setUrgenceLigneId] = useState<number | null>(null)
   const [deleteLineError, setDeleteLineError] = useState<string | null>(null)
   // For ennoblisseur lines, IDreference holds an IDref_fini (the desired
   // dyed/finished reference). The drawer maps fini → écru via ref_fini.IDref_ecru
@@ -2258,6 +2269,7 @@ function LignesSection({
                   dateNotif={commande.date_notif}
                   cycleUrgence={commande.cycle ? commande.cycle.urgence : undefined}
                   traitement={commande.cycle?.traitement}
+                  onUrgence={commande.famille === 'tricotage' && !isEditing && !linesLocked ? () => setUrgenceLigneId(l.IDligne_commande_sous_traitant) : undefined}
                   onEdit={() => startEditLine(l)}
                   onDelete={() => setDeleteLineConfirmId(l.IDligne_commande_sous_traitant)}
                   onOpenDrawer={onOpenPiecesDrawer}
@@ -2453,14 +2465,33 @@ function LignesSection({
           }
         }}
       />
+
+      {/* The urgency asked of the knitter on a line still without its délai (API lib/urgence-sst.ts). */}
+      {(() => {
+        const l = urgenceLigneId !== null ? commande.lignes.find((x) => x.IDligne_commande_sous_traitant === urgenceLigneId) ?? null : null
+        return (
+          <UrgenceDialog
+            open={l !== null}
+            commandeId={commande.IDcommande_sous_traitant}
+            ligneId={l?.IDligne_commande_sous_traitant ?? 0}
+            article={l ? `${l.ref_label || '—'}${l.colori_reference ? ` - ${l.colori_reference}` : ''}` : ''}
+            urgence={l?.urgence ?? null}
+            dateDemandee={l?.date_demandee ?? null}
+            onClose={() => setUrgenceLigneId(null)}
+          />
+        )
+      })()}
     </>
   )
 }
 
 function LineCard({
-  line, isEditing, linesLocked, isEnnoblisseur, linesEditable, isDrawerOpen, bonEnvoyeAt, dateNotif, cycleUrgence, traitement, onEdit, onDelete, onOpenDrawer,
+  line, isEditing, linesLocked, isEnnoblisseur, linesEditable, isDrawerOpen, bonEnvoyeAt, dateNotif, cycleUrgence, traitement, onUrgence, onEdit, onDelete, onOpenDrawer,
 }: {
   line: LigneCommande
+  /** Knitting order, view mode: opens the urgency dialog of the line (ask, chase, give up). Absent =
+   *  the gesture is not offered (the urgency already asked still shows). */
+  onUrgence?: () => void
   isEditing: boolean
   linesLocked: boolean
   isEnnoblisseur: boolean
@@ -2637,6 +2668,39 @@ function LineCard({
     </p>
   ) : null
 
+  // The urgency asked of the knitter while the line has no délai (API lib/urgence-sst.ts, Vincent
+  // 2026-11-16): neutral while its answer is awaited, red once the day has passed (chase it). The
+  // knitter's délai ends it. Without one, the gesture to ask.
+  const urgenceLigne = !dateLivRaw && !lineDone ? line.urgence ?? null : null
+  const urgenceCoin: React.ReactNode = urgenceLigne ? (
+    <button
+      type="button"
+      disabled={!onUrgence}
+      onClick={(e) => { e.stopPropagation(); onUrgence?.() }}
+      title={onUrgence ? 'Relancer ou lever l’urgence' : undefined}
+      className={cn('mt-0.5 inline-flex items-center gap-1 text-[11px] whitespace-nowrap', onUrgence && 'cursor-pointer hover:underline')}
+    >
+      <Zap className={cn('h-3 w-3', urgenceLigne.aRelancer ? 'text-red-600' : 'text-muted-foreground')} />
+      {urgenceLigne.aRelancer ? (
+        <span className="font-medium text-red-600">Urgence sans réponse depuis le {jjmmIso(urgenceLigne.reponseAttendue)} : relancer</span>
+      ) : (
+        <>
+          <span className="font-medium">Urgence demandée</span>
+          <span className="text-muted-foreground">· réponse attendue le {jjmmIso(urgenceLigne.reponseAttendue)}</span>
+        </>
+      )}
+    </button>
+  ) : onUrgence && !dateLivRaw && !lineDone ? (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onUrgence() }}
+      title="Le tricoteur a été prié de faire au plus vite : noter la demande et le jour où sa réponse est attendue"
+      className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-accent transition-colors cursor-pointer whitespace-nowrap"
+    >
+      <Zap className="h-3 w-3" />Demander une urgence
+    </button>
+  ) : null
+
   return (
     <div
       className={cn(
@@ -2665,8 +2729,8 @@ function LineCard({
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          {delaiCoin && (
-            <div className="text-right" data-tricobot-cible={line.IDligne_commande_sous_traitant}>{delaiCoin}</div>
+          {(delaiCoin || urgenceCoin) && (
+            <div className="flex flex-col items-end text-right" data-tricobot-cible={line.IDligne_commande_sous_traitant}>{delaiCoin}{urgenceCoin}</div>
           )}
           {isEditing && !linesLocked && (
             <div className="flex gap-0.5">

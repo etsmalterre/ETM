@@ -87,7 +87,8 @@ import { commandesEnPreparation, estEnPreparation, mettreEnPreparation, refuseSi
 import { enregistrerReport, estUnReport, IMPUTABLES, reportsLigne } from '../lib/report-ligne-client.js'
 import { ETAPES_LANCEMENT, datesLancement, fixerDateLancement, historiqueLancement, leverAuLancement, versDatePg } from '../lib/lancement-ligne.js'
 import { besoinsParStade, type StadesLigne } from '../lib/besoin-stades.js'
-import { aujourdhuiYmd, delaiAuPlusTot, FIL_ESTIME_JOURS, partenairesParDefaut, type DelaiAuPlusTot } from '../lib/delai-au-plus-tot.js'
+import { aujourdhuiYmd, delaiAuPlusTot, FIL_ESTIME_JOURS, partenairesParDefaut, type DelaiAuPlusTot, type UrgenceEtape } from '../lib/delai-au-plus-tot.js'
+import { urgencesOuvertes } from '../lib/urgence-sst.js'
 import { ajouterJoursOuvres, joursOuvresEntre } from '../lib/jours-ouvres.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
@@ -334,6 +335,7 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
       lancementEtape: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
       preteSiLanceLe: pretes.get(Number(l.IDligne_commande_client)) ?? null,
       preteAuPlusTot: auPlusTot.get(Number(l.IDligne_commande_client))?.date ?? null,
+      urgenceReponseLe: urgenceEtapeDe(auPlusTot.get(Number(l.IDligne_commande_client)))?.reponseAttendue ?? null,
     })
     parCommande.set(cid, arr)
   }
@@ -1915,6 +1917,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
             lancementEtape: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
             preteSiLanceLe: preteSiLance,
             preteAuPlusTot: auPlusTotLigne?.date ?? null,
+            urgenceReponseLe: urgenceEtapeDe(auPlusTotLigne)?.reponseAttendue ?? null,
           }, new Date())?.niveau ?? null
           : null,
       }
@@ -5193,7 +5196,8 @@ function commandeFilAttendue(f: FaitsLigneClient | undefined): { partenaire: str
  *  at a dyer (per dyer line, with its délai) and the knitting launched (its latest délai). Flat queries. */
 interface OrdresLigne {
   enno: { metrage: number; poids: number; partenaire: string | null; delai: string | null; engagement: string | null }[]
-  tricotage: { partenaire: string | null; delai: string | null; engagement: string | null } | null
+  /** `urgence`: asked of the knitter on that line while it has no délai (lib/urgence-sst.ts) */
+  tricotage: { partenaire: string | null; delai: string | null; engagement: string | null; urgence: UrgenceEtape | null } | null
 }
 async function ordresEnCoursParLigne(lineIds: readonly number[], agg: Map<number, AgregatLigne>): Promise<Map<number, OrdresLigne>> {
   const out = new Map<number, OrdresLigne>()
@@ -5215,6 +5219,12 @@ async function ordresEnCoursParLigne(lineIds: readonly number[], agg: Map<number
       LEFT JOIN sous_traitant st ON st.idsous_traitant = c.idsous_traitant
      WHERE l.idligne_commande_sous_traitant = ANY(${[...sstIds] as any})`
   const parId = new Map(lignes.map((l) => [Number(l.id), l]))
+  // Urgencies asked of the knitter on the knitting lines still without a délai.
+  const today = aujourdhuiYmd()
+  const compact = (iso: string) => iso.replace(/-/g, '')
+  const urgences = await urgencesOuvertes(
+    [...new Set(alloc.map((a) => Number(a.lsst)))].map((id) => ({ id, aUnDelai: /^\d{8}$/.test(parId.get(id)?.delai ?? '') })),
+    `${today.slice(0, 4)}-${today.slice(4, 6)}-${today.slice(6, 8)}`, sql)
   const nom = (l: { nom: string | null } | undefined) => String(l?.nom ?? '').trim() || null
   const ouverte = (l: { sstatut: string | null; soldee: number | null } | undefined) =>
     !!l && !String(l.sstatut ?? '').startsWith('Termin') && Number(l.soldee) !== 1
@@ -5226,7 +5236,14 @@ async function ordresEnCoursParLigne(lineIds: readonly number[], agg: Map<number
     // The knitting launched: the latest délai of its open knitting lines (one knitting order in practice).
     const trico = alloc.filter((a) => Number(a.lcc) === id).map((a) => parId.get(Number(a.lsst))).filter(ouverte)
     const tard = trico.sort((x, y) => String(y!.delai ?? '99999999').localeCompare(String(x!.delai ?? '99999999')))[0]
-    out.set(id, { enno, tricotage: tard ? { partenaire: nom(tard), delai: tard.delai ?? null, engagement: tard.engagement ?? null } : null })
+    const u = tard && !tard.delai ? urgences.get(Number(tard.id)) : undefined
+    out.set(id, {
+      enno,
+      tricotage: tard ? {
+        partenaire: nom(tard), delai: tard.delai ?? null, engagement: tard.engagement ?? null,
+        urgence: u ? { demandeeLe: compact(u.demandeeLe), reponseAttendue: compact(u.reponseAttendue), aRelancer: u.aRelancer } : null,
+      } : null,
+    })
   }
   return out
 }
@@ -5285,6 +5302,11 @@ async function auPlusTotLignes(lignes: LigneAuPlusTot[], dateRetenue: string | n
   const today = aujourdhuiYmd()
   return new Map(ls.map((l) => [l.id, auPlusTotDe(l, agg.get(l.id) ?? agregatVide(), fil.get(l.id) ?? 0, faits.get(l.id), rouleaux.get(l.id), p,
     apresAujourdhui(depuis?.get(l.id), today), dateRetenue, ordres.get(l.id), enCours.has(l.id), desReception)]))
+}
+
+/** The urgency asked of a partner on a step of the earliest date still without a délai (the knitting). */
+function urgenceEtapeDe(a: DelaiAuPlusTot | null | undefined): UrgenceEtape | null {
+  return a?.etapes.find((e) => e.urgence)?.urgence ?? null
 }
 
 /** The later of a launch date (YYYYMMDD) and today: a passed date launches today. */

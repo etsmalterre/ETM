@@ -54,6 +54,7 @@ import {
   Barcode,
   BadgeEuro,
   FlaskConical,
+  Zap,
 } from 'lucide-react'
 import { ML_NON_FACTURES_PERMISSION, MlNonFacturesDialog } from '@/components/shared/MlNonFactures'
 import { KnitIcon } from '@/components/icons/KnitIcon'
@@ -217,6 +218,8 @@ interface AuPlusTot {
     partenaire?: string | null; delai?: string | null; depasse?: boolean
     /** that partner's first délai on its order, and how many working days its current one is behind (LIVA #1364) */
     engagement?: string | null; retard?: number
+    /** an estimated step: the urgency asked of that partner and still awaited (API lib/urgence-sst.ts), YYYYMMDD */
+    urgence?: { demandeeLe: string; reponseAttendue: string; aRelancer: boolean }
   }[]
   /** part of the quantity has no matter reserved */
   sansMatiere: boolean
@@ -240,6 +243,13 @@ const fmtJours = (n: number) => `${String(n).replace('.', ',')} j`
  *  for the margin (Vincent 2026-10-29: temporary, still to spread at the launches). */
 /** A delay: the engagement passed, or a partner past its délai (Vincent 2026-11-02). */
 const COULEUR_RETARD = '#dc2626'
+/** …an estimated delay while the partner's answer to an urgency is awaited: nothing to do, neutral. */
+const COULEUR_ATTENTE = '#a1a1aa'
+
+/** The urgency asked of a partner on a step of the earliest date still without a délai (the knitting). */
+function urgenceEtape(a: AuPlusTot | null | undefined) {
+  return a?.etapes.find((e) => e.urgence)?.urgence ?? null
+}
 const COULEUR_ETAPE: Record<string, string> = {
   Fil: '#bbf7d0', Tricotage: '#86efac', Ennoblissement: '#4ade80', 'Contrôle qualité': '#22c55e', 'Réserve Malterre': 'hsl(var(--primary))', Marge: '#f59e0b',
 }
@@ -251,6 +261,12 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
   /** the date given and its context; absent = the line has no date yet (earliest date only) */
   entete?: { date: string; lignes: string[] }
 }) {
+  // A delay resting on a step nobody gave a délai for is an estimate (Vincent 2026-11-16): the
+  // partner's standard from today, which slides every morning. And while an urgency asked of that
+  // partner awaits its answer, there is nothing to do at Malterre: the delay reads neutral.
+  const estime = !!a?.etapes.some((e) => e.estime)
+  const urgence = urgenceEtape(a)
+  const enAttente = !!urgence && !urgence.aRelancer
   return (
     <div className="w-max min-w-[260px] max-w-[340px] py-1 font-normal">
       {entete && (
@@ -266,10 +282,12 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
               steps (Vincent 2026-10-29). Negative = « Retard », red (Vincent 2026-11-02). */}
           {entete && a.marge != null && a.marge !== 0 && (
             <div className="mb-2 flex items-center gap-2 text-xs tabular-nums">
-              <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: a.marge < 0 ? COULEUR_RETARD : COULEUR_ETAPE.Marge, boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
-              <span className={cn('flex-1', a.marge < 0 && 'text-red-600 font-medium')}>{a.marge < 0 ? 'Retard' : 'Marge'}</span>
+              <span className="h-2.5 w-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: a.marge < 0 ? (enAttente ? COULEUR_ATTENTE : COULEUR_RETARD) : COULEUR_ETAPE.Marge, boxShadow: 'inset 0 0 0 1px rgb(0 0 0 / 0.08)' }} />
+              <span className={cn('flex-1', a.marge < 0 && (enAttente ? 'font-medium' : 'text-red-600 font-medium'))}>
+                {a.marge < 0 ? (estime ? 'Retard estimé' : 'Retard') : 'Marge'}
+              </span>
               {a.marge > 0 && <span className="text-muted-foreground">{formatHfsqlDate(a.date).slice(0, 5)} → {formatHfsqlDate(entete.date).slice(0, 5)}</span>}
-              <span className={cn('w-10 text-right font-semibold', a.marge < 0 && 'text-red-600')}>{fmtJours(Math.abs(a.marge))}</span>
+              <span className={cn('w-10 text-right font-semibold', a.marge < 0 && !enAttente && 'text-red-600')}>{fmtJours(Math.abs(a.marge))}</span>
             </div>
           )}
           <div className="flex items-baseline justify-between gap-3">
@@ -295,6 +313,14 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
                   <p className="pl-[18px] text-[11px] font-medium text-red-600">
                     Retard {e.libelle === 'Fil' ? 'fournisseur' : e.libelle === 'Tricotage' ? 'tricoteur' : 'ennoblisseur'}{e.partenaire ? ` ${e.partenaire}` : ''} : {fmtJours(e.retard)}
                     {e.engagement && <span className="font-normal text-muted-foreground"> (engagement {formatHfsqlDate(e.engagement).slice(0, 5)})</span>}
+                  </p>
+                )}
+                {/* An urgency asked of that partner while it has given no délai (Vincent 2026-11-16). */}
+                {e.urgence && (
+                  <p className={cn('pl-[18px] text-[11px]', e.urgence.aRelancer ? 'font-medium text-red-600' : 'text-muted-foreground')}>
+                    {e.urgence.aRelancer
+                      ? `Urgence demandée le ${formatHfsqlDate(e.urgence.demandeeLe).slice(0, 5)}, sans réponse : relancer${e.partenaire ? ` ${e.partenaire}` : ''}`
+                      : `Urgence demandée le ${formatHfsqlDate(e.urgence.demandeeLe).slice(0, 5)} · réponse attendue le ${formatHfsqlDate(e.urgence.reponseAttendue).slice(0, 5)}`}
                   </p>
                 )}
                 </div>
@@ -2508,6 +2534,27 @@ function LineCard({
         })()}
       </div>
       {enEtude && <EtudeLigneBandeau line={line} canRelancer={!isEditing} />}
+      {/* An urgency asked of the knitter on the knitting this line waits for (API lib/urgence-sst.ts,
+          Vincent 2026-11-16): asked and chased on the knitting order; here it says why a date that
+          cannot be held is not red, or that the knitter must be chased. */}
+      {(() => {
+        const etape = line.statut?.etat === 'expediee' || line.statut?.etat === 'soldee' ? null : line.au_plus_tot?.etapes.find((e) => e.urgence)
+        const u = etape?.urgence
+        if (!u) return null
+        const qui = etape?.partenaire ? ` à ${etape.partenaire}` : ''
+        const due = u.aRelancer && line.urgence === 'rouge'
+        return (
+          <div className="flex items-center gap-1.5 mt-2 text-[11px]">
+            <Zap className={cn('h-3 w-3 flex-shrink-0', due ? 'text-red-600' : 'text-muted-foreground/60')} />
+            <span className={cn('truncate', due ? 'text-red-600 font-medium' : 'text-muted-foreground')}>
+              Urgence demandée{qui} le {formatHfsqlDate(u.demandeeLe).slice(0, 5)}
+              {u.aRelancer
+                ? ` · sans réponse depuis le ${formatHfsqlDate(u.reponseAttendue).slice(0, 5)} : relancer sur la commande de tricotage`
+                : ` · réponse attendue le ${formatHfsqlDate(u.reponseAttendue).slice(0, 5)}`}
+            </span>
+          </div>
+        )
+      })()}
       {!!line.commentaire?.trim() && (
         <div className="flex items-start gap-1.5 mt-2">
           <MessageSquare className="h-3 w-3 text-muted-foreground/50 flex-shrink-0 mt-0.5" />

@@ -28,6 +28,7 @@ import {
   ThumbsUp,
   Trash2,
   Truck,
+  Zap,
   type LucideIcon,
 } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
@@ -64,6 +65,7 @@ const LOOK: Record<string, { icon: LucideIcon; color: string }> = {
   creation: { icon: FilePlus2, color: 'text-zinc-600 bg-zinc-500/10' },
   bon_commande: { icon: AtSign, color: 'text-blue-700 bg-blue-500/10' },
   relance: { icon: BellRing, color: 'text-amber-700 bg-amber-500/10' },
+  urgence: { icon: Zap, color: 'text-primary bg-primary/10' },
   report: { icon: CalendarClock, color: 'text-orange-600 bg-orange-500/10' },
   delai_recu: { icon: CalendarCheck, color: 'text-green-700 bg-green-500/10' },
   point: { icon: MessageSquareText, color: 'text-sky-600 bg-sky-500/10' },

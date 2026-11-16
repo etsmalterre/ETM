@@ -97,6 +97,7 @@ import { adressesDuClient, clientEnCopie, nomFichierRc, PHRASE_RC_SOUMISSION, PI
 import { compteursParCommande, ligneModifiee } from '../lib/agents/flux-ennoblisseur/saisies.js'
 import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
+import { demanderUrgence, leverUrgence, UrgenceRefusee, urgencesOuvertes, type UrgenceOuverte } from '../lib/urgence-sst.js'
 import { fermetures } from '../lib/delais-standards.js'
 import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, refusAvanceDelai, reportsDelaiParLigne, retardClientReports, retardDelai } from '../lib/report-delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
@@ -1715,7 +1716,7 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
         phase: phaseMap.get(cid) ?? 'en_cours',
         bon_envoye_at: bonEnvoyeMap.get(cid) ?? null,
         ...totals,
-        ...(etatsTric.has(cid) ? { urgence: etatsTric.get(cid)!.urgence, jauge: etatsTric.get(cid)!.jauge } : {}),
+        ...(etatsTric.has(cid) ? { urgence: etatsTric.get(cid)!.urgence, jauge: etatsTric.get(cid)!.jauge, urgence_demandee: etatsTric.get(cid)!.urgenceDemandee } : {}),
         ...(etatsEnn.has(cid) ? cycleFields(etatsEnn.get(cid)!) : {}),
       }
     })
@@ -2088,6 +2089,13 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
     const etatTric = famille === 'tricotage' ? (await etatsTricotage([id])).get(id) ?? null : null
     const etatEnn = famille === 'ennoblissement' ? (await etatsEnnoblissement([id])).get(id) ?? null : null
     const phase: SstPhase = etatTric?.phase ?? etatEnn?.etape ?? await computePhase(id, Number(header.est_soldee) || 0)
+    // Urgencies asked of the knitter, on its lines still without a délai (lib/urgence-sst.ts).
+    const urgencesLignes = famille === 'tricotage'
+      ? await urgencesOuvertes(fixedLignes.map((l) => ({
+        id: Number(l.IDligne_commande_sous_traitant) || 0,
+        aUnDelai: typeof l.date_livraison === 'string' && /^\d{8}$/.test(l.date_livraison),
+      })), todayIso())
+      : new Map<number, UrgenceOuverte>()
 
     const lignesEnriched = fixedLignes.map((l) => {
       const refId = Number(l.IDreference) || 0
@@ -2111,6 +2119,8 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
         ref_rendement: refRendement,
         colori_reference: resolveColoris(colId, typeKind, refId) || null,
         ...agg,
+        /** the urgency asked of the knitter and still awaited (lib/urgence-sst.ts), null without one */
+        urgence: urgencesLignes.get(Number(l.IDligne_commande_sous_traitant)) ?? null,
         // A lot of the line is back at the dyer for a reprise (LIVA #1377): the line
         // is no longer delivered, its délai alerts again until the lot returns.
         ...(() => {
@@ -2229,7 +2239,7 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
       auto_pricing_enabled: autoPricingEnabled,
       famille,
       phase,
-      ...(etatTric ? { urgence: etatTric.urgence, jauge: etatTric.jauge } : {}),
+      ...(etatTric ? { urgence: etatTric.urgence, jauge: etatTric.jauge, urgence_demandee: etatTric.urgenceDemandee } : {}),
       ...(etatEnn ? { cycle: cycleFields(etatEnn) } : {}),
       bon_envoye_at: bonEnvoyeAt,
       trm_mirror: trmMirror,
@@ -7562,6 +7572,57 @@ commandesSousTraitantRouter.post('/:id/delai/reports', async (req: Request, res:
   } catch (err) {
     if (err instanceof DelaiRefuse) { res.status(409).json({ error: err.code, message: err.message }); return }
     console.error('Error recording délai report:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Urgency asked of the knitter (lib/urgence-sst.ts, Vincent 2026-11-16) ──
+//
+// POST /:commandeId/lignes/:ligneId/urgence { reponse_attendue, date_souhaitee?, note? }
+//   we asked the knitter to go faster and wait for its answer until that day; a
+//   second call while one is open is a relance (a new day).
+// POST /:commandeId/lignes/:ligneId/urgence/levee { note? } — given up.
+const urgenceBody = z.object({
+  reponse_attendue: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  date_souhaitee: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  note: z.string().max(1000).optional().default(''),
+})
+const leveeUrgenceBody = z.object({ note: z.string().max(1000).optional().default('') })
+
+commandesSousTraitantRouter.post('/:commandeId/lignes/:ligneId/urgence', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const id = parseInt(req.params.commandeId, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    if (isNaN(id) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (refuseIfTerminee(res, await loadCommandeSoldee(id))) return
+    const p = urgenceBody.safeParse(req.body)
+    if (!p.success) { res.status(400).json({ error: 'reponse_attendue_requise', message: 'Indiquez le jour où la réponse du tricoteur est attendue.' }); return }
+    await demanderUrgence({
+      idcommande: id, idligne: ligneId, reponseAttendue: p.data.reponse_attendue, dateSouhaitee: p.data.date_souhaitee ?? null,
+      note: p.data.note, par: { id: req.userId, nom: await nomUtilisateur(req.userId) }, aujourdhui: todayIso(),
+    })
+    res.json({ ok: true })
+  } catch (err) {
+    if (err instanceof UrgenceRefusee) { res.status(err.status).json({ error: err.code, message: err.message }); return }
+    console.error('Error recording urgency:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesSousTraitantRouter.post('/:commandeId/lignes/:ligneId/urgence/levee', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const id = parseInt(req.params.commandeId, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    if (isNaN(id) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const p = leveeUrgenceBody.safeParse(req.body ?? {})
+    if (!p.success) { res.status(400).json({ error: 'Validation failed' }); return }
+    await leverUrgence({ idcommande: id, idligne: ligneId, note: p.data.note, par: { id: req.userId, nom: await nomUtilisateur(req.userId) }, aujourdhui: todayIso() })
+    res.json({ ok: true })
+  } catch (err) {
+    if (err instanceof UrgenceRefusee) { res.status(err.status).json({ error: err.code, message: err.message }); return }
+    console.error('Error lifting urgency:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

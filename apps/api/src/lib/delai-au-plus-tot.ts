@@ -51,7 +51,13 @@ export interface EtapeDelai {
   /** working days the current délai is behind that engagement (« retard MATEL 3 j »), in the partner's
    *  calendar; absent / 0 = on time */
   retard?: number
+  /** an estimated step only: the urgency asked of that partner and still awaited (lib/urgence-sst.ts) */
+  urgence?: UrgenceEtape
 }
+
+/** An urgency asked of the partner of a step still without a délai: its answer is awaited until
+ *  `reponseAttendue`, then it is ours to chase. Dates YYYYMMDD. */
+export interface UrgenceEtape { demandeeLe: string; reponseAttendue: string; aRelancer: boolean }
 
 export interface DelaiAuPlusTot {
   /** YYYYMMDD */
@@ -117,7 +123,7 @@ export interface EntreeDelai {
   /** of `ecru`, the pieces already at a dyer on a launched order: its délai, not a standard from today */
   ecruChezEnnoblisseur?: MatiereChezPartenaire[]
   /** the knitting order(s) already launched for `tricotage`: their latest délai */
-  tricotageLance?: { partenaire: string | null; delai: string | null; engagement?: string | null } | null
+  tricotageLance?: { partenaire: string | null; delai: string | null; engagement?: string | null; urgence?: UrgenceEtape | null } | null
   /** the order is validated (« En cours »): no Malterre reserve, the line reads in margin / delay against
    *  its engagement (Vincent 2026-11-02: the reserve is a préparation concept) */
   enCours?: boolean
@@ -171,11 +177,12 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
   /** A step at a partner on a launched order: ends on its délai, or today when the délai is past (« if it
    *  delivers today », Vincent 2026-11-02) — the user then gets a new délai and the date follows. Without
    *  a délai: the partner's standard from today, as an estimate. */
-  const chezPartenaire = (libelle: string, m: { partenaire: string | null; delai: string | null; engagement?: string | null }, standard: number, ferm: Periode[]): EtapeDelai => {
+  const chezPartenaire = (libelle: string, m: { partenaire: string | null; delai: string | null; engagement?: string | null; urgence?: UrgenceEtape | null }, standard: number, ferm: Periode[]): EtapeDelai => {
     const delai = m.delai && /^\d{8}$/.test(m.delai) ? m.delai : null
     if (!delai) {
       const au = ajouterJoursOuvres(e.aujourdhui, standard, ferm)
-      return { libelle, du: e.aujourdhui, au, jours: standard, estime: true, partenaire: m.partenaire, delai: null }
+      // The standard stays the estimate while an urgency is asked: nobody promised better yet.
+      return { libelle, du: e.aujourdhui, au, jours: standard, estime: true, partenaire: m.partenaire, delai: null, ...(m.urgence ? { urgence: m.urgence } : {}) }
     }
     const au = delai > e.aujourdhui ? delai : e.aujourdhui
     // How late the partner already is on its own engagement (its reports, LIVA #1364).

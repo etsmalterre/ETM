@@ -27,6 +27,7 @@
 import { mpsPg } from './mps-pg.js'
 import { SEUIL_EXPEDIE } from './statut-ligne-client.js'
 import { LINE_TYPE_RECTILIGNE } from './sst-line-kind.js'
+import { urgencesOuvertes } from './urgence-sst.js'
 
 export const TYPE_SST_TRICOTEUR = 1
 export const TRICOTAGE_MALTERRE_ID = 1
@@ -188,6 +189,15 @@ export interface EtatTricotage {
   phase: TricotagePhase
   urgence: Urgence
   jauge: JaugeTricotage
+  /** An urgency asked of the knitter on a line without a délai (lib/urgence-sst.ts): 'attente' while
+   *  its answer is expected, 'a_relancer' once the day has passed (the card is then red). */
+  urgenceDemandee: 'attente' | 'a_relancer' | null
+}
+
+/** The order's urgency asked of the knitter, from its lines' open ones: one to chase wins. Pure. */
+export function urgenceDemandeeCommande(ouvertes: readonly { aRelancer: boolean }[]): EtatTricotage['urgenceDemandee'] {
+  if (ouvertes.length === 0) return null
+  return ouvertes.some((u) => u.aRelancer) ? 'a_relancer' : 'attente'
 }
 
 function rangStatut(sstatut: string | null): 0 | 1 | 2 {
@@ -281,6 +291,11 @@ export async function etatsTricotage(ids: number[], today: Date = new Date()): P
     lignesByCmd.set(Number(l.cmd), arr)
   }
 
+  // Urgencies asked of the knitter (lib/urgence-sst.ts): open on a line still without its délai.
+  const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+  const urgences = await urgencesOuvertes(lignes.map((l) => ({ id: Number(l.id), aUnDelai: /^\d{8}$/.test(l.date_livraison ?? '') })), iso, sql)
+  const cmdDeLigne = new Map(lignes.map((l) => [Number(l.id), Number(l.cmd)]))
+
   for (const e of entetes) {
     const id = Number(e.id)
     const c: CommandeTricotage = {
@@ -290,10 +305,17 @@ export async function etatsTricotage(ids: number[], today: Date = new Date()): P
       lignes: lignesByCmd.get(id) ?? [],
     }
     const phase = phaseTricotage(c)
+    // Nothing left to ask once the goods are in (soldée, soldée par TRM).
+    const demandee = phase === 'terminee' || phase === 'trm_soldee'
+      ? null
+      : urgenceDemandeeCommande([...urgences].filter(([lid]) => cmdDeLigne.get(lid) === id).map(([, u]) => u))
+    const urgence = urgenceTricotage(c, phase, { date_notif: e.date_notif ?? '', bon_envoye_le: bonByCmd.get(id) ?? '' }, today)
     out.set(id, {
       phase,
-      urgence: urgenceTricotage(c, phase, { date_notif: e.date_notif ?? '', bon_envoye_le: bonByCmd.get(id) ?? '' }, today),
+      // An urgency whose answer did not come is ours to chase: red, whatever the délai rule says.
+      urgence: demandee === 'a_relancer' ? 'late' : urgence,
       jauge: jaugeTricotage(c),
+      urgenceDemandee: demandee,
     })
   }
   return out

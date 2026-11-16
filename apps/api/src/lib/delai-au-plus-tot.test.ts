@@ -151,6 +151,19 @@ describe('délai au plus tôt (doctrine des délais §5 ter)', () => {
       expect(d.etapes.map((x) => x.libelle)).toEqual(['Tricotage', 'Ennoblissement', 'Contrôle qualité'])
       expect(d.etapes[0]).toMatchObject({ au: '20261106', partenaire: 'Tricotage Malterre' })
     })
+    it('knitting launched without a délai: the standard as an estimate, carrying the urgency asked', () => {
+      const urgence = { demandeeLe: '20261102', reponseAttendue: '20261104', aRelancer: false }
+      const sans = delaiAuPlusTot(base({ tricotage: 1000, enCours: true, tricotageLance: { partenaire: 'Tricotage Malterre', delai: null } }))!
+      const avec = delaiAuPlusTot(base({ tricotage: 1000, enCours: true, tricotageLance: { partenaire: 'Tricotage Malterre', delai: null, urgence } }))!
+      expect(sans.etapes[0]).toMatchObject({ libelle: 'Tricotage', estime: true })
+      expect(sans.etapes[0].urgence).toBeUndefined()
+      expect(avec.etapes[0]).toMatchObject({ libelle: 'Tricotage', estime: true, urgence })
+      // Asking changes nothing to the estimate: nobody promised better yet.
+      expect(avec.date).toBe(sans.date)
+      // Once the knitter gives its délai the step is a fact, the urgency is over.
+      const donne = delaiAuPlusTot(base({ tricotage: 1000, enCours: true, tricotageLance: { partenaire: 'Tricotage Malterre', delai: '20261106', urgence } }))!
+      expect(donne.etapes[0].urgence).toBeUndefined()
+    })
     it('préparation keeps the reserve', () => {
       const d = delaiAuPlusTot(base({ ecru: 1000, ecruChezEnnoblisseur: [{ quantite: 1000, partenaire: 'MATEL', delai: '20261110' }] }))!
       expect(d.etapes.at(-1)!.libelle).toBe('Réserve Malterre')

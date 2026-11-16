@@ -42,6 +42,21 @@ describe('urgenceLigne', () => {
     expect(urgenceLigne(enno(-1, 5), today)?.action).toBe('ennoblisseur') // already late: chase first
     expect(urgenceCommande([enno(10, 12), enno(20, 25)], today)?.raison).toBe('2 lignes : date client intenable')
   })
+  it('an urgency asked of the knitter holds « intenable » until its answer is due, then it is ours to chase', () => {
+    const trico = (j: number, prete: number, reponse: number): LigneUrgence =>
+      ({ ...l('tricotage', j), preteAuPlusTot: dans(prete), urgenceReponseLe: dans(reponse) })
+    expect(niveau(trico(10, 12, 2))).toBe(null) // answer expected in 2 days: we wait
+    expect(niveau(trico(10, 12, 0))).toBe(null) // …today: still expected
+    expect(urgenceLigne(trico(10, 12, -1), today)).toMatchObject({ niveau: 'rouge', action: 'relancer_urgence' })
+    expect(urgenceCommande([trico(10, 12, -1)], today)?.raison).toBe('1 ligne : urgence demandée, relancer le tricoteur')
+    // The date holds anyway: nothing to say, asked or not.
+    expect(niveau(trico(10, 10, -1))).toBe(null)
+    // D already passed: an urgency cannot save it.
+    expect(urgenceLigne(trico(-1, 5, 2), today)?.action).toBe('tricotage')
+    // The order takes the colour of its other lines: neutral only when every line is.
+    expect(urgenceCommande([trico(10, 12, 2), { ...l('ennoblisseur', 10), preteAuPlusTot: dans(12) }], today)?.raison).toBe('1 ligne : date client intenable')
+    expect(urgenceCommande([trico(10, 12, 2)], today)).toBe(null)
+  })
   it('shipped or closed lines are always neutral, even late or without délai', () => {
     expect(niveau(l('expediee', -100))).toBe(null)
     expect(niveau(l('soldee', null))).toBe(null)

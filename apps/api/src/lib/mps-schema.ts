@@ -2035,6 +2035,35 @@ ${grantApi('SELECT, INSERT', 'report_delai_fil')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE report_delai_fil_id_seq')}
 `,
   },
+  {
+    // An urgency asked of a sous-traitant on one of its order lines (Vincent
+    // 2026-11-16, lib/urgence-sst.ts): we asked it to go faster than its
+    // standard and wait for its answer until `reponse_attendue`. Facts, append-
+    // only: 'demande' opens it, 'relance' asks again (a new date), 'levee' gives
+    // it up; the délai the sous-traitant then gives closes it by itself (read on
+    // the line, never written here). First used on knitting lines: a client line
+    // whose date cannot be held is neutral while the answer is awaited.
+    name: '0076_urgence_sst',
+    sql: `
+CREATE TABLE urgence_sst (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idcommande_sous_traitant bigint NOT NULL,
+  idligne_commande_sous_traitant bigint NOT NULL,
+  type text NOT NULL CHECK (type IN ('demande', 'relance', 'levee')),
+  le timestamptz NOT NULL DEFAULT now(),
+  reponse_attendue date,
+  date_souhaitee date,
+  note text,
+  par_id bigint NOT NULL DEFAULT 0,
+  par text,
+  CHECK (type = 'levee' OR reponse_attendue IS NOT NULL)
+);
+CREATE INDEX urgence_sst_ligne ON urgence_sst (idligne_commande_sous_traitant, le);
+CREATE INDEX urgence_sst_commande ON urgence_sst (idcommande_sous_traitant, le);
+${grantApi('SELECT, INSERT', 'urgence_sst')}
+${grantApi('USAGE, SELECT', 'SEQUENCE urgence_sst_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

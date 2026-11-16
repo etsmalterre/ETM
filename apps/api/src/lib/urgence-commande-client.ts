@@ -50,6 +50,12 @@
 // line still waiting for its étude coloris (lib/etude-ligne-client.ts): no délai can be given, the only
 // action is to chase the lab or the client once they take longer than usual — red, never amber.
 //
+// An urgency asked of the knitter (lib/urgence-sst.ts, Vincent 2026-11-16) holds « date client intenable »:
+// the person asked the partner to go faster to keep the client's date, and there is nothing to do at
+// Malterre until it answers — neutral until the day the answer is expected, then red, « relancer le
+// tricoteur ». The knitter's délai ends it: the earliest date is then a real figure, in time or not.
+// Never once D is passed: an urgency cannot save a date already missed.
+//
 // The card says two things, never mixed: the liseré + reason = what there is to do (no date: the card
 // orients, the detail tells why; urgenceCommande), the pill = where the order stands (avancementCommande).
 
@@ -111,6 +117,9 @@ export interface LigneUrgence {
    *  current délais included (lib/delai-au-plus-tot.ts, YYYYMMDD); after dateLivraison = the client's date
    *  can no longer be held (LIVA #1364) */
   preteAuPlusTot?: string | null
+  /** the knitter was asked for an urgency on the knitting this line waits for and has not given its
+   *  délai yet (lib/urgence-sst.ts): the day its answer is expected (YYYYMMDD); absent = none asked */
+  urgenceReponseLe?: string | null
 }
 
 /** client.relance_sur_appel → the delay the rule uses: 0, empty or invalid = the default. */
@@ -129,7 +138,7 @@ export function commandeIncomplete(lignes: readonly Pick<LigneUrgence, 'etat' | 
   return lignes.some(enProduction)
 }
 
-type Action = 'intenable' | 'planif_tardive' | 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
+type Action = 'intenable' | 'relancer_urgence' | 'planif_tardive' | 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
   | 'relancer_fournisseur' | 'fil_sans_date'
   | 'etude_labo' | 'etude_client' | 'etude_acceptee' | 'etude_annulee'
 
@@ -237,6 +246,12 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
   // ours to tell the client and move the line's date (a report, imputable to the partner).
   const prete = ymd(l.preteAuPlusTot)
   if ((l.etat === 'tricotage' || l.etat === 'ennoblisseur') && prete && prete > date) {
+    // …unless the knitter was asked for an urgency: nothing to do until its answer is due, then chase it.
+    const reponse = ymd(l.urgenceReponseLe)
+    if (reponse) {
+      const jr = joursAvant(reponse, today)
+      return jr >= 0 ? null : { niveau: 'rouge', action: 'relancer_urgence', jours: jr, date: reponse }
+    }
     return { niveau: 'rouge', action: 'intenable', jours: j, date }
   }
   return null
@@ -244,6 +259,7 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
 
 const LIBELLE: Record<Action, [string, string]> = {
   intenable: ['ligne : date client intenable', 'lignes : date client intenable'],
+  relancer_urgence: ['ligne : urgence demandée, relancer le tricoteur', 'lignes : urgence demandée, relancer le tricoteur'],
   planif_tardive: ['ligne planifiée trop tard', 'lignes planifiées trop tard'],
   lancer: ['ligne à lancer', 'lignes à lancer'],
   commander_fil: ['ligne : fil à commander', 'lignes : fil à commander'],

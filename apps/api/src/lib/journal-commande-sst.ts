@@ -69,7 +69,7 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
     SELECT to_char(date_commande, 'YYYY-MM-DD') AS jour FROM commande_sous_traitant WHERE idcommande_sous_traitant = ${idcommande}`
   if (!entete) return []
 
-  const [propres, emails, delais, points, lots] = await Promise.all([
+  const [propres, emails, delais, points, lots, urgences] = await Promise.all([
     sql<{ evenement: string; detail: string | null; par: string | null; le: Date }[]>`
       SELECT evenement, detail, par, le FROM journal_commande_sst WHERE idcommande_sous_traitant = ${idcommande} ORDER BY le, id`,
     sql<{ le: Date; type_doc: number; adresse: string | null; notes: string | null }[]>`
@@ -92,6 +92,14 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
       ORDER BY p.idpoint_sst, l.section, l.ordre`,
     sql<{ id: number; lot: string }[]>`
       SELECT idsuivilot AS id, trim(lot::text) AS lot FROM suivilot WHERE idcommande_sous_traitant = ${idcommande} ORDER BY idsuivilot`,
+    // A knitting line names an écru reference (type 1), a rectiligne one (type 4).
+    sql<{ type: string; le: Date; reponse: string | null; souhaitee: string | null; note: string | null; par: string | null; ref: string | null }[]>`
+      SELECT u.type, u.le, to_char(u.reponse_attendue, 'YYYY-MM-DD') AS reponse, to_char(u.date_souhaitee, 'YYYY-MM-DD') AS souhaitee,
+             u.note, u.par, re.reference AS ref
+      FROM urgence_sst u
+      LEFT JOIN ligne_commande_sous_traitant l ON l.idligne_commande_sous_traitant = u.idligne_commande_sous_traitant
+      LEFT JOIN ref_ecru re ON re.idref_ecru = l.idreference AND l.type = 1
+      WHERE u.idcommande_sous_traitant = ${idcommande} ORDER BY u.le, u.id`,
   ])
 
   const out: EntreeJournalCommande[] = []
@@ -174,6 +182,18 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
         detail: d.ref?.trim() || null, par: d.par, auteur: qui(d.par),
       }))
     }
+  }
+
+  // Urgencies asked of the sous-traitant on a line (lib/urgence-sst.ts).
+  for (const u of urgences) {
+    const attendue = u.reponse ? `réponse attendue le ${jjmm(u.reponse)}` : null
+    const souhaitee = u.souhaitee ? `souhaité pour le ${jjmm(u.souhaitee)}` : null
+    out.push(commande({
+      le: iso(u.le), type: 'urgence',
+      titre: u.type === 'levee' ? 'Urgence levée' : u.type === 'relance' ? 'Urgence relancée' : 'Urgence demandée',
+      detail: [u.ref?.trim() || null, souhaitee, attendue, u.note].filter(Boolean).join(' — ') || null,
+      par: u.par, auteur: qui(u.par),
+    }))
   }
 
   // One entry per Point: what it asked (its sections for this order), the first ask as the title.
