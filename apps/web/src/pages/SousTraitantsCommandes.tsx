@@ -154,10 +154,9 @@ interface CommandeListRow {
    *  null). Primary anchor for the `attente_delai` urgency frame — see
    *  `attenteDelaiUrgency`. */
   date_notif: string | null
-  /** Tricotage only: the late frame computed by the API
-   *  (lib/sst-tricotage.ts) and the kg gauge of the card. */
+  /** Tricotage only: the late frame computed by the API (lib/sst-tricotage.ts).
+   *  No kg gauge on the card (Vincent 2026-11-16): the ennoblissement card. */
   urgence?: 'late' | 'soon' | null
-  jauge?: JaugeTricotage
   /** Tricotage only: an urgency asked of the knitter on a line without a délai (API lib/urgence-sst.ts):
    *  its answer is awaited, or it is ours to chase (the card is then red). */
   urgence_demandee?: 'attente' | 'a_relancer' | null
@@ -221,11 +220,25 @@ interface TraitementCycle {
 /** Working days the client gets to answer a soumission (API RELANCE_J.soumis). */
 const REPONSE_CLIENT_J = 5
 
-/** kg ordered / knitted / shipped over an order's circulaire lines. */
-interface JaugeTricotage {
-  kg_commande: number
-  kg_tricote: number
-  kg_livre: number
+/** Tricotage: where the order stands inside its status (API etapeTricotage). */
+interface EtapeTricotage {
+  /** Circulaire lines by where they stand. */
+  lignes: { sans_fil: number; a_lancer: number; en_tricotage: number; livrees: number }
+  /** Earliest délai of a line not yet delivered ('YYYY-MM-DD'), and the working days left to it. */
+  delai: string | null
+  joursRestants: number | null
+  autres: string[]
+  /** No délai yet: the date we asked for. */
+  demande: string | null
+  /** Since when the knitter's time runs, and the working days since. */
+  depuis: string | null
+  joursDepuis: number | null
+  /** En tricotage with a délai: the working days from the order to the délai, and those behind us. */
+  joursTotal: number
+  joursEcoules: number
+  /** Attente délai: the day the knitter is chased, and the question as the dyers' card draws it. */
+  relance: string | null
+  question: DelaiCycle | null
 }
 
 interface LigneCommande {
@@ -323,6 +336,10 @@ interface CommandeDetail {
   famille: SstFamille
   /** Ennoblissement only: the order's cycle. */
   cycle?: CycleCommande
+  /** Tricotage only: the late frame and where the order stands inside its
+   *  status (API lib/sst-tricotage.ts). */
+  urgence?: 'late' | 'soon' | null
+  tricotage?: EtapeTricotage
   /** Computed phase (server-derived). See PhasePill / SST_PHASE_META. */
   phase: SstPhase
   /** Most recent bon-de-commande send date (envoi_email IDtype_doc=13),
@@ -769,27 +786,6 @@ function raisonCarte(row: CommandeListRow, urgence: 'late' | 'soon' | null, tric
   }
 }
 
-/** Tricotage card gauge: kg shipped (solid) and knitted not yet shipped
- *  (light) over kg ordered. Hidden on a rectiligne-only order (pieces). */
-function JaugeTricotageBar({ jauge }: { jauge: JaugeTricotage }) {
-  if (jauge.kg_commande <= 0) return null
-  const pct = (kg: number) => Math.max(0, Math.min(100, (kg / jauge.kg_commande) * 100))
-  const livre = pct(jauge.kg_livre)
-  const tricote = Math.max(0, pct(jauge.kg_tricote) - livre)
-  return (
-    <div className="mt-2">
-      <div className="h-1.5 rounded-full bg-zinc-200 overflow-hidden flex">
-        <div className="bg-primary" style={{ width: `${livre}%` }} />
-        <div className="bg-primary/35" style={{ width: `${tricote}%` }} />
-      </div>
-      <div className="flex items-center justify-between gap-2 mt-1 text-[10px] text-muted-foreground tabular-nums">
-        <span>{fmtNum(jauge.kg_tricote)} / {fmtNum(jauge.kg_commande)} kg tricotés</span>
-        {jauge.kg_livre > 0 && <span>{fmtNum(jauge.kg_livre)} kg livrés</span>}
-      </div>
-    </div>
-  )
-}
-
 function deliveryUrgency(earliestHfsql: string | null, est_soldee: number | null): 'late' | 'soon' | null {
   if (est_soldee === 1) return null
   if (!earliestHfsql || !/^\d{8}$/.test(earliestHfsql)) return 'late'
@@ -991,7 +987,6 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
 
   // Edit-mode draft state
   const [editDateCommande, setEditDateCommande] = useState('')
-  const [editDateNotif, setEditDateNotif] = useState('')
   const [editCommentaire, setEditCommentaire] = useState('')
   const [editJournal, setEditJournal] = useState('')
   const [editIDAdresseSousTraitant, setEditIDAdresseSousTraitant] = useState<number>(0)
@@ -999,7 +994,6 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
 
   const originalDraftRef = useRef<{
     dateCommande: string
-    dateNotif: string
     commentaire: string
     journal: string
     IDadresseSt: number
@@ -1183,14 +1177,12 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
     if (!detail) return
     const snapshot = {
       dateCommande: hfsqlDateToInput(detail.date_commande),
-      dateNotif: hfsqlDateToInput(detail.date_notif),
       commentaire: detail.commentaire?.trim() ?? '',
       journal: detail.journal?.trim() ?? '',
       IDadresseSt: detail.IDadresse_sous_traitant ?? 0,
       IDadresseLiv: detail.IDadresse_livraison ?? 0,
     }
     setEditDateCommande(snapshot.dateCommande)
-    setEditDateNotif(snapshot.dateNotif)
     setEditCommentaire(snapshot.commentaire)
     setEditJournal(snapshot.journal)
     setEditIDAdresseSousTraitant(snapshot.IDadresseSt)
@@ -1206,7 +1198,6 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
   // commandes and can leak into the next save.
   const resetEditDraft = useCallback(() => {
     setEditDateCommande('')
-    setEditDateNotif('')
     setEditCommentaire('')
     setEditJournal('')
     setEditIDAdresseSousTraitant(0)
@@ -1222,14 +1213,13 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
     const o = originalDraftRef.current
     if (!o) return false
     if (editDateCommande !== o.dateCommande) return true
-    if (editDateNotif !== o.dateNotif) return true
     if (editCommentaire !== o.commentaire) return true
     if (editJournal !== o.journal) return true
     if (editIDAdresseSousTraitant !== o.IDadresseSt) return true
     if (editIDAdresseLivraison !== o.IDadresseLiv) return true
     if (linesDirty) return true
     return false
-  }, [isEditing, editDateCommande, editDateNotif, editCommentaire, editJournal, editIDAdresseSousTraitant, editIDAdresseLivraison, linesDirty])
+  }, [isEditing, editDateCommande, editCommentaire, editJournal, editIDAdresseSousTraitant, editIDAdresseLivraison, linesDirty])
 
   const saveHeaderMut = useMutation({
     // Target the pinned edited id, not the live selectedId — guards against a
@@ -1238,7 +1228,6 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
       method: 'PUT',
       body: JSON.stringify({
         date_commande: inputDateToHfsql(editDateCommande),
-        date_notif: inputDateToHfsql(editDateNotif),
         commentaire: editCommentaire,
         journal: editJournal,
         IDadresse_sous_traitant: editIDAdresseSousTraitant || 0,
@@ -1410,8 +1399,6 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
             commande={detail ?? null}
             isLoading={detailLoading}
             isEditing={isEditing}
-            editDateNotif={editDateNotif}
-            onEditDateNotifChange={setEditDateNotif}
             editCommentaire={editCommentaire}
             onEditCommentaireChange={setEditCommentaire}
             editJournal={editJournal}
@@ -1708,7 +1695,6 @@ function CommandeList({
                   </span>
                 )}
               </div>
-              {!!row.jauge && <JaugeTricotageBar jauge={row.jauge} />}
             </div>
           )
         })}
@@ -2058,7 +2044,10 @@ function LignesSection({
         IDreference: lineForm.IDreference,
         IDColoris: lineForm.IDColoris,
         quantite: Number(lineForm.quantite) || 0,
-        date_livraison: inputDateToHfsql(lineForm.date_livraison),
+        // Tricotage Malterre gives its délai itself: the date typed is the one we ask for.
+        ...(isTrm
+          ? { date_demandee: inputDateToHfsql(lineForm.date_livraison) }
+          : { date_livraison: inputDateToHfsql(lineForm.date_livraison) }),
         ...(filALancer ? { lots: filForm.lots } : {}),
       }),
     }),
@@ -2073,7 +2062,9 @@ function LignesSection({
         IDColoris: lineForm.IDColoris,
         quantite: Number(lineForm.quantite) || 0,
         prix: Number(lineForm.prix) || 0,
-        date_livraison: inputDateToHfsql(lineForm.date_livraison),
+        ...(dateDemandeeTrm
+          ? { date_demandee: inputDateToHfsql(lineForm.date_livraison) }
+          : { date_livraison: inputDateToHfsql(lineForm.date_livraison) }),
         ...(reportEnCours ? { report: { motif: reportForm.motif.trim(), imputable: reportForm.imputable } } : {}),
       }),
     }),
@@ -2104,8 +2095,11 @@ function LignesSection({
   // a later date is a report (LIVA #1364).
   const editingLine = editingLineId !== null ? commande.lignes.find((x) => x.IDligne_commande_sous_traitant === editingLineId) ?? null : null
   const delaiDonne = editingLine ? dateDonnee(editingLine) : ''
+  // Tricotage Malterre, no délai on the line yet (a new line, or one TRM has not answered):
+  // the form's date is the one we ask for — the délai is TRM's to give, on its own screen.
+  const dateDemandeeTrm = isTrm && (editingLine ? !editingLine.date_livraison : true)
   const nouveauDelai = inputDateToHfsql(lineForm.date_livraison)
-  const reportEnCours = !!delaiDonne && /^\d{8}$/.test(nouveauDelai) && nouveauDelai > delaiDonne
+  const reportEnCours = !dateDemandeeTrm && !!delaiDonne && /^\d{8}$/.test(nouveauDelai) && nouveauDelai > delaiDonne
 
   // Every line names a reference and a coloris (LIVA #1215) — the server
   // refuses otherwise; the button says why before the user tries.
@@ -2145,7 +2139,8 @@ function LignesSection({
       IDColoris: l.IDColoris ?? 0,
       quantite: fmtNumberInput(l.quantite),
       prix: fmtNumberInput(l.prix),
-      date_livraison: hfsqlDateToInput(l.date_livraison),
+      // The form's one date: the délai, or — at Tricotage Malterre before TRM gave it — the date asked.
+      date_livraison: hfsqlDateToInput(isTrm && !l.date_livraison ? l.date_demandee ?? null : l.date_livraison),
     })
     // The client's late coloris answer is known: a report of this line's délai starts as its own.
     const t = commande.cycle?.traitement
@@ -2310,8 +2305,10 @@ function LignesSection({
                 refsRectiligne={refRectiligneLookup ?? []}
                 editable={true}
                 autoPricing={isTricoteur ? false : commande.auto_pricing_enabled}
+                dateDemandee={dateDemandeeTrm}
               />
-              <EngagementDelai delaiDonne="" nouveau={nouveauDelai} engagement={null} report={reportForm} setReport={setReportForm} />
+              {/* A date asked of TRM is no engagement: nothing to warn about. */}
+              {!dateDemandeeTrm && <EngagementDelai delaiDonne="" nouveau={nouveauDelai} engagement={null} report={reportForm} setReport={setReportForm} />}
               {filALancer && lineForm.IDreference > 0 && lineForm.IDColoris > 0 && (
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-muted-foreground">
@@ -2353,14 +2350,17 @@ function LignesSection({
               editable={linesEditable}
               autoPricing={isTricoteur ? false : commande.auto_pricing_enabled}
               engagement={editingLine?.date_delai}
+              dateDemandee={dateDemandeeTrm}
             />
-            <EngagementDelai
-              delaiDonne={delaiDonne}
-              nouveau={nouveauDelai}
-              engagement={editingLine?.date_delai}
-              report={reportForm}
-              setReport={setReportForm}
-            />
+            {!dateDemandeeTrm && (
+              <EngagementDelai
+                delaiDonne={delaiDonne}
+                nouveau={nouveauDelai}
+                engagement={editingLine?.date_delai}
+                report={reportForm}
+                setReport={setReportForm}
+              />
+            )}
           </LigneSstDialog>
 
           {isEditing && !linesLocked && linesEditable && commande.lignes.length > 0 && !showLineForm && editingLineId === null && (
@@ -6950,8 +6950,10 @@ function EngagementDelai({ delaiDonne, nouveau, engagement, report, setReport }:
 }
 
 function LineFormFields({
-  form, setForm, kind, refsFini, refsEcru, refsRectiligne = [], editable, autoPricing, engagement,
+  form, setForm, kind, refsFini, refsEcru, refsRectiligne = [], editable, autoPricing, engagement, dateDemandee,
 }: {
+  /** The date field holds the date we ask Tricotage Malterre for, not a délai. */
+  dateDemandee?: boolean
   form: { IDreference: number; IDColoris: number; quantite: string; prix: string; date_livraison: string }
   /** YYYYMMDD the sous-traitant's engagement on the line being edited (LIVA #1364) */
   engagement?: string | null
@@ -7105,7 +7107,16 @@ function LineFormFields({
           helper={prixDisabled ? 'Calculé automatiquement à partir des rouleaux affectés.' : undefined}
         />
       </div>
-      <DelaiField value={form.date_livraison} engagement={engagement} onChange={(v) => setForm({ ...form, date_livraison: v })} />
+      {dateDemandee ? (
+        <DelaiField
+          value={form.date_livraison} onChange={(v) => setForm({ ...form, date_livraison: v })}
+          label="Date demandée"
+          aide="La date que nous demandons à Tricotage Malterre. Son délai, c’est TRM qui le donne depuis son écran Commandes."
+          vide="Pas de date demandée"
+        />
+      ) : (
+        <DelaiField value={form.date_livraison} engagement={engagement} onChange={(v) => setForm({ ...form, date_livraison: v })} />
+      )}
     </>
   )
 }
@@ -7116,7 +7127,6 @@ type SidebarTab = 'info' | 'adresses' | 'docs' | 'journal'
 
 function DetailSidebar({
   commande, isLoading, isEditing,
-  editDateNotif, onEditDateNotifChange,
   editCommentaire, onEditCommentaireChange,
   editJournal, onEditJournalChange,
   editIDAdresseSousTraitant, onEditIDAdresseSousTraitantChange,
@@ -7126,8 +7136,6 @@ function DetailSidebar({
   commande: CommandeDetail | null
   isLoading: boolean
   isEditing: boolean
-  editDateNotif: string
-  onEditDateNotifChange: (v: string) => void
   editCommentaire: string
   onEditCommentaireChange: (v: string) => void
   editJournal: string
@@ -7197,8 +7205,6 @@ function DetailSidebar({
             <InfoTab
               commande={commande}
               isEditing={isEditing}
-              editDateNotif={editDateNotif}
-              onEditDateNotifChange={onEditDateNotifChange}
               editCommentaire={editCommentaire}
               onEditCommentaireChange={onEditCommentaireChange}
               editJournal={editJournal}
@@ -7224,7 +7230,7 @@ function DetailSidebar({
             </>
           )}
           {activeTab === 'journal' && (
-            <JournalTab commande={commande} isEditing={isEditing} />
+            <JournalTab commande={commande} />
           )}
         </div>
       </div>
@@ -7455,7 +7461,8 @@ function MentionsQualiteCard({ commandeId }: { commandeId: number }) {
   )
 }
 
-/** Ennoblissement « Prochaines étapes » (top of the Journal tab, drawn like the
+/** Ennoblissement « Prochaines étapes » (top of the Info tab since 2026-11-16, of the
+ *  Journal tab before; drawn like the
  *  lot's card on Suivi lots, Vincent 2026-11-10): while the délai is asked, how
  *  long since the demand against the days the dyer gets (« Repousser » moves the
  *  échéance), red once the relance is due (lib/delai-sst.ts, LIVA #1314); then
@@ -7471,66 +7478,18 @@ function CycleCard({ commande, cycle, isEditing }: {
   const traitement = !attenteDelai ? cycle.traitement ?? null : null
   if (!attenteDelai && !traitement && cycle.lots.length === 0) return null
   const delai = cycle.delai
-  const jours = delai?.joursDepuisDemande ?? null
-  const accordes = delai?.joursAccordes ?? null
   // §41: the colour is the API's (relance due = red), never recomputed here.
   const niveau = !attenteDelai && !traitement ? null : cycle.urgence === 'late' ? 'rouge' : cycle.urgence === 'soon' ? 'ambre' : null
-  const jauge = attenteDelai && jours !== null && accordes !== null && accordes > 0
-  const retard = jauge ? jours - accordes : 0
   return (
     <div className={cn(
       'rounded-xl border bg-card shadow-sm p-4 border-l-4',
       niveau === 'rouge' ? 'border-l-red-500' : niveau === 'ambre' ? 'border-l-amber-500' : 'border-l-border',
     )}>
       {attenteDelai && delai && (
-        <>
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 flex-shrink-0 rounded-lg flex items-center justify-center bg-zinc-100">
-              <Hourglass className="h-5 w-5 text-amber-600" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-base font-semibold leading-snug">Attente délai</p>
-            </div>
-            {jours !== null && jours >= 0 && (
-              <div className="flex-shrink-0 text-right">
-                <p className={cn(
-                  'text-2xl font-bold tabular-nums leading-none',
-                  niveau === 'rouge' ? 'text-red-600' : niveau === 'ambre' ? 'text-amber-600' : 'text-foreground',
-                )}>
-                  {jours} j
-                </p>
-                {jauge && <p className="text-[11px] text-muted-foreground mt-0.5">sur {accordes} j ouvrés</p>}
-              </div>
-            )}
-          </div>
-          {jauge && (
-            <div className="mt-3">
-              <div className="flex gap-1">
-                {Array.from({ length: accordes }, (_, i) => (
-                  <div
-                    key={i}
-                    className={cn(
-                      'h-2 flex-1 rounded-full',
-                      i >= jours ? 'bg-zinc-200'
-                        : niveau === 'rouge' ? 'bg-red-500' : niveau === 'ambre' ? 'bg-amber-500' : 'bg-sky-500',
-                    )}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-          <p className={cn(
-            'mt-1.5 text-xs',
-            niveau === 'rouge' ? 'text-red-700 font-medium' : niveau === 'ambre' ? 'text-amber-700 font-medium' : 'text-muted-foreground',
-          )}>
-            {niveau === 'rouge'
-              ? `Relancer l’ennoblisseur${retard > 0 ? ` : ${retard} j de retard` : ''}`
-              : cycle.relance ? `Relance le ${formatHfsqlDate(cycle.relance.replace(/-/g, ''))}` : 'Délai attendu de l’ennoblisseur'}
-          </p>
-          <div className="mt-3">
-            <DelaiQuestion commandeId={commande.IDcommande_sous_traitant} delai={delai} disabled={isEditing} />
-          </div>
-        </>
+        <AttenteDelaiBloc
+          commandeId={commande.IDcommande_sous_traitant} delai={delai} niveau={niveau} relance={cycle.relance}
+          qui="l’ennoblisseur" deQui="de l’ennoblisseur" disabled={isEditing}
+        />
       )}
       {traitement && <TraitementBloc traitement={traitement} niveau={niveau} solde={cycle.solde} mainClient={cycle.main === 'client'} />}
       {cycle.lots.length > 0 && (
@@ -7540,6 +7499,81 @@ function CycleCard({ commande, cycle, isEditing }: {
         </div>
       )}
     </div>
+  )
+}
+
+/** « Attente délai » in the Prochaines étapes card, for a dyer and a knitter alike:
+ *  the working days since the délai was asked against the days the partner gets
+ *  (one segment each), the chase date — red once it has come and nobody chased —
+ *  and the two gestures « Relancer » / « Repousser » (lib/delai-sst.ts). */
+function AttenteDelaiBloc({ commandeId, delai, niveau, relance, qui, deQui, disabled, children }: {
+  commandeId: number
+  delai: DelaiCycle
+  niveau: 'rouge' | 'ambre' | null
+  /** 'YYYY-MM-DD' the day it is ours to chase. */
+  relance: string | null
+  /** « l’ennoblisseur », « Tricotage Malterre »… as the object of « Relancer ». */
+  qui: string
+  /** …and after « Délai attendu ». */
+  deQui: string
+  disabled: boolean
+  /** An extra line under the chase date (the date we asked for). */
+  children?: React.ReactNode
+}) {
+  const jours = delai.joursDepuisDemande ?? null
+  const accordes = delai.joursAccordes ?? null
+  const jauge = jours !== null && accordes !== null && accordes > 0
+  const retard = jauge ? jours - accordes : 0
+  return (
+    <>
+      <div className="flex items-center gap-3">
+        <div className="h-10 w-10 flex-shrink-0 rounded-lg flex items-center justify-center bg-zinc-100">
+          <Hourglass className="h-5 w-5 text-amber-600" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-base font-semibold leading-snug">Attente délai</p>
+        </div>
+        {jours !== null && jours >= 0 && (
+          <div className="flex-shrink-0 text-right">
+            <p className={cn(
+              'text-2xl font-bold tabular-nums leading-none',
+              niveau === 'rouge' ? 'text-red-600' : niveau === 'ambre' ? 'text-amber-600' : 'text-foreground',
+            )}>
+              {jours} j
+            </p>
+            {jauge && <p className="text-[11px] text-muted-foreground mt-0.5">sur {accordes} j ouvré{accordes > 1 ? 's' : ''}</p>}
+          </div>
+        )}
+      </div>
+      {jauge && (
+        <div className="mt-3">
+          <div className="flex gap-1">
+            {Array.from({ length: accordes }, (_, i) => (
+              <div
+                key={i}
+                className={cn(
+                  'h-2 flex-1 rounded-full',
+                  i >= jours ? 'bg-zinc-200'
+                    : niveau === 'rouge' ? 'bg-red-500' : niveau === 'ambre' ? 'bg-amber-500' : 'bg-sky-500',
+                )}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+      <p className={cn(
+        'mt-1.5 text-xs',
+        niveau === 'rouge' ? 'text-red-700 font-medium' : niveau === 'ambre' ? 'text-amber-700 font-medium' : 'text-muted-foreground',
+      )}>
+        {niveau === 'rouge'
+          ? `Relancer ${qui}${retard > 0 ? ` : ${retard} j de retard` : ''}`
+          : relance ? `Relance le ${formatHfsqlDate(relance.replace(/-/g, ''))}` : `Délai attendu ${deQui}`}
+      </p>
+      {children}
+      <div className="mt-3">
+        <DelaiQuestion commandeId={commandeId} delai={delai} disabled={disabled} />
+      </div>
+    </>
   )
 }
 
@@ -7702,14 +7736,11 @@ function TraitementBloc({ traitement, niveau, solde, mainClient }: {
 
 function InfoTab({
   commande, isEditing,
-  editDateNotif, onEditDateNotifChange,
   editCommentaire, onEditCommentaireChange,
   editJournal, onEditJournalChange,
 }: {
   commande: CommandeDetail
   isEditing: boolean
-  editDateNotif: string
-  onEditDateNotifChange: (v: string) => void
   editCommentaire: string
   onEditCommentaireChange: (v: string) => void
   editJournal: string
@@ -7717,32 +7748,12 @@ function InfoTab({
 }) {
   return (
     <div className="space-y-3">
-      {/* Relance — its own container at the top of the tab. The relance
-          date is an actionable self-reminder, so it gets a distinct card
-          + gold bell icon instead of sitting among the read-only meta. */}
-      {/* With a cycle (Ennoblissement) the relance + délai question sit on top
-          of the Journal tab; the plain relance date stays here otherwise. */}
-      {!commande.cycle && (
-      <div className={cn('p-3 rounded-lg border bg-card shadow-sm', isEditing && editSectionClass)}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
-            <BellRing className="h-3.5 w-3.5 text-accent" />Relance
-          </span>
-          {isEditing ? (
-            <input
-              type="date"
-              value={editDateNotif}
-              onChange={(e) => onEditDateNotifChange(e.target.value)}
-              className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right"
-            />
-          ) : (
-            <span className="text-sm">
-              {commande.date_notif ? formatHfsqlDate(commande.date_notif) : '—'}
-            </span>
-          )}
-        </div>
-      </div>
-      )}
+      {/* Where the order stands, first thing on the tab that opens by default
+          (Vincent 2026-11-16: one glance tells the situation; it sat on top of the
+          Journal tab since 2026-11-10). It carries the relance date and its two
+          gestures, so the bare « Relance » date field that stood here is gone:
+          a date typed there moved the échéance without a motif. */}
+      <ProchainesEtapes commande={commande} isEditing={isEditing} />
 
       {/* TRM mirror — visible only when the sst targets Tricotage Malterre.
           Surfaces the sister-company commande_client's status + produced
@@ -7982,10 +7993,186 @@ interface TypeDoc {
   nom: string
 }
 
+/** Tricotage « Prochaines étapes » (top of the Info tab, Vincent 2026-11-16):
+ *  where the order stands INSIDE its status, drawn like the ennoblissement card
+ *  (`CycleCard`). The status comes first with what it waits for; then, by status:
+ *  the working days since the order while nothing is launched; while it knits,
+ *  « Sortie prévue le … », J-N and the dyer's « En traitement » segments — one
+ *  per working day from the order to the délai, the days behind us coloured;
+ *  the dyers' « Attente délai » block while the knitter owes its délai;
+ *  the check to make once TRM has soldé. No kg here (Vincent 2026-11-16): the
+ *  line cards carry them. A status is the order's most advanced line, so the
+ *  lines are counted by where each one stands.
+ *  Colour = the order's own (API urgenceTricotage, the list card's), never
+ *  recomputed here; facts from API etapeTricotage, nothing typed. */
+function TricotageCard({ commande, etape, isEditing }: { commande: CommandeDetail; etape: EtapeTricotage; isEditing: boolean }) {
+  const phase = commande.phase
+  const meta = SST_PHASE_META[phase]
+  // While it knits: the clock of the dyer's « En traitement » card (Vincent 2026-11-16) —
+  // both count the partner's days to its sortie. The status pill keeps its own icon.
+  const Icon = phase === 'en_tricotage' ? Clock : meta.icon
+  const niveau = commande.urgence === 'late' ? 'rouge' : commande.urgence === 'soon' ? 'ambre' : null
+  const date = (iso: string) => formatHfsqlDate(iso.replace(/-/g, ''))
+  const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
+  const { lignes } = etape
+  const nbLignes = lignes.sans_fil + lignes.a_lancer + lignes.en_tricotage + lignes.livrees
+  const pl = (n: number, un: string, plusieurs: string) => `${n} ${n > 1 ? plusieurs : un}`
+  // « Sortie prévue le », the dyer card's words (Vincent 2026-11-16).
+  const delaiTexte = etape.delai ? `Sortie prévue le ${date(etape.delai)}`
+    : etape.demande ? `Délai en attente, demandé pour le ${date(etape.demande)}` : 'Délai en attente'
+  const avantTricotage = phase === 'fil_a_affecter' || phase === 'a_lancer'
+  const enTricotage = phase === 'en_tricotage'
+
+  const sousTitre =
+    phase === 'fil_a_affecter' ? (lignes.sans_fil > 0
+      ? `${pl(lignes.sans_fil, 'ligne', 'lignes')} sans fil : TRM ne peut pas créer l’OF`
+      : 'Aucune ligne à tricoter : en ajouter une')
+    : phase === 'a_lancer' ? 'Fil affecté : OF à créer par Tricotage Malterre'
+    : phase === 'trm_soldee' ? 'Tout est tricoté et expédié : vérifier la réception, puis clôturer'
+    : phase === 'non_envoye' ? 'Bon de commande à envoyer au tricoteur'
+    : delaiTexte
+
+  // The figure: days left to the délai while it knits, days waited before.
+  const chiffre = enTricotage
+    ? (etape.joursRestants === null ? null : {
+      valeur: etape.joursRestants >= 0 ? `J-${etape.joursRestants}` : `+${-etape.joursRestants} j`,
+      legende: etape.joursRestants >= 0 ? 'jours ouvrés' : 'de retard',
+      teinte: true,
+    })
+    : (avantTricotage || phase === 'non_envoye') && etape.joursDepuis !== null
+      ? { valeur: `${etape.joursDepuis} j`, legende: 'ouvrés depuis la commande', teinte: false }
+      : null
+
+  // The knitter's days, as on the dyer's « En traitement »: an alert tints the days behind us.
+  const segments = enTricotage ? etape.joursTotal : 0
+  const jourClass = niveau === 'rouge' ? 'bg-red-500' : niveau === 'ambre' ? 'bg-amber-500' : 'bg-sky-500'
+
+  const stades = [
+    lignes.livrees > 0 && { texte: pl(lignes.livrees, 'livrée', 'livrées') },
+    lignes.en_tricotage > 0 && { texte: `${lignes.en_tricotage} en tricotage` },
+    lignes.a_lancer > 0 && { texte: `${lignes.a_lancer} à lancer` },
+    // A line without yarn under « En tricotage » is ours to settle: said plainly.
+    lignes.sans_fil > 0 && { texte: `${lignes.sans_fil} sans fil`, fort: enTricotage },
+  ].filter((s): s is { texte: string; fort?: boolean } => !!s)
+  const montrerLignes = nbLignes >= 2 && (avantTricotage || enTricotage)
+  const colore = niveau === 'rouge' ? 'text-red-700 font-medium' : niveau === 'ambre' ? 'text-amber-700 font-medium' : 'text-muted-foreground'
+  const cadre = cn(
+    'rounded-xl border bg-card shadow-sm p-4 border-l-4',
+    niveau === 'rouge' ? 'border-l-red-500' : niveau === 'ambre' ? 'border-l-amber-500' : 'border-l-border',
+  )
+
+  // Attente délai: the dyers' block, same gestures. Tricotage Malterre gets no bon de
+  // commande: the order itself asks, one working day to answer (Vincent 2026-11-16).
+  if (phase === 'attente_delai' && etape.question) {
+    const trm = commande.IDsous_traitant === TRICOTAGE_MALTERRE_ID
+    // An urgency asked of the knitter on a line still without its délai (API lib/urgence-sst.ts):
+    // its answer is what is awaited, on its own day — the délai's chase date says nothing then.
+    const urgences = commande.lignes.map((l) => (l.date_livraison ? null : l.urgence ?? null)).filter((u): u is UrgenceLigne => !!u)
+    const reponse = urgences.map((u) => u.reponseAttendue).sort()[0] ?? null
+    const aRelancer = urgences.some((u) => u.aRelancer)
+    return (
+      <div className={cadre}>
+        <AttenteDelaiBloc
+          commandeId={commande.IDcommande_sous_traitant} delai={etape.question} niveau={niveau} relance={reponse ? null : etape.relance}
+          qui={trm ? 'Tricotage Malterre' : 'le tricoteur'} deQui={trm ? 'de Tricotage Malterre' : 'du tricoteur'} disabled={isEditing}
+        >
+          {reponse && (
+            <p className={cn('mt-0.5 flex items-center gap-1 text-xs', aRelancer ? 'font-medium text-red-700' : 'text-muted-foreground')}>
+              <Zap className="h-3 w-3 flex-shrink-0" />
+              {aRelancer ? `Urgence sans réponse depuis le ${jjmmIso(reponse)}` : `Urgence demandée · réponse attendue le ${jjmmIso(reponse)}`}
+            </p>
+          )}
+          {etape.demande && <p className="mt-0.5 text-xs text-muted-foreground">Demandé pour le {date(etape.demande)}</p>}
+        </AttenteDelaiBloc>
+      </div>
+    )
+  }
+
+  return (
+    <div className={cadre}>
+      <div className="flex items-center gap-3">
+        <div className="h-10 w-10 flex-shrink-0 rounded-lg flex items-center justify-center bg-zinc-100">
+          <Icon className={cn('h-5 w-5', enTricotage ? 'text-primary' : phase === 'trm_soldee' ? 'text-teal-600' : 'text-amber-600')} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-base font-semibold leading-snug">{meta.label}</p>
+          <p className="text-xs text-muted-foreground">{sousTitre}</p>
+        </div>
+        {chiffre && (
+          <div className="flex-shrink-0 text-right">
+            <p className={cn(
+              'text-2xl font-bold tabular-nums leading-none',
+              chiffre.teinte && niveau === 'rouge' ? 'text-red-600' : chiffre.teinte && niveau === 'ambre' ? 'text-amber-600' : 'text-foreground',
+            )}>
+              {chiffre.valeur}
+            </p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">{chiffre.legende}</p>
+          </div>
+        )}
+      </div>
+      {segments > 0 && (
+        <div className="mt-3">
+          <div className={cn('flex', segments > 40 ? 'gap-px' : 'gap-0.5')}>
+            {Array.from({ length: segments }, (_, i) => (
+              <div
+                key={i}
+                title={i < etape.joursEcoules ? 'Chez le tricoteur' : 'À venir'}
+                className={cn('h-2 flex-1 rounded-full', i < etape.joursEcoules ? jourClass : 'bg-zinc-200')}
+              />
+            ))}
+          </div>
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground tabular-nums">
+            <span className="inline-flex items-center gap-1">
+              <span className={cn('h-1.5 w-1.5 rounded-full', jourClass)} />Tricoteur {etape.joursEcoules} j
+            </span>
+          </p>
+        </div>
+      )}
+      {(avantTricotage || montrerLignes || (enTricotage && etape.autres.length > 0)) && (
+        <div className={cn('space-y-0.5 text-xs', segments > 0 ? 'mt-1.5' : 'mt-3')}>
+          {/* Nothing launched yet: the délai is what colours the card. */}
+          {avantTricotage && <p className={etape.delai ? colore : 'text-muted-foreground'}>{delaiTexte}</p>}
+          {montrerLignes && (
+            <p className="text-muted-foreground">
+              {nbLignes} lignes :{' '}
+              {stades.map((s, i) => (
+                <span key={s.texte} className={cn(s.fort && 'font-medium text-foreground')}>{i > 0 && <span className="font-normal text-muted-foreground"> · </span>}{s.texte}</span>
+              ))}
+            </p>
+          )}
+          {enTricotage && etape.autres.length > 0 && (
+            <p className="text-muted-foreground">
+              + {etape.autres.length} {etape.autres.length > 1 ? 'autres sorties' : 'autre sortie'} au {etape.autres.map(jjmm).join(', ')}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Journal tab ─────────────────────────────────────────
 // lib/journal-commande-sst.ts: the order's gestures + every lot's journal.
 
-function JournalTab({ commande, isEditing }: { commande: CommandeDetail; isEditing: boolean }) {
+/** « Prochaines étapes »: where the order stands inside its status and what is
+ *  awaited next — the dyer's cycle card, or the knitter's. On top of the Info tab.
+ *  Nothing on an order with nothing left to follow. */
+function ProchainesEtapes({ commande, isEditing }: { commande: CommandeDetail; isEditing: boolean }) {
+  const cycle = commande.cycle && (commande.phase === 'attente_delai' || !!commande.cycle.traitement || commande.cycle.lots.length > 0)
+    ? commande.cycle : null
+  // Tricotage: its own card (nothing left to do once terminée).
+  const tricotage = commande.famille === 'tricotage' && commande.phase !== 'terminee' ? commande.tricotage ?? null : null
+  if (!cycle && !tricotage) return null
+  return (
+    <section className="space-y-1.5">
+      <h3 className="text-[10px] font-semibold uppercase tracking-wide text-primary/70 px-0.5">Prochaines étapes</h3>
+      {cycle && <CycleCard commande={commande} cycle={cycle} isEditing={isEditing} />}
+      {tricotage && <TricotageCard commande={commande} etape={tricotage} isEditing={isEditing} />}
+    </section>
+  )
+}
+
+function JournalTab({ commande }: { commande: CommandeDetail }) {
   const commandeId = commande.IDcommande_sous_traitant
   const { data, isLoading, error } = useQuery({
     queryKey: ['commande-sst-journal', commandeId],
@@ -7994,18 +8181,7 @@ function JournalTab({ commande, isEditing }: { commande: CommandeDetail; isEditi
     staleTime: 0,
     refetchOnMount: 'always',
   })
-  const etapes = commande.cycle && (commande.phase === 'attente_delai' || !!commande.cycle.traitement || commande.cycle.lots.length > 0)
-  return (
-    <>
-      {etapes && commande.cycle && (
-        <section className="space-y-1.5">
-          <h3 className="text-[10px] font-semibold uppercase tracking-wide text-primary/70 px-0.5">Prochaines étapes</h3>
-          <CycleCard commande={commande} cycle={commande.cycle} isEditing={isEditing} />
-        </section>
-      )}
-      <JournalListe entrees={data?.entrees ?? []} isLoading={isLoading} error={error} />
-    </>
-  )
+  return <JournalListe entrees={data?.entrees ?? []} isLoading={isLoading} error={error} />
 }
 
 function DocsTab({ commande, isEditing }: { commande: CommandeDetail; isEditing: boolean }) {

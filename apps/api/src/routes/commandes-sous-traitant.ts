@@ -77,7 +77,7 @@ import {
 } from '../lib/sst-shared.js'
 import { sstDeleteBlocker } from '../lib/sst-delete.js'
 import { isRectiligneType, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
-import { etatsTricotage, familleOfTypeSst, parseFamille, tricoteurIds, type EtatTricotage, type SstFamille, type TricotagePhase } from '../lib/sst-tricotage.js'
+import { etapeTricotage, etatsTricotage, familleOfTypeSst, parseFamille, tricoteurIds, type EtatTricotage, type SstFamille, type TricotagePhase } from '../lib/sst-tricotage.js'
 import { calendrierTraitement, cleLot, etatCommande, joursOuvresDepuis, lireCommandesEnnoblissement, urgenceCommande, type EtapeCommande, type EtapeLot, type EtatCommande } from '../lib/cycle-ennoblissement.js'
 import {
   loadRectiligneRefLabels,
@@ -691,9 +691,23 @@ const ligneBody = z.object({
   unite: z.number().int().optional(),
   prix: z.number().optional(),
   date_livraison: z.string().optional(),
+  /** The date we ask the partner for (0048) — at Tricotage Malterre the only
+   *  date ETM types before TRM has given its délai. */
+  date_demandee: z.string().optional(),
   sstatut: z.string().optional(),
   commentaire: z.string().optional(),
 })
+
+/** Tricotage Malterre gives its délai itself, on its own screen (TRM Clients ›
+ *  Commandes, `PUT /commandes-trm/lignes/:id/delai` writes both ledgers): until
+ *  then ETM may only say the date it asks for (Vincent 2026-11-16 — half the
+ *  « engagements » of TRM had been typed by ETM). */
+const MESSAGE_DELAI_PAR_TRM = 'Le délai d’une commande chez Tricotage Malterre est donné par TRM, depuis son écran Commandes. Indiquez ici la date demandée.'
+
+async function ecrireDateDemandee(idligne: number, yyyymmdd: string): Promise<void> {
+  const d = /^\d{8}$/.test(yyyymmdd) ? `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}` : null
+  await mpsPg()`UPDATE ligne_commande_sous_traitant SET date_demandee = ${d}::date WHERE idligne_commande_sous_traitant = ${idligne}`
+}
 
 // ── Lookups ──────────────────────────────────────────────
 
@@ -1716,7 +1730,8 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
         phase: phaseMap.get(cid) ?? 'en_cours',
         bon_envoye_at: bonEnvoyeMap.get(cid) ?? null,
         ...totals,
-        ...(etatsTric.has(cid) ? { urgence: etatsTric.get(cid)!.urgence, jauge: etatsTric.get(cid)!.jauge, urgence_demandee: etatsTric.get(cid)!.urgenceDemandee } : {}),
+        // No kg gauge on the card since 2026-11-16 (same card as an ennoblissement order).
+        ...(etatsTric.has(cid) ? { urgence: etatsTric.get(cid)!.urgence, urgence_demandee: etatsTric.get(cid)!.urgenceDemandee } : {}),
         ...(etatsEnn.has(cid) ? cycleFields(etatsEnn.get(cid)!) : {}),
       }
     })
@@ -2239,7 +2254,13 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
       auto_pricing_enabled: autoPricingEnabled,
       famille,
       phase,
-      ...(etatTric ? { urgence: etatTric.urgence, jauge: etatTric.jauge, urgence_demandee: etatTric.urgenceDemandee } : {}),
+      // Tricotage: the late frame, the urgency asked of the knitter and where the order
+      // stands inside its status, in the knitter's working days (« Prochaines étapes »).
+      ...(etatTric ? {
+        urgence: etatTric.urgence,
+        urgence_demandee: etatTric.urgenceDemandee,
+        tricotage: etapeTricotage(etatTric.commande, etatTric.phase, etatTric.faits, fermSst),
+      } : {}),
       ...(etatEnn ? { cycle: cycleFields(etatEnn) } : {}),
       bon_envoye_at: bonEnvoyeAt,
       trm_mirror: trmMirror,
@@ -4897,7 +4918,6 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
       return
     }
     const d = parsed.data
-    const dateLiv = dateStr(d.date_livraison)
 
     if (refuseIfTerminee(res, await loadCommandeSoldee(id))) return
     if (refuseIfNoColoris(res, d.IDColoris ?? 0)) return
@@ -4912,6 +4932,10 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
     // TRM-specific mirror gate — only the sister company gets the
     // cross-ledger commande_client write.
     const isTrm = await isTricotageMalterreSst(id)
+    // At Tricotage Malterre the line is born waiting for TRM's délai: a date typed
+    // here is the date we ask for, never its engagement.
+    const dateDemandee = dateStr(d.date_demandee) || (isTrm ? dateStr(d.date_livraison) : '')
+    const dateLiv = isTrm ? '' : dateStr(d.date_livraison)
     const lineType = d.type ?? (isTricoteur ? 1 : 2)
     // A knit line at Tricotage Malterre goes out with its yarn (lib/lancement-tricotage.ts): the
     // lots are planned before anything is written, and the line is refused while a yarn of the
@@ -4960,7 +4984,7 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
     // bon de commande has already been sent (e.g. user adds a line after
     // the fact) the new line skips straight to Attente_Delai so the
     // commande phase doesn't regress.
-    const defaultStatut = (await hasBonDeCommandeBeenSent(id))
+    const defaultStatut = isTrm || (await hasBonDeCommandeBeenSent(id))
       ? STATUT_ATTENTE_DELAI
       : STATUT_NON_ENVOYE
     await query(
@@ -4988,6 +5012,7 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
         )
         newSstLineId = Number(rs[0]?.IDligne_commande_sous_traitant) || 0
         if (newSstLineId === 0) throw new Error('cannot resolve new sst line id')
+        if (dateDemandee) await ecrireDateDemandee(newSstLineId, dateDemandee)
 
         const mirrorId = await getTrmMirror(id)
         if (mirrorId == null) {
@@ -5141,6 +5166,11 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     if (d.commentaire !== undefined) sets.push(`commentaire = '${esc(d.commentaire)}'`)
     let statutApres = (cur.sstatut ?? '').trim()
     let delaiApres: string | null = null
+    // Tricotage Malterre, no délai on the line yet: the first one is TRM's to give.
+    if (!dateStr(cur.date_livraison) && await isTricotageMalterreSst(commandeId)) {
+      if (dateStr(d.date_livraison)) { res.status(409).json({ error: 'delai_par_trm', message: MESSAGE_DELAI_PAR_TRM }); return }
+      delete d.date_livraison
+    }
     // A date pushed later than the one given is a report (LIVA #1364): motif +
     // who it is due to, or refused. The first date is free; an earlier one is
     // refused (the engagement stays true, Vincent 2026-11-10).
@@ -5189,11 +5219,14 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
       sets.push(`prix = ${n(recomputedTrmPrix)}`)
     }
 
-    if (sets.length === 0) { res.status(400).json({ error: 'No fields to update' }); return }
+    if (sets.length === 0 && d.date_demandee === undefined) { res.status(400).json({ error: 'No fields to update' }); return }
 
-    await query(
-      `UPDATE ligne_commande_sous_traitant SET ${sets.join(', ')} WHERE IDligne_commande_sous_traitant = ${lineId}`,
-    )
+    if (sets.length > 0) {
+      await query(
+        `UPDATE ligne_commande_sous_traitant SET ${sets.join(', ')} WHERE IDligne_commande_sous_traitant = ${lineId}`,
+      )
+    }
+    if (d.date_demandee !== undefined) await ecrireDateDemandee(lineId, dateStr(d.date_demandee))
     // The dyer answered the délai question (LIVA #1314: Qualité de service).
     if ((cur.sstatut ?? '').trim() === STATUT_ATTENTE_DELAI && statutApres !== STATUT_ATTENTE_DELAI && statutApres !== STATUT_NON_ENVOYE) {
       await noterDelaiRecu(lineId, delaiApres, req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)

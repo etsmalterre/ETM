@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { refusReponseAttendue, reponseProposee, urgenceOuverte, type FaitUrgence } from './urgence-sst.js'
-import { urgenceDemandeeCommande } from './sst-tricotage.js'
+import { urgenceAvecDemande, urgenceDemandeeCommande } from './sst-tricotage.js'
 
 const fait = (type: FaitUrgence['type'], jour: string, reponseAttendue: string | null, p: Partial<FaitUrgence> = {}): FaitUrgence => ({
   type, le: `${jour}T10:00`, jour, reponseAttendue, dateSouhaitee: null, note: null, par: 'Vincent Malterre', ...p,
@@ -68,5 +68,21 @@ describe('urgence sur la carte de la commande de tricotage', () => {
     expect(urgenceDemandeeCommande([])).toBeNull()
     expect(urgenceDemandeeCommande([{ aRelancer: false }])).toBe('attente')
     expect(urgenceDemandeeCommande([{ aRelancer: false }, { aRelancer: true }])).toBe('a_relancer')
+  })
+
+  it('an urgency to chase is red whatever the délai rule says', () => {
+    expect(urgenceAvecDemande(null, 'en_tricotage', 'a_relancer', false)).toBe('late')
+    expect(urgenceAvecDemande('soon', 'attente_delai', 'a_relancer', true)).toBe('late')
+  })
+
+  it('« Attente délai » is not red while the urgency asked on every line without a délai awaits its answer', () => {
+    // The délai was due (red by the 1-working-day rule), but the knitter was asked again: waiting.
+    expect(urgenceAvecDemande('late', 'attente_delai', 'attente', true)).toBeNull()
+    // A line nobody asked about keeps the order on the délai chase.
+    expect(urgenceAvecDemande('late', 'attente_delai', 'attente', false)).toBe('late')
+    // No urgency: the délai rule alone.
+    expect(urgenceAvecDemande('late', 'attente_delai', null, false)).toBe('late')
+    // Outside « Attente délai » an awaited urgency changes nothing (another line's délai may be late).
+    expect(urgenceAvecDemande('late', 'en_tricotage', 'attente', true)).toBe('late')
   })
 })

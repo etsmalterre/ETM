@@ -86,6 +86,12 @@ describe('sstDelaiSets', () => {
     expect(r).toMatchObject({ date_livraison: '20261015', date_delai: '20261015', sstatut: STATUT_OPEN })
   })
 
+  it('a patch without a date leaves an Attente_Delai line waiting', () => {
+    const r = sstDelaiSets({ date_livraison: '', date_delai: '', sstatut: STATUT_ATTENTE_DELAI }, '')
+    expect(r.sets).toEqual([`date_livraison = ''`])
+    expect(r.sstatut).toBe(STATUT_ATTENTE_DELAI)
+  })
+
   it('a reschedule leaves the engagement frozen at creation alone', () => {
     const r = sstDelaiSets({ date_livraison: '20261015', date_delai: '20261015', sstatut: STATUT_OPEN }, '20261101')
     expect(r.sets).toEqual([`date_livraison = '20261101'`])

@@ -1369,7 +1369,10 @@ commandesTrmRouter.put('/lignes/:lineId/delai', async (req: Request, res: Respon
           sst = { IDligne_commande_sous_traitant: sstLineId, date_livraison: r.date_livraison, date_delai: r.date_delai, sstatut: r.sstatut }
           sstStatus = 'updated'
           // TRM answered ETM's délai question (LIVA #1314: Qualité de service).
-          if ((cur[0].sstatut ?? '').trim() === STATUT_ATTENTE_DELAI && r.sstatut !== STATUT_ATTENTE_DELAI) {
+          // The first date on the line counts whatever its sstatut: a line made on
+          // Sous-traitants › Tricotage before 2026-11-16 stayed « Non envoyé ».
+          const premierDelai = !dateStr(cur[0].date_livraison) && !!r.date_livraison
+          if (premierDelai || ((cur[0].sstatut ?? '').trim() === STATUT_ATTENTE_DELAI && r.sstatut !== STATUT_ATTENTE_DELAI)) {
             await noterDelaiRecu(sstLineId, r.date_livraison || null, req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
           }
         }

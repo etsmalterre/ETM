@@ -167,19 +167,82 @@ Attente délai / contrôle / reprise / soumission mean nothing there.
 |---|---|
 | Terminée | `est_soldee = 1` |
 | Soldée par TRM | the mirror is soldée (unchanged) |
+| Fil à affecter | TRM: no OF yet and a circulaire line without `asso_fil_lignecmdsst` (TRM cannot create its OF, #1159). « Affecté » is enough, the yarn may still be at ETM (Vincent). Ours first |
+| Attente délai | TRM: a line not yet delivered has no délai, **even once an OF exists** (2026-11-16, below). External knitter: bon de commande sent, no délai yet |
 | En tricotage | TRM: an OF on a mirror line, or rectiligne-only (never an OF, #1185). External knitter: délai announced or rolls received |
 | À lancer | TRM: yarn on every circulaire line, no OF yet |
-| Fil à affecter | TRM: a circulaire line without `asso_fil_lignecmdsst` (TRM cannot create its OF, #1159). « Affecté » is enough, the yarn may still be at ETM (Vincent) |
-| Attente délai / À envoyer | external knitters only (4 orders in 2 years), the bon de commande chain |
+| À envoyer | external knitters only (4 orders in 2 years), the bon de commande chain |
 
-« Livrée en partie » was considered and dropped: the **kg gauge** on the card
-shows it (kg shipped solid, knitted light, over kg ordered; circulaire lines
-only). Knitted = pieces of the OFs on the mirror lines, shipped = those with
+**Attente délai at Tricotage Malterre (Vincent 2026-11-16).** The knitter gives
+its délai like a dyer does; we only say the date we ask for (`date_demandee`,
+doctrine des délais). Measured before the change on the 14 TRM orders since
+2026-10-22: TRM answered in 0 or 1 working day when it answered (5 orders), but
+5 others carried a « délai » typed on the ETM side and frozen as TRM's
+engagement, one was knitted and closed without any date (9149) and one sat
+three weeks without a date nor an alert (9127, cols / bandes). So:
+
+- **Status**: « Attente délai » while a line still to deliver has no date
+  (cols / bandes included), so « À lancer » and « En tricotage » always carry a
+  délai and the card always has its « Sortie prévue ».
+- **Clock**: no bon de commande goes to TRM, the ORDER asks. Due
+  `DELAI_TRM_J` = 1 working day later (ordered the 16th, due the 17th), ours to
+  chase the working day after (red on the 18th), never amber: the dyers' facts
+  and rule (`lib/delai-sst.ts`, `faitsDelaiTricotage()`), with the same
+  « Relancer » / « Repousser » gestures on the « Prochaines étapes » card (a TRM line counts
+  as waiting while it has no date, whatever its `sstatut`).
+- **Only TRM gives the délai**, on its own screen (`PUT
+  /commandes-trm/lignes/:id/delai`, recorded as « Délai reçu » on the first
+  date whatever the line's `sstatut`). On the ETM side a TRM line without a
+  délai takes the **date demandée**: the line form's date field is labelled so
+  and writes `date_demandee`; a new line is born « Attente_Delai » with no
+  date; `PUT /lignes/:id` answers 409 `delai_par_trm` to a first
+  `date_livraison`. Once TRM has answered, the ETM side keeps the report rules
+  (#1364). External knitters and dyers are unchanged.
+- **With an urgency asked of the knitter** (`lib/urgence-sst.ts`, doctrine des délais
+  §5 quinquies, landed the same day): both live on a knitting line without a délai.
+  One rule, `urgenceAvecDemande()`: an urgency whose answer did not come is red
+  (« Urgence demandée : relancer le tricoteur »); while the answer is awaited on
+  EVERY line still without its délai, « Attente délai » is not red even past its
+  own chase day — the knitter was asked again through the urgency, and waiting is
+  never red; a line nobody asked about keeps the order on the délai chase. The
+  card then prints « Urgence demandée · réponse attendue le … » instead of its
+  relance date.
+- Fixed on the way: `sstDelaiSets` flipped an « Attente_Delai » line to
+  « En_Cours » on ANY patch, even one without a date (a quantity edited while
+  the délai was awaited recorded a false « Délai reçu »); only a date flips now.
+
+« Livrée en partie » was considered and dropped: each line card shows its kg.
+Knitted = pieces of the OFs on the mirror lines, shipped = those with
 `IDligne_expedition_trm > 0`; an external knitter's rolls (created at ETM)
-count as both. **Late frame**, computed by the API (the card reads `urgence`):
+count as both (read by the status and by « line delivered »).
+
+**The order's kg gauge is gone since 2026-11-16** (Vincent: a knitting order
+reads like an ennoblissement one): none on the list card, none in the Journal,
+`jaugeTricotage` and the `jauge` field were removed. Where the order stands
+INSIDE its status is the **« Prochaines étapes » card** (`TricotageCard`, drawn like the ennoblissement `CycleCard`), read from
+`etapeTricotage()` in `lib/sst-tricotage.ts` (detail only, in the knitter's
+working days, closures included):
+
+| Status | The card says |
+|---|---|
+| Fil à affecter | lines without yarn, working days since the order, « Sortie prévue le … » (or the date we asked for) |
+| Attente délai | the dyers' block: working days since the demand over the days granted, « Relance le … » (red: « Relancer Tricotage Malterre : N j de retard »), « Demandé pour le … », Relancer / Repousser |
+| À lancer | « OF à créer par Tricotage Malterre », working days since the order, « Sortie prévue le … » |
+| En tricotage | « Sortie prévue le … » + J-N (« +N j de retard ») and the dyer's « En traitement » segments: one per working day from the ORDER's date to the earliest open délai, the days behind us coloured (sky, amber / red with the order), legend « Tricoteur N j »; later délais of the other lines named |
+| Soldée par TRM | « vérifier la réception, puis clôturer » |
+| À envoyer / Attente délai | the bon de commande to send / days since it was sent and the relance date |
+
+A status is the order's MOST ADVANCED line (one OF is enough for « En
+tricotage »), so with 2+ circulaire lines the card counts them by where each
+stands (livrées · en tricotage · à lancer · sans fil); a line without yarn under
+« En tricotage » is printed in bold. Colour = the order's `urgence`, never
+recomputed in the card. Nothing on a terminée order.
+
+**Late frame**, computed by the API (the card reads `urgence`):
 red when a line not yet delivered (< `SEUIL_EXPEDIE` of its kg shipped) is due
-today or earlier, amber within 3 days; a line without a date raises nothing;
-Soldée par TRM is never late; Attente délai keeps the relance rule.
+today or earlier, amber within 3 days; Soldée par TRM is never late; Attente
+délai = the dyers' chase rule (red from the working day after the échéance,
+pushed 2 working days by each relance, never amber).
 
 ## Ennoblissement: the cycle of an order and of its lots (2026-10-11)
 
@@ -254,7 +317,17 @@ order then follows the new date. A line with a lot in reprise whose délai is no
 lot … » in its corner. **The list card no longer ends on « : relancer »** (Vincent 2026-11-16: a past délai says it
 by itself) — « Délai du JJ/MM dépassé », Tricotage included. A lot in reprise beside a lot in control: « En contrôle », with the dyer's délai for the reprise.
 The Point is unchanged (§5 « reprise : quand revient-il ? » reads the LOT's step).
-**Journal › « Prochaines étapes » while « En traitement »** (Vincent 2026-11-11): a card « En traitement » with the dyer's
+**« Prochaines étapes » sits on top of the Info tab since 2026-11-16** (Vincent, both
+menus: « this card gives the situation of the order at a glance », and Info is the tab
+that opens by default; from 2026-11-10 it was on top of the Journal tab, which now
+holds only « Ce qui a été fait »). One component, `ProchainesEtapes`, renders the
+dyer's `CycleCard` or the knitter's `TricotageCard`. The bare « Relance » date field
+that Info kept for orders without a cycle (Tricotage) is gone with it, and the header
+save no longer sends `date_notif`: a date typed there moved the échéance with no
+motif — « Repousser » on the card is the one way. Qualité › Suivi lots keeps its
+card in its Journal tab (not decided).
+
+**« Prochaines étapes » while « En traitement »** (Vincent 2026-11-11): a card « En traitement » with the dyer's
 time from the bon de commande to the earliest open line's délai (J-N, gauge in working days, later lines named
 « + 1 autre ligne au 26/11 »), also on a solde still at the dyer; `EtatCommande.traitement`. Its colour is the order's
 own `urgenceCommande` (the list card's), never recomputed; no Ml (the line cards carry them).

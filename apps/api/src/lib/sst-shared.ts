@@ -185,7 +185,9 @@ export function sstDelaiSets(cur: SstDelaiCurrent, next: unknown, explicitStatut
   if (explicitStatut !== undefined) {
     sets.push(`sstatut = '${esc(explicitStatut)}'`)
     statut = explicitStatut
-  } else if (curStatut === STATUT_ATTENTE_DELAI) {
+  } else if (curStatut === STATUT_ATTENTE_DELAI && nextLiv) {
+    // Only a DATE answers the question: a patch carrying none (a quantity edited
+    // while the délai is awaited) leaves the line waiting (2026-11-16).
     sets.push(`sstatut = '${STATUT_OPEN}'`)
     statut = STATUT_OPEN
   }

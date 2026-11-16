@@ -56,6 +56,10 @@ export const DELAI_STOCK_J = 1
  *  9132, shipped 27/10, bon 28/10: PE did not ask them early); the stock cases
  *  were 34 to 63 days old. */
 export const STOCK_ANCIEN_J = 7
+/** Tricotage Malterre (Vincent 2026-11-16): one working day after the order —
+ *  ordered on the 16th, its délai is due on the 17th. Measured on the orders of
+ *  2026-10/11: TRM answers the same day or the next working day. */
+export const DELAI_TRM_J = 1
 /** Working days the dyer gets after a relance before it is ours to chase again. */
 export const RELANCE_SUIVANTE_J = 2
 
@@ -81,8 +85,11 @@ export interface Report {
 }
 
 export interface FaitsDelai {
-  /** First bon de commande sent, 'YYYY-MM-DD'. */
+  /** First bon de commande sent, 'YYYY-MM-DD'. Tricotage Malterre gets no bon:
+   *  the day of the order (lib/sst-tricotage.ts). */
   demandeLe: string | null
+  /** Working days the partner gets after the demand (default DELAI_PREMIERE_DEMANDE_J). */
+  premiereDemandeJ?: number
   /** commande_sous_traitant.date_notif, 'YYYY-MM-DD'. */
   dateNotif: string | null
   relances: Relance[]
@@ -113,8 +120,9 @@ function plusJoursSemaine(iso: string, n: number): string {
 export function echeanceDelai(f: FaitsDelai): string | null {
   const report = [...f.reports].sort((a, b) => a.le.localeCompare(b.le)).at(-1)
   if (report) return report.echeance
-  const seed = f.demandeLe ? plusOuvres(f.demandeLe, DELAI_PREMIERE_DEMANDE_J) : null
-  const ancienSeed = f.demandeLe ? plusJoursSemaine(f.demandeLe, DELAI_PREMIERE_DEMANDE_J) : null
+  const accordes = f.premiereDemandeJ ?? DELAI_PREMIERE_DEMANDE_J
+  const seed = f.demandeLe ? plusOuvres(f.demandeLe, accordes) : null
+  const ancienSeed = f.demandeLe ? plusJoursSemaine(f.demandeLe, accordes) : null
   if (f.dateNotif && f.dateNotif !== seed && f.dateNotif !== ancienSeed) return f.dateNotif
   if (f.stockChezSst && f.demandeLe) return plusOuvres(f.demandeLe, DELAI_STOCK_J)
   return seed ?? f.dateNotif
@@ -212,11 +220,16 @@ export class DelaiRefuse extends Error {
   constructor(public code: string, message: string) { super(message) }
 }
 
-/** Lines of the order still waiting for their délai. */
+/** Lines of the order still waiting for their délai. At Tricotage Malterre
+ *  (sous-traitant 1) a line waits while it has no date, whatever its sstatut:
+ *  no bon de commande ever moves it (lib/sst-tricotage.ts). */
 async function lignesEnAttente(sql: Sql, idcommande: number): Promise<number> {
   const [r] = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM ligne_commande_sous_traitant
-    WHERE idcommande_sous_traitant = ${idcommande} AND trim(sstatut::text) = 'Attente_Delai'`
+    SELECT count(*)::int AS n
+    FROM ligne_commande_sous_traitant l
+    JOIN commande_sous_traitant c ON c.idcommande_sous_traitant = l.idcommande_sous_traitant
+    WHERE l.idcommande_sous_traitant = ${idcommande}
+      AND (trim(l.sstatut::text) = 'Attente_Delai' OR (c.idsous_traitant = 1 AND l.date_livraison IS NULL))`
   return Number(r?.n) || 0
 }
 
