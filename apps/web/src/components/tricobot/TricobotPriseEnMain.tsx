@@ -406,8 +406,11 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
 }) {
   const geste = useGeste(onChanged)
   // The mail on the right is the one these saisies came from: it follows the
-  // card opened (the screens key this component by order / lot).
-  const mailRun = saisies[0]?.runId ?? null
+  // card opened (the screens key this component by order / lot). Several BLs
+  // on one order (TAD mails one per OF): the person picks which one is shown.
+  const [runChoisi, setRunChoisi] = useState<string | null>(null)
+  const mailRun = (runChoisi && saisies.some((s) => s.runId === runChoisi) ? runChoisi : saisies[0]?.runId) ?? null
+  const nbMails = new Set(saisies.map((s) => s.runId).filter(Boolean)).size
   const [dialog, setDialog] = useState<{ s: SaisieTricobot; action: Geste['action'] } | null>(null)
   const [erreur, setErreur] = useState<string | null>(null)
   /** Narrow screens: no room for the mail beside him, it opens in a dialog. */
@@ -556,9 +559,9 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
             <p className="text-sm font-semibold">
               {bl
                 ? (aRevoir.length > 0 && aRevoir.every((x) => x.decision === 'aide')
-                  ? `Je n’ai rien réceptionné : j’ai besoin de ton avis sur ce BL${ennoblisseurBl ? ` de ${ennoblisseurBl}` : ''}${avecMail ? ' (à droite)' : ''}.`
+                  ? `Je n’ai rien réceptionné : j’ai besoin de ton avis sur ${nbMails > 1 ? `ces ${nbMails} BL` : 'ce BL'}${ennoblisseurBl ? ` de ${ennoblisseurBl}` : ''}${avecMail ? (nbMails > 1 ? ' (chacun à droite, au clic sur son bloc)' : ' (à droite)') : ''}.`
                   : aRevoir.length
-                  ? `${ennoblisseurBl ?? 'L’ennoblisseur'} a livré : je te propose de réceptionner ${rouleauxBl > 1 ? `ces ${rouleauxBl} rouleaux` : 'ce rouleau'}, d’après son BL${avecMail ? ' à droite' : ''}. Rien n’est écrit tant que tu n’as pas validé.`
+                  ? `${ennoblisseurBl ?? 'L’ennoblisseur'} a livré : je te propose de réceptionner ${rouleauxBl > 1 ? `ces ${rouleauxBl} rouleaux` : 'ce rouleau'}, d’après ${nbMails > 1 ? `ses ${nbMails} BL${avecMail ? ' (clique sur un bloc pour voir son BL à droite)' : ''}` : `son BL${avecMail ? ' à droite' : ''}`}. Rien n’est écrit tant que tu n’as pas validé.`
                   : 'J’ai réceptionné ce BL seul. Tu peux encore le corriger.')
                 : aRevoir.length > 0 && aRevoir.every((x) => x.decision === 'aide')
                 ? `Je n’ai rien ${controles ? 'reporté' : 'saisi'} : j’ai besoin de ton avis sur ${controles ? 'les contrôles' : aRevoir.length > 1 ? 'les délais' : 'le délai'} de l’ennoblisseur${avecMail ? ' (son mail, à droite)' : ''}.`
@@ -575,8 +578,20 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
               <div key={s.id} className="mt-3">
                 {/* What he wrote. */}
                 {s.champ === CHAMP_RECEPTION ? (
-                  <div className="rounded-lg border bg-zinc-50 px-2.5 py-2 space-y-2">
-                    <p className="truncate text-sm font-medium">{libelle(s)}</p>
+                  <div
+                    className={cn(
+                      'rounded-lg border bg-zinc-50 px-2.5 py-2 space-y-2',
+                      avecMail && nbMails > 1 && (s.runId === mailRun ? 'ring-2 ring-gold border-gold' : 'cursor-pointer hover:border-gold/60'),
+                    )}
+                    onClick={avecMail && nbMails > 1 && s.runId !== mailRun ? () => setRunChoisi(s.runId) : undefined}
+                    title={avecMail && nbMails > 1 && s.runId !== mailRun ? 'Voir ce BL à droite' : undefined}
+                  >
+                    <div className="flex items-center gap-2">
+                      <p className="min-w-0 flex-1 truncate text-sm font-medium">{libelle(s)}</p>
+                      {avecMail && nbMails > 1 && (s.runId === mailRun
+                        ? <span className="flex flex-shrink-0 items-center gap-1 text-[11px] font-semibold text-primary"><FileText className="h-3.5 w-3.5" />BL à droite</span>
+                        : <span className="flex flex-shrink-0 items-center gap-1 text-[11px] text-muted-foreground underline underline-offset-2"><FileText className="h-3.5 w-3.5" />Voir ce BL</span>)}
+                    </div>
                     <RouleauxBl s={s} />
                   </div>
                 ) : (
@@ -692,7 +707,7 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
       {/* The mail he read, where the right-hand panel was. */}
       {avecMail && (
         <div className="absolute bottom-4 right-4 top-4 animate-in slide-in-from-right-6 fade-in-0 duration-500" style={{ width: largeurMail }}>
-          <MailPanneau runId={mailRun} citations={citations} idlignes={saisies.filter((x) => x.runId === mailRun).map((x) => x.idligne)} section={controles ? 2 : 5} />
+          <MailPanneau key={mailRun ?? ''} runId={mailRun} citations={citations} idlignes={saisies.filter((x) => x.runId === mailRun).map((x) => x.idligne)} section={controles ? 2 : 5} />
         </div>
       )}
     </div>
