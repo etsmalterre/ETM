@@ -3,7 +3,7 @@
 // still ahead of it, each partner in its own working days (lib/jours-ouvres.ts, its closures included):
 //   fini rolls validated           → ready now
 //   fini rolls not validated yet   → the rest of the quality control, counted from their reception
-//   écru pieces reserved           → dyer, then quality control
+//   écru pieces reserved           → dyer, then quality control (none on a reference shipped dès la réception)
 //   écru still to knit (orders)    → knitter, then dyer, then quality control
 //   yarn reserved                  → from the supplier's date (or today if in stock), knitter, dyer, control
 //   nothing reserved               → a yarn estimate, knitter, then dyer, then quality control
@@ -16,6 +16,10 @@
 // Matter already at a partner on a launched order (écru at a dyer, knitting launched) ends on that order's
 // délai, or today when it is past (« if it delivers today »). An order « En cours » has no reserve: its lines
 // read in margin / delay against their engagement (Vincent 2026-11-02).
+// A reference switched « Expédier dès la réception » (#1351, lib/fini-expediable.ts) has no quality control
+// step ahead: its rolls ship the day the dyer delivers them (Vincent 2026-11-16, order 3905 read 5 days late
+// on a control that does not hold it). Its rolls that still cannot ship (En reprise, Attente décision) keep
+// the control step: something does hold them.
 
 import { ajouterJoursOuvres, joursOuvresEntre, type Periode } from './jours-ouvres.js'
 import { CONTROLE_QUALITE_JOURS, MARGE_TRICOTEUR_MAX_JOURS, RESERVE_MALTERRE_JOURS, fermetures, standards, tricotageJours, type StandardsSst } from './delais-standards.js'
@@ -111,6 +115,8 @@ export interface EntreeDelai {
   /** the order is validated (« En cours »): no Malterre reserve, the line reads in margin / delay against
    *  its engagement (Vincent 2026-11-02: the reserve is a préparation concept) */
   enCours?: boolean
+  /** the reference ships « dès la réception » (#1351): no quality control after the dyer */
+  sansControle?: boolean
 }
 
 /** Matter at a partner on a launched order, in the line's unit. */
@@ -185,7 +191,7 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
     if (e.kind === 'fini') {
       const au = ajouterJoursOuvres(t, joursEnno, e.ennoblisseur.fermetures)
       out.push({ libelle: 'Ennoblissement', du: t, au, jours: joursEnno })
-      out.push(controle(au))
+      if (!e.sansControle) out.push(controle(au))
     }
     return out
   }
@@ -197,7 +203,7 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
   }
   for (const m of chezEnno) {
     const enno = chezPartenaire('Ennoblissement', m, joursEnno, e.ennoblisseur.fermetures)
-    portions.push(e.kind === 'fini' ? [enno, controle(enno.au)] : [enno])
+    portions.push(e.kind === 'fini' && !e.sansControle ? [enno, controle(enno.au)] : [enno])
   }
   if (ecruLibre > 0) portions.push(suite(e.aujourdhui, false))
   if (tricotage > 0) {

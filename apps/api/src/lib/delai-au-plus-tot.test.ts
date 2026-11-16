@@ -30,6 +30,23 @@ describe('délai au plus tôt (doctrine des délais §5 ter)', () => {
     expect(d.etapes.map((x) => x.libelle)).toEqual(['Ennoblissement', 'Contrôle qualité', 'Réserve Malterre'])
     expect(delaiAuPlusTot(base({ ecru: 899 }))!.sansMatiere).toBe(true)
   })
+  it('a reference shipped « dès la réception » (#1351) has no control step ahead', () => {
+    // Écru reserved: the dyer alone, then the reserve (15 j → 24/11, + 8 j → 04/12; with the control: 11/12).
+    const d = delaiAuPlusTot(base({ ecru: 1000, sansControle: true }))!
+    expect(d.etapes.map((x) => x.libelle)).toEqual(['Ennoblissement', 'Réserve Malterre'])
+    expect(d.date).toBe('20261204')
+    // Nothing reserved: the whole chain without the control.
+    expect(delaiAuPlusTot(base({ sansControle: true }))!.etapes.map((x) => x.libelle)).toEqual(['Fil', 'Tricotage', 'Ennoblissement', 'Réserve Malterre'])
+    // Écru at the dyer on a launched order, order « En cours »: ready on the dyer's délai (order 3905).
+    const lance = delaiAuPlusTot(base({
+      ecru: 1000, sansControle: true, enCours: true,
+      ecruChezEnnoblisseur: [{ quantite: 1000, partenaire: 'MATEL', delai: '20261201' }],
+    }))!
+    expect(lance.etapes.map((x) => x.libelle)).toEqual(['Ennoblissement'])
+    expect(lance.date).toBe('20261201')
+    // Rolls of that reference that still cannot ship (reprise, attente décision) keep their control step.
+    expect(delaiAuPlusTot(base({ fini: 1000, finiEnControle: 1000, finiRecuLe: '20261029', sansControle: true }))!.etapes[0].libelle).toBe('Contrôle qualité')
+  })
   it('all fini rolls validated: ready today, no reserve', () => {
     expect(delaiAuPlusTot(base({ fini: 1000 }))).toEqual({ date: '20261102', etapes: [], sansMatiere: false })
   })

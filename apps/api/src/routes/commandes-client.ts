@@ -1798,12 +1798,14 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
     const today = aujourdhuiYmd()
     // Matter already at a partner (its délai) and the order's state: an order « En cours » reads its lines
     // in margin / delay, without the Malterre reserve (lib/delai-au-plus-tot.ts, Vincent 2026-11-02).
-    const [ordresParLigne, enPrepLignes] = partenaires
+    const [ordresParLigne, enPrepLignes, desReception] = partenaires
       ? await Promise.all([
         ordresEnCoursParLigne(lignesFixed.map((l) => Number(l.IDligne_commande_client) || 0), aggMap),
         commandesEnPreparation([id]),
+        // References shipped « dès la réception » (#1351): no quality control in their earliest date.
+        refsExpedieesDesReception(lignesFixed.filter((l) => lineStockKind(Number(l.type_kind) || 0) === 'fini').map((l) => Number(l.IDreference) || 0)),
       ])
-      : [new Map<number, OrdresLigne>(), new Set<number>()]
+      : [new Map<number, OrdresLigne>(), new Set<number>(), new Set<number>()]
     const commandeEnCours = !enPrepLignes.has(id)
 
     const lignes = lignesFixed.map((l) => {
@@ -1825,7 +1827,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       const preteSiLance = partenaires && statut?.etat === 'a_lancer' && lance && lance > today
         ? auPlusTotDe({ id: Number(l.IDligne_commande_client), typeKind, refId, coloriId: colId, unite: Number(l.unite) || 0, quantite: qty },
           agg, filParLigne.get(Number(l.IDligne_commande_client)) ?? 0, f, rouleaux.get(Number(l.IDligne_commande_client)), partenaires, lance,
-          null, ordresParLigne.get(Number(l.IDligne_commande_client)), commandeEnCours)?.date ?? null
+          null, ordresParLigne.get(Number(l.IDligne_commande_client)), commandeEnCours, desReception)?.date ?? null
         : null
       // The earliest date from where the matter is now (the hover of the line's date, and its colour: a
       // partner's délai that leaves no margin is red, LIVA #1364).
@@ -1833,7 +1835,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       const auPlusTotLigne = partenaires
         ? auPlusTotDe({ id: Number(l.IDligne_commande_client), typeKind, refId, coloriId: colId, unite: Number(l.unite) || 0, quantite: qty },
           agg, filParLigne.get(Number(l.IDligne_commande_client)) ?? 0, f, rouleaux.get(Number(l.IDligne_commande_client)), partenaires, today,
-          dateLigne, ordresParLigne.get(Number(l.IDligne_commande_client)), commandeEnCours)
+          dateLigne, ordresParLigne.get(Number(l.IDligne_commande_client)), commandeEnCours, desReception)
         : null
       return {
         IDligne_commande_client: Number(l.IDligne_commande_client),
@@ -5220,10 +5222,12 @@ async function ordresEnCoursParLigne(lineIds: readonly number[], agg: Map<number
   return out
 }
 
-/** From the facts the detail route already holds; null on a divers line. */
+/** From the facts the detail route already holds; null on a divers line. `desReception` = the references
+ *  switched « Expédier dès la réception » (#1351, refsExpedieesDesReception): no quality control ahead of
+ *  them — always passed, never defaulted, so a caller cannot forget the exception. */
 function auPlusTotDe(l: LigneAuPlusTot, agg: AgregatLigne, fil: number, f: FaitsLigneClient | undefined,
-  rouleaux: RouleauxEstimes | null | undefined, p: Partenaires, today: string, dateRetenue: string | null = null,
-  ordres?: OrdresLigne, enCours = false): DelaiAuPlusTot | null {
+  rouleaux: RouleauxEstimes | null | undefined, p: Partenaires, today: string, dateRetenue: string | null,
+  ordres: OrdresLigne | undefined, enCours: boolean, desReception: ReadonlySet<number>): DelaiAuPlusTot | null {
   const kind = lineStockKind(l.typeKind)
   if (kind === 'none') return null
   const m = lineDim(l.unite) === 'metrage'
@@ -5236,6 +5240,7 @@ function auPlusTotDe(l: LigneAuPlusTot, agg: AgregatLigne, fil: number, f: Faits
     ecruChezEnnoblisseur: (ordres?.enno ?? []).map((o) => ({ quantite: m ? o.metrage : o.poids, partenaire: o.partenaire, delai: o.delai, engagement: o.engagement })),
     tricotageLance: ordres?.tricotage ?? null,
     enCours,
+    sansControle: kind === 'fini' && desReception.has(l.refId),
     ecru: m ? agg.ecru_metrage : agg.ecru_poids,
     tricotage: m ? agg.trico_metrage : agg.trico_poids,
     fil,
@@ -5258,8 +5263,9 @@ async function auPlusTotLignes(lignes: LigneAuPlusTot[], dateRetenue: string | n
     rouleauxEstimesParLigne(ls),
     partenairesParDefaut(),
   ])
-  const [ordres, valides] = await Promise.all([
+  const [ordres, desReception, valides] = await Promise.all([
     ordresEnCoursParLigne(ls.map((l) => l.id), agg),
+    refsExpedieesDesReception(ls.filter((l) => lineStockKind(l.typeKind) === 'fini').map((l) => l.refId)),
     ls.length === 0 ? [] : mpsPg()<{ id: number }[]>`
       SELECT l.idligne_commande_client AS id FROM ligne_commande_client l
         JOIN commande_client c ON c.idcommande_client = l.idcommande_client
@@ -5268,7 +5274,7 @@ async function auPlusTotLignes(lignes: LigneAuPlusTot[], dateRetenue: string | n
   const enCours = new Set(valides.map((r) => Number(r.id)))
   const today = aujourdhuiYmd()
   return new Map(ls.map((l) => [l.id, auPlusTotDe(l, agg.get(l.id) ?? agregatVide(), fil.get(l.id) ?? 0, faits.get(l.id), rouleaux.get(l.id), p,
-    apresAujourdhui(depuis?.get(l.id), today), dateRetenue, ordres.get(l.id), enCours.has(l.id))]))
+    apresAujourdhui(depuis?.get(l.id), today), dateRetenue, ordres.get(l.id), enCours.has(l.id), desReception)]))
 }
 
 /** The later of a launch date (YYYYMMDD) and today: a passed date launches today. */
