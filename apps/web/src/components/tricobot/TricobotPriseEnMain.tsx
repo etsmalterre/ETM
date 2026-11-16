@@ -95,7 +95,24 @@ const heure = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString('f
 
 /** The conversation Tricobot read: our Point (the question, §5 only, the
  *  orders he wrote on lit), then the dyer's reply (the words he relied on lit). */
-function MailPanneau({ runId, citations, idlignes, section }: { runId: string | null; citations: string[]; idlignes: number[]; section: 2 | 5 }) {
+/** One tab of the BL panel when an order holds several BLs: its OF / bordereau, read from its mail. */
+function OngletBl({ runId, rang, actif, onClick }: { runId: string; rang: number; actif: boolean; onClick: () => void }) {
+  const q = useMailLu(runId)
+  const of = q.data?.sujet.match(/OF\s*N\S*\s*(\d+)/i)?.[1] ?? null
+  const nom = q.data?.bl?.bordereau ? `BL ${q.data.bl.bordereau}` : of ? `OF ${of}` : `BL ${rang}`
+  return (
+    <button type="button" onClick={onClick} title={q.data?.sujet}
+      className={cn('flex items-center gap-1 px-2.5 py-1 text-xs rounded-md transition-colors', actif ? 'bg-accent text-accent-foreground shadow-sm font-medium' : 'text-muted-foreground hover:bg-accent/10')}>
+      <FileText className="h-3.5 w-3.5" />{nom}
+    </button>
+  )
+}
+
+function MailPanneau({ runId, citations, idlignes, section, runs = [], onRun }: {
+  runId: string | null; citations: string[]; idlignes: number[]; section: 2 | 5
+  /** Several BLs on one order: every one of them, in the bubble's order, as tabs. */
+  runs?: string[]; onRun?: (r: string) => void
+}) {
   const q = useMailLu(runId)
   const point = q.data?.point ?? null
   const question = point ? (point.sections?.[String(section) as '2' | '5'] ?? (section === 5 ? { titre: point.titre, lignes: point.lignes } : null)) : null
@@ -131,6 +148,11 @@ function MailPanneau({ runId, citations, idlignes, section }: { runId: string | 
           </Dialog>
         )}
         <div className="flex-1 min-h-0 flex flex-col gap-3 bg-zinc-100 p-3">
+          {runs.length > 1 && onRun && (
+            <div className="flex-shrink-0 flex flex-wrap items-center gap-1 rounded-lg border bg-white p-1 shadow-sm">
+              {runs.map((r, i) => <OngletBl key={r} runId={r} rang={i + 1} actif={r === runId} onClick={() => onRun(r)} />)}
+            </div>
+          )}
           <div className="flex-shrink-0 rounded-lg border bg-white p-3 shadow-sm">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Le mail · {q.data.de.replace(/<.*>/, '').trim() || q.data.de}</p>
             <p className="text-xs text-muted-foreground">Reçu le {new Date(q.data.date).toLocaleString('fr-FR')}</p>
@@ -410,7 +432,8 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
   // on one order (TAD mails one per OF): the person picks which one is shown.
   const [runChoisi, setRunChoisi] = useState<string | null>(null)
   const mailRun = (runChoisi && saisies.some((s) => s.runId === runChoisi) ? runChoisi : saisies[0]?.runId) ?? null
-  const nbMails = new Set(saisies.map((s) => s.runId).filter(Boolean)).size
+  const runsMails = [...new Set(saisies.map((s) => s.runId).filter((r): r is string => !!r))]
+  const nbMails = runsMails.length
   const [dialog, setDialog] = useState<{ s: SaisieTricobot; action: Geste['action'] } | null>(null)
   const [erreur, setErreur] = useState<string | null>(null)
   /** Narrow screens: no room for the mail beside him, it opens in a dialog. */
@@ -559,9 +582,9 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
             <p className="text-sm font-semibold">
               {bl
                 ? (aRevoir.length > 0 && aRevoir.every((x) => x.decision === 'aide')
-                  ? `Je n’ai rien réceptionné : j’ai besoin de ton avis sur ${nbMails > 1 ? `ces ${nbMails} BL` : 'ce BL'}${ennoblisseurBl ? ` de ${ennoblisseurBl}` : ''}${avecMail ? (nbMails > 1 ? ' (chacun à droite, au clic sur son bloc)' : ' (à droite)') : ''}.`
+                  ? `Je n’ai rien réceptionné : j’ai besoin de ton avis sur ${nbMails > 1 ? `ces ${nbMails} BL` : 'ce BL'}${ennoblisseurBl ? ` de ${ennoblisseurBl}` : ''}${avecMail ? (nbMails > 1 ? ` (les ${nbMails} à droite)` : ' (à droite)') : ''}.`
                   : aRevoir.length
-                  ? `${ennoblisseurBl ?? 'L’ennoblisseur'} a livré : je te propose de réceptionner ${rouleauxBl > 1 ? `ces ${rouleauxBl} rouleaux` : 'ce rouleau'}, d’après ${nbMails > 1 ? `ses ${nbMails} BL${avecMail ? ' (clique sur un bloc pour voir son BL à droite)' : ''}` : `son BL${avecMail ? ' à droite' : ''}`}. Rien n’est écrit tant que tu n’as pas validé.`
+                  ? `${ennoblisseurBl ?? 'L’ennoblisseur'} a livré : je te propose de réceptionner ${rouleauxBl > 1 ? `ces ${rouleauxBl} rouleaux` : 'ce rouleau'}, d’après ${nbMails > 1 ? `ses ${nbMails} BL${avecMail ? ` (les ${nbMails} à droite)` : ''}` : `son BL${avecMail ? ' à droite' : ''}`}. Rien n’est écrit tant que tu n’as pas validé.`
                   : 'J’ai réceptionné ce BL seul. Tu peux encore le corriger.')
                 : aRevoir.length > 0 && aRevoir.every((x) => x.decision === 'aide')
                 ? `Je n’ai rien ${controles ? 'reporté' : 'saisi'} : j’ai besoin de ton avis sur ${controles ? 'les contrôles' : aRevoir.length > 1 ? 'les délais' : 'le délai'} de l’ennoblisseur${avecMail ? ' (son mail, à droite)' : ''}.`
@@ -707,7 +730,7 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
       {/* The mail he read, where the right-hand panel was. */}
       {avecMail && (
         <div className="absolute bottom-4 right-4 top-4 animate-in slide-in-from-right-6 fade-in-0 duration-500" style={{ width: largeurMail }}>
-          <MailPanneau key={mailRun ?? ''} runId={mailRun} citations={citations} idlignes={saisies.filter((x) => x.runId === mailRun).map((x) => x.idligne)} section={controles ? 2 : 5} />
+          <MailPanneau key={mailRun ?? ''} runId={mailRun} citations={citations} idlignes={saisies.filter((x) => x.runId === mailRun).map((x) => x.idligne)} section={controles ? 2 : 5} runs={bl ? runsMails : []} onRun={setRunChoisi} />
         </div>
       )}
     </div>
