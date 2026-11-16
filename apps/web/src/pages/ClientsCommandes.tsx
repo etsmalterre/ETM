@@ -576,6 +576,8 @@ interface RefDiversVariation {
   designation: string
   niveau: number
 }
+/** The units of an order line (`ligne_commande_client.unite`), as the line dialog names them. */
+const UNITES_LIGNE = [{ id: 1, primary: 'Kg' }, { id: 3, primary: 'Ml' }, { id: 4, primary: 'unité' }, { id: 5, primary: 'm²' }]
 /** `hors_catalogue` = this coloris is not one the client has registered on the
  *  reference in Clients › Gestion (only ever true for the coloris an existing
  *  line already carries, or when the client has no catalogue on that ref). */
@@ -6367,19 +6369,6 @@ function LineFormDialog({
   // divers are generic and stay unrestricted.
   const { data: refsEcru } = useQuery<RefEcru[]>({ queryKey: ['cc-refs-ecru', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-ecru?client=${commande.IDclient}`), enabled: open })
   const { data: refsFini } = useQuery<RefFini[]>({ queryKey: ['cc-refs-fini', commande.IDclient], queryFn: () => apiFetch(`/commandes-client/lookups/refs-fini?client=${commande.IDclient}`), enabled: open })
-  // The unit is the article's, never picked (Vincent 2026-10-30): a tombé de métier by the Kg (API
-  // lib/unite-ecru.ts) — Ml when sold by the metre to this client (#1355) —, a fini by the Ml unless the client's designation sells it by the Kg (Sigvaris,
-  // #1253). Only a divers line picks its unit. A line saved in another unit keeps the picker, so an
-  // old line is never silently re-labelled.
-  const uniteImposee: number | null = form.type === 1
-    // An écru sold by the metre to this client is in Ml (LIVA #1355), else by the Kg.
-    ? (form.IDreference > 0 ? (refsEcru?.find((r) => r.IDref_ecru === form.IDreference)?.unite_vente ?? 1) : 1)
-    : form.type === 2 && form.IDreference > 0 ? (refsFini?.find((r) => r.IDref_fini === form.IDreference)?.unite_vente ?? null)
-    : null
-  const uniteHeritee = !!line && line.type === form.type && line.IDreference === form.IDreference && line.unite !== uniteImposee
-  useEffect(() => {
-    if (uniteImposee != null && !uniteHeritee && form.unite !== uniteImposee) setForm((f) => ({ ...f, unite: uniteImposee }))
-  }, [uniteImposee, uniteHeritee, form.unite])
   // Divers refs come from the shared expéditions lookup — it's the only one
   // that exposes the sTypeVariation1/2 axis labels the variation pickers need.
   const { data: refsDivers } = useQuery<RefDivers[]>({
@@ -6389,6 +6378,24 @@ function LineFormDialog({
     staleTime: 5 * 60 * 1000,
   })
   const selRefDivers = (refsDivers ?? []).find((r) => r.IDref_divers === form.IDreference) ?? null
+  // The unit is the article's, never picked (Vincent 2026-10-30): a tombé de métier by the Kg (API
+  // lib/unite-ecru.ts) — Ml when sold by the metre to this client (#1355) —, a fini by the Ml unless the client's designation sells it by the Kg (Sigvaris,
+  // #1253), a divers in the unit of its fiche (LIVA #1371, API lib/unite-divers.ts: order 3942 was
+  // taken « 10 unité » of a PVC sold by the Kg). A line saved in another unit keeps the picker, so an
+  // old line is never silently re-labelled.
+  const uniteImposee: number | null = form.type === 1
+    // An écru sold by the metre to this client is in Ml (LIVA #1355), else by the Kg.
+    ? (form.IDreference > 0 ? (refsEcru?.find((r) => r.IDref_ecru === form.IDreference)?.unite_vente ?? 1) : 1)
+    : form.type === 2 && form.IDreference > 0 ? (refsFini?.find((r) => r.IDref_fini === form.IDreference)?.unite_vente ?? null)
+    // A divers reference without a unit (255 on a few archived ones) imposes nothing.
+    : form.type === 3 && selRefDivers && UNITES_LIGNE.some((u) => u.id === selRefDivers.unite) ? selRefDivers.unite
+    : null
+  const uniteHeritee = !!line && line.type === form.type && line.IDreference === form.IDreference && line.unite !== uniteImposee
+    // A divers reference still loading (or without a unit) has nothing to compare the line's unit with.
+    && !(form.type === 3 && uniteImposee == null)
+  useEffect(() => {
+    if (uniteImposee != null && !uniteHeritee && form.unite !== uniteImposee) setForm((f) => ({ ...f, unite: uniteImposee }))
+  }, [uniteImposee, uniteHeritee, form.unite])
   const { data: diversVariations } = useQuery<RefDiversVariation[]>({
     queryKey: ['exp-divers-vars', form.IDreference],
     queryFn: () => apiFetch(`/expeditions/divers/lookups/refs/${form.IDreference}/variations`),
@@ -6731,17 +6738,23 @@ function LineFormDialog({
             </div>
             <div className="col-span-1 space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Unité</label>
-              {form.type === 3 || uniteHeritee ? (
+              {uniteHeritee ? (
                 <PopoverSelect
-                  options={[{ id: 1, primary: 'Kg' }, ...(form.type === 1 ? [] : [{ id: 3, primary: 'Ml' }]), { id: 4, primary: 'unité' }, { id: 5, primary: 'm²' }]}
+                  // A divers line saved in another unit chooses between that unit and its reference's, no third one (#1371).
+                  options={form.type === 3
+                    ? UNITES_LIGNE.filter((u) => u.id === line?.unite || u.id === uniteImposee)
+                    : UNITES_LIGNE.filter((u) => !(form.type === 1 && u.id === 3))}
                   value={form.unite}
                   onChange={(id) => setForm({ ...form, unite: id })}
                   hideEmpty
                 />
               ) : (
                 <div className="h-9 px-3 flex items-center rounded-md border border-dashed border-input bg-muted/40 text-sm"
-                  title={form.type === 1 ? 'Un tombé de métier se vend au Kg' : 'L’unité de vente de la désignation du client'}>
-                  {uniteImposee === 1 ? 'Kg' : uniteImposee === 3 ? 'Ml' : '—'}
+                  title={form.type === 1 ? 'Un tombé de métier se vend au Kg'
+                    : form.type === 3 ? 'L’unité de la référence (Divers › Références)'
+                    : 'L’unité de vente de la désignation du client'}>
+                  {/* A divers reference without a unit of its own leaves the line's as it is. */}
+                  {UNITES_LIGNE.find((u) => u.id === (uniteImposee ?? (form.type === 3 && selRefDivers ? form.unite : 0)))?.primary ?? '—'}
                 </div>
               )}
             </div>

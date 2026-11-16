@@ -42,6 +42,7 @@ import { avancementCommande, commandeIncomplete, etatAffiche, modeLivraisonDe, r
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { refusEcruEnMl, rendementVenteEcru, loadRendementsVenteEcru, loadRendementVenteEcru } from '../lib/unite-ecru.js'
+import { TYPE_DIVERS, loadUniteRefDivers, uniteLigneDivers } from '../lib/unite-divers.js'
 import multer from 'multer'
 import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
@@ -2489,6 +2490,10 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
       if (refus) { res.status(400).json({ error: 'ecru_en_kg', message: refus }); return }
     }
     const typeKind = Number(d.type) || 0
+    // A divers line is in its reference's unit, never a picked one (LIVA #1371, lib/unite-divers.ts).
+    const unite = typeKind === TYPE_DIVERS
+      ? uniteLigneDivers({ uniteRef: await loadUniteRefDivers(d.IDreference), demandee: d.unite })
+      : d.unite
     const mode = d.mode_livraison ?? 'des_que_prete'
     if (await refuseIfContratExpire(res, id, {
       type: typeKind, IDreference: d.IDreference ?? 0, IDcolori: d.IDcolori ?? 0,
@@ -2515,7 +2520,7 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
        VALUES
          (${id}, 0, ${typeKind}, ${n(d.IDreference ?? 0)}, ${etudeId > 0 ? 0 : n(d.IDcolori ?? 0)},
           ${n(typeKind === 3 ? (d.IDVariation1 ?? 0) : 0)}, ${n(typeKind === 3 ? (d.IDVariation2 ?? 0) : 0)},
-          ${Number(d.quantite) || 0}, ${n(d.unite ?? 0)}, ${Number(d.prix) || 0},
+          ${Number(d.quantite) || 0}, ${n(unite ?? 0)}, ${Number(d.prix) || 0},
           ${Number(d.poids) || 0}, '${delai}',
           ${sqlText(d.commentaire ?? '')},
           ${codeDepartLigne(mode)}, ${etudeId}${annonce ? `, '${delai}'` : ''})`,
@@ -2554,6 +2559,8 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     let curEtude = 0
     let nextType = 0
     let nextRef = 0
+    // The unit to write, undefined = untouched. A divers line takes its reference's (LIVA #1371).
+    let uniteEcrite: number | undefined = d.unite
 
     // Contract guard on update. The body is partial, so the check runs on the
     // line as it WOULD be, and only when the payload actually changes something
@@ -2585,6 +2592,17 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
       if (commercialChange && await refuseIfContratExpire(res, commandeId, next)) return
       nextType = next.type
       nextRef = next.IDreference
+      if (next.type === TYPE_DIVERS) {
+        // A line that keeps its article keeps a unit saved earlier until someone changes it;
+        // a new article brings its own unit (lib/unite-divers.ts).
+        const curUnite = Number(row.unite) || 0
+        const memeArticle = curType === TYPE_DIVERS && next.IDreference === (Number(row.IDreference) || 0)
+        const voulue = uniteLigneDivers({
+          uniteRef: await loadUniteRefDivers(next.IDreference), demandee: d.unite,
+          uniteLigne: memeArticle ? curUnite : undefined,
+        })
+        uniteEcrite = voulue === curUnite && d.unite === undefined ? undefined : voulue
+      }
 
       // Pieces reserved to the line were picked for its article + coloris; a
       // new one would leave them promised to a product nobody ordered
@@ -2629,7 +2647,7 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     if (d.IDVariation1 !== undefined) sets.push(`IDVariation1 = ${n(d.type !== undefined && d.type !== 3 ? 0 : d.IDVariation1)}`)
     if (d.IDVariation2 !== undefined) sets.push(`IDVariation2 = ${n(d.type !== undefined && d.type !== 3 ? 0 : d.IDVariation2)}`)
     if (d.quantite !== undefined) sets.push(`quantite = ${Number(d.quantite) || 0}`)
-    if (d.unite !== undefined) sets.push(`unite = ${n(d.unite)}`)
+    if (uniteEcrite !== undefined) sets.push(`unite = ${n(uniteEcrite)}`)
     if (d.prix !== undefined) sets.push(`prix = ${Number(d.prix) || 0}`)
     if (d.poids !== undefined) sets.push(`poids = ${Number(d.poids) || 0}`)
     // Moving a D already given is a report: why and who it is due to are required (QS, §8) — once the

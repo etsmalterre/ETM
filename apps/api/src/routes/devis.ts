@@ -30,6 +30,7 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { z } from 'zod'
 import { refusEcruEnMl, rendementVenteEcru } from '../lib/unite-ecru.js'
+import { TYPE_DIVERS, loadUniteRefDivers, uniteLigneDivers } from '../lib/unite-divers.js'
 import multer from 'multer'
 import { renderToBuffer } from '@react-pdf/renderer'
 import React from 'react'
@@ -1060,6 +1061,10 @@ devisRouter.post('/:id/lignes', async (req: Request, res: Response) => {
       if (refus) { res.status(400).json({ error: 'ecru_en_kg', message: refus }); return }
     }
     const typeKind = Number(d.type) || 0
+    // A divers line is in its reference's unit, never a picked one (LIVA #1371, lib/unite-divers.ts).
+    const unite = typeKind === TYPE_DIVERS
+      ? uniteLigneDivers({ uniteRef: await loadUniteRefDivers(d.IDreference), demandee: d.unite })
+      : d.unite
     const idRefEcru = await resolveLineRefEcru(typeKind, Number(d.IDreference) || 0)
     // TYPE written uppercase (reserved word). Never name accented line columns.
     await query(
@@ -1068,7 +1073,7 @@ devisRouter.post('/:id/lignes', async (req: Request, res: Response) => {
           quantite, unite, prix, poids, date_livraison, commentaire, IDdesignation_client)
        VALUES
          (${id}, ${typeKind}, ${n(d.IDreference ?? 0)}, ${idRefEcru}, ${n(d.IDcolori ?? 0)},
-          ${Number(d.quantite) || 0}, ${n(d.unite ?? 0)}, ${Number(d.prix) || 0},
+          ${Number(d.quantite) || 0}, ${n(unite ?? 0)}, ${Number(d.prix) || 0},
           ${Number(d.poids) || 0}, '${d.date_livraison ? dateStr(d.date_livraison) : ''}',
           ${sqlText(d.commentaire ?? '')}, 0)`,
     )
@@ -1093,13 +1098,27 @@ devisRouter.put('/lignes/:lineId', async (req: Request, res: Response) => {
     const parsed = ligneBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
     const d = parsed.data
+    const curRows = await query<{ type_kind: number; IDreference: number; unite: number | null }>(
+      `SELECT TYPE AS type_kind, IDreference, unite FROM ligne_devis_etm WHERE IDligne_devis_etm = ${lineId}`,
+    )
+    const curType = Number(curRows[0]?.type_kind) || 0
+    const curRef = Number(curRows[0]?.IDreference) || 0
+    const curUnite = Number(curRows[0]?.unite) || 0
     // An écru in Ml only when its reference is sold by the metre (LIVA #1355).
     {
-      const refId = d.IDreference ?? Number((await query<{ IDreference: number }>(
-        `SELECT IDreference FROM ligne_devis_etm WHERE IDligne_devis_etm = ${lineId}`,
-      ))[0]?.IDreference ?? 0)
-      const refus = await refusEcruEnMl(d.type, d.unite, refId)
+      const refus = await refusEcruEnMl(d.type, d.unite, d.IDreference ?? curRef)
       if (refus) { res.status(400).json({ error: 'ecru_en_kg', message: refus }); return }
+    }
+    // The unit to write, undefined = untouched. A divers line takes its reference's; one that keeps
+    // its article keeps a unit saved earlier until someone changes it (LIVA #1371, lib/unite-divers.ts).
+    let uniteEcrite: number | undefined = d.unite
+    if ((d.type ?? curType) === TYPE_DIVERS) {
+      const nextRef = d.IDreference ?? curRef
+      const voulue = uniteLigneDivers({
+        uniteRef: await loadUniteRefDivers(nextRef), demandee: d.unite,
+        uniteLigne: curType === TYPE_DIVERS && nextRef === curRef ? curUnite : undefined,
+      })
+      uniteEcrite = voulue === curUnite && d.unite === undefined ? undefined : voulue
     }
 
     const sets: string[] = []
@@ -1109,16 +1128,13 @@ devisRouter.put('/lignes/:lineId', async (req: Request, res: Response) => {
       const idRefEcru = await resolveLineRefEcru(Number(d.type) || 0, Number(d.IDreference) || 0)
       sets.push(`IDref_ecru = ${idRefEcru}`)
     } else if (d.IDreference !== undefined) {
-      const cur = await query<{ type_kind: number }>(
-        `SELECT TYPE AS type_kind FROM ligne_devis_etm WHERE IDligne_devis_etm = ${lineId}`,
-      )
-      const idRefEcru = await resolveLineRefEcru(Number(cur[0]?.type_kind) || 0, Number(d.IDreference) || 0)
+      const idRefEcru = await resolveLineRefEcru(curType, Number(d.IDreference) || 0)
       sets.push(`IDref_ecru = ${idRefEcru}`)
     }
     if (d.IDreference !== undefined) sets.push(`IDreference = ${n(d.IDreference)}`)
     if (d.IDcolori !== undefined) sets.push(`IDcolori = ${n(d.IDcolori)}`)
     if (d.quantite !== undefined) sets.push(`quantite = ${Number(d.quantite) || 0}`)
-    if (d.unite !== undefined) sets.push(`unite = ${n(d.unite)}`)
+    if (uniteEcrite !== undefined) sets.push(`unite = ${n(uniteEcrite)}`)
     if (d.prix !== undefined) sets.push(`prix = ${Number(d.prix) || 0}`)
     if (d.poids !== undefined) sets.push(`poids = ${Number(d.poids) || 0}`)
     if (d.date_livraison !== undefined) sets.push(`date_livraison = '${dateStr(d.date_livraison)}'`)

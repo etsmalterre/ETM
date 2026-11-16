@@ -130,6 +130,8 @@ interface Echeance { IDecheance: number; libelle: string }
 interface RefEcru { IDref_ecru: number; reference: string; /** Ml per kg when sold by the metre (#1355), 0 otherwise */ rendement_vente?: number }
 interface RefFini { IDref_fini: number; reference: string; designation: string; avec_teinture: number }
 interface RefDivers { IDref_divers: number; designation: string; unite: number }
+/** The units of a devis line (`ligne_devis_etm.unite`), as the line dialog names them. */
+const UNITES_LIGNE = [{ id: 1, primary: 'Kg' }, { id: 3, primary: 'Ml' }, { id: 4, primary: 'U' }, { id: 5, primary: 'm²' }]
 interface ColoriOption { id: number; reference: string }
 
 // ── Shared styling ─────────────────────────────────────
@@ -1080,6 +1082,15 @@ function LineFormDialog({
   }, [form.type, form.unite, refsEcru, ecruAuMetre])
   const { data: refsFini } = useQuery<RefFini[]>({ queryKey: ['devis-refs-fini'], queryFn: () => apiFetch('/devis/lookups/refs-fini'), enabled: open && form.type === 2 })
   const { data: refsDivers } = useQuery<RefDivers[]>({ queryKey: ['devis-refs-divers'], queryFn: () => apiFetch('/devis/lookups/refs-divers'), enabled: open && form.type === 3 })
+  // A divers line is in the unit of its reference's fiche, never a picked one (LIVA #1371, API
+  // lib/unite-divers.ts). A line saved in another unit keeps the choice between that unit and the
+  // reference's, so an old line is never silently re-labelled.
+  const uniteRefDivers = form.type === 3 ? (refsDivers?.find((r) => r.IDref_divers === form.IDreference)?.unite ?? 0) : 0
+  const uniteDivers: number | null = UNITES_LIGNE.some((u) => u.id === uniteRefDivers) ? uniteRefDivers : null
+  const uniteDiversHeritee = uniteDivers != null && !!line && line.type === 3 && line.IDreference === form.IDreference && line.unite !== uniteDivers
+  useEffect(() => {
+    if (uniteDivers != null && !uniteDiversHeritee && form.unite !== uniteDivers) setForm((f) => ({ ...f, unite: uniteDivers }))
+  }, [uniteDivers, uniteDiversHeritee, form.unite])
 
   const { data: coloriOptions } = useQuery<ColoriOption[]>({
     queryKey: ['devis-coloris', form.type, form.IDreference],
@@ -1206,12 +1217,22 @@ function LineFormDialog({
             </div>
             <div className="col-span-1 space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Unité</label>
-              <PopoverSelect
-                options={[{ id: 1, primary: 'Kg' }, ...(form.type === 1 && !ecruAuMetre ? [] : [{ id: 3, primary: 'Ml' }]), { id: 4, primary: 'U' }, { id: 5, primary: 'm²' }]}
-                value={form.unite}
-                onChange={(id) => setForm({ ...form, unite: id })}
-                hideEmpty
-              />
+              {form.type === 3 && !uniteDiversHeritee ? (
+                <div className="h-9 px-3 flex items-center rounded-md border border-dashed border-input bg-muted/40 text-sm"
+                  title="L’unité de la référence (Divers › Références)">
+                  {/* A reference without a unit of its own leaves the line's as it is. */}
+                  {UNITES_LIGNE.find((u) => u.id === (uniteDivers ?? (form.IDreference > 0 && refsDivers ? form.unite : 0)))?.primary ?? '—'}
+                </div>
+              ) : (
+                <PopoverSelect
+                  options={form.type === 3
+                    ? UNITES_LIGNE.filter((u) => u.id === line?.unite || u.id === uniteDivers)
+                    : UNITES_LIGNE.filter((u) => !(u.id === 3 && form.type === 1 && !ecruAuMetre))}
+                  value={form.unite}
+                  onChange={(id) => setForm({ ...form, unite: id })}
+                  hideEmpty
+                />
+              )}
             </div>
             <div className="col-span-1 space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Prix (€)</label>
