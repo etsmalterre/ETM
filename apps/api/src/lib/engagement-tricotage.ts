@@ -417,6 +417,26 @@ export async function lectureTricotage(lsst: number, sql: Sql = mpsPg()): Promis
 export interface CibleLot extends CibleArbitrage {
   ecru: number
   coloris: number
+  /** écru kg knitted and still at the knitter: their yarn has left the lot */
+  chezTricoteur: number
+}
+
+/** Pure: who the yarn an order STILL holds is for, in écru kg still to knit. A share « still to
+ *  come » also counts the pieces knitted and waiting at the knitter, whose yarn is gone from the lot:
+ *  they go to the earliest délai first (the split's rule, `parts` come in that order), so they come
+ *  off those shares. Never more in all than what the order still knits. */
+export function resteATricoterPour(c: Pick<CibleLot, 'reste' | 'stockAVenir' | 'parts' | 'chezTricoteur'>): { lignes: { lcc: number; kg: number }[]; stock: number } {
+  let pret = Math.max(0, c.chezTricoteur)
+  let budget = Math.max(0, c.reste)
+  const lignes: { lcc: number; kg: number }[] = []
+  for (const p of c.parts) {
+    const couvert = Math.min(p.reste, pret)
+    pret -= couvert
+    const kg = Math.min(p.reste - couvert, budget)
+    budget -= kg
+    if (kg > EPS) lignes.push({ lcc: p.lcc, kg: round2(kg) })
+  }
+  return { lignes, stock: round2(Math.min(Math.max(0, c.stockAVenir - pret), budget)) }
 }
 
 /** The open knitting lines holding yarn of a lot, each with what it can give back. */
@@ -436,7 +456,7 @@ export async function ciblesDuLot(lot: number, sql: Sql = mpsPg()): Promise<Cibl
     out.push({
       lsst: k.id, commande: k.commande, ecru: k.ecru, coloris: k.coloris,
       quantite: k.quantite, reste: k.reste, pct, freinte: k.freinte, engage,
-      stockAVenir: r.stock.aVenir,
+      stockAVenir: r.stock.aVenir, chezTricoteur: r.chezTricoteur,
       parts: r.parts.filter((p) => p.reste > EPS).map((p) => ({ lcc: p.lcc, delai: p.delai, reste: p.reste })),
     })
   }

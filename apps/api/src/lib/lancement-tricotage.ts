@@ -54,6 +54,8 @@ export interface LotLibre {
   /** the yarn's supplier (stock_fil.idfournisseur) */
   fournisseur: number
   stock: number
+  /** kg the lot entered with (stock_fil.stock_initial), 0 when unknown */
+  stockInitial: number
   libre: number
   /** kg reserved on this lot for the client line launching (already inside `libre`) */
   reserveLigne: number
@@ -202,8 +204,9 @@ export async function lotsLibres(p: { magasin: number | null; paires: readonly P
     params.push(p.magasin)
     magasinSql = `idmagasin = $${params.length} AND `
   }
-  const lots = await sql.unsafe<{ id: number; idref_fil: number; idcolori_fil: number; lot: string | null; date_entree: unknown; idref_fil_commande: number | null; idmagasin: number | null; idfournisseur: number | null; stock: number }[]>(
-    `SELECT idstock_fil AS id, idref_fil, idcolori_fil, lot, date_entree, idref_fil_commande, idmagasin, idfournisseur, stock::float8 AS stock
+  const lots = await sql.unsafe<{ id: number; idref_fil: number; idcolori_fil: number; lot: string | null; date_entree: unknown; idref_fil_commande: number | null; idmagasin: number | null; idfournisseur: number | null; stock: number; stock_initial: number | null }[]>(
+    `SELECT idstock_fil AS id, idref_fil, idcolori_fil, lot, date_entree, idref_fil_commande, idmagasin, idfournisseur, stock::float8 AS stock,
+            stock_initial::float8 AS stock_initial
        FROM stock_fil
       WHERE ${magasinSql}stock > 0 AND (${conds.join(' OR ')})
         AND (idclient IN (0, 1) OR gere_par_etm = 1)`, params as any[])
@@ -267,6 +270,7 @@ export async function lotsLibres(p: { magasin: number | null; paires: readonly P
       magasin: Number(l.idmagasin) || 0,
       fournisseur: Number(l.idfournisseur) || 0,
       stock: round2(stock),
+      stockInitial: round2(Number(l.stock_initial) || 0),
       libre,
       reserveLigne: round2(Math.min(libre, miennes.get(id) ?? 0)),
       engagements: engagements.get(id) ?? [],

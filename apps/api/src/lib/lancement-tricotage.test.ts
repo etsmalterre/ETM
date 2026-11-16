@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { planLancement, lotsParDefaut, filNonReserve, ecruCouvertParReservation, type LotLibre } from './lancement-tricotage.js'
 
 const lot = (o: Partial<LotLibre> & { id: number }): LotLibre => ({
-  refFil: 1, coloriFil: 10, lot: `L${o.id}`, dateEntree: '20260101', idRefFilCommande: 0, magasin: 1, fournisseur: 0,
+  refFil: 1, coloriFil: 10, lot: `L${o.id}`, dateEntree: '20260101', idRefFilCommande: 0, magasin: 1, fournisseur: 0, stockInitial: 0,
   stock: 0, libre: 0, reserveLigne: 0, ...o,
 })
 

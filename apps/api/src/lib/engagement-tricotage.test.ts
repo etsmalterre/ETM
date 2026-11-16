@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { engagementParLot, lireRepartition, planArbitrage, type CibleArbitrage, type PieceTricotage } from './engagement-tricotage.js'
+import { engagementParLot, lireRepartition, planArbitrage, resteATricoterPour, type CibleArbitrage, type PieceTricotage } from './engagement-tricotage.js'
 import type { AllocationRepartition } from './repartition-tricotage.js'
 
 const a = (lcc: number, poids: number, delai = '', toute = false): AllocationRepartition => ({ lcc, poids, toute, delai })
@@ -111,6 +111,26 @@ describe('planArbitrage', () => {
     // 100 kg ÷ 94 % × 0,9 = 95,75 kg of écru.
     expect(r.effets[0].aQuantite).toBeCloseTo(2549.25, 1)
     expect(r.effets[0].fil).toBeGreaterThanOrEqual(100)
+  })
+})
+
+describe('resteATricoterPour', () => {
+  const parts = [{ lcc: 1, delai: '20270110', reste: 400 }, { lcc: 2, delai: '20270201', reste: 600 }]
+
+  it('the pieces waiting at the knitter come off the earliest délai: their yarn has left the lot', () => {
+    // 1 000 kg still to come to the lines, 500 of them knitted already: 500 left to knit.
+    expect(resteATricoterPour({ reste: 500, chezTricoteur: 500, stockAVenir: 0, parts }))
+      .toEqual({ lignes: [{ lcc: 2, kg: 500 }], stock: 0 })
+  })
+
+  it('nothing at the knitter: every share is still to knit, the stock gets the rest', () => {
+    expect(resteATricoterPour({ reste: 1200, chezTricoteur: 0, stockAVenir: 200, parts }))
+      .toEqual({ lignes: [{ lcc: 1, kg: 400 }, { lcc: 2, kg: 600 }], stock: 200 })
+  })
+
+  it('more promised than the order knits: never more in all than what is left to knit', () => {
+    const r = resteATricoterPour({ reste: 700, chezTricoteur: 0, stockAVenir: 0, parts })
+    expect(r.lignes).toEqual([{ lcc: 1, kg: 400 }, { lcc: 2, kg: 300 }])
   })
 })
 

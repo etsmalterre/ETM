@@ -66,6 +66,8 @@ interface LotReservable {
   fournisseur: string
   date_entree: string
   stock: number
+  /** kg the lot entered with, 0 when unknown */
+  stock_initial?: number
   /** free for any other line */
   dispo: number
   /** what this line holds on it */
@@ -207,8 +209,10 @@ interface SourceFil extends Source {
   tricoteur: boolean
   /** the lot number or the supplier order number */
   numero: string
-  /** lot entry date or supplier date, already formatted */
+  /** the supplier's date of an order, already formatted ('' on a lot: its entry date is not shown) */
   date: string
+  /** kg a lot entered with, 0 when unknown or on a supplier order */
+  initial: number
 }
 
 function sourcesDuFil(y: FilYarn): SourceFil[] {
@@ -223,7 +227,8 @@ function sourcesDuFil(y: FilYarn): SourceFil[] {
       numero: l.lot || '—',
       titre: `Lot ${l.lot || '—'}`,
       fournisseur: l.fournisseur,
-      date: l.date_entree ? formatHfsqlDate(l.date_entree) : '—',
+      date: '',
+      initial: l.stock_initial ?? 0,
       total: l.stock,
       // One row per lot: its yarn in stock and in knitting orders of the line's écru together.
       libre: l.sans_arbitrage ?? l.dispo,
@@ -247,6 +252,7 @@ function sourcesDuFil(y: FilYarn): SourceFil[] {
         titre: `Cde N° ${c.IDcommande_fil}`,
         fournisseur: c.fournisseur,
         date: c.date_livraison ? formatHfsqlDate(c.date_livraison) : 'sans date',
+        initial: 0,
         total: c.reste,
         totalTitre: `${fmtNum(c.quantite, 1)} kg commandés, ${fmtNum(c.recu, 1)} kg reçus`,
         libre: c.libre,
@@ -386,6 +392,9 @@ function FilFormeZone({ commandeId, ligneId, soldee, forme }: { commandeId: numb
         <BesoinsFil yarns={yarns} data={data} kgAffecte={kgAffecte}
           tenu={forme === 'lot' ? enStock : enCommande} besoinDe={besoinDe}
           details={(y) => tenues.filter((t) => t.yarn === y)}
+          // The lots tab says what waits on a supplier order instead of « reste à réserver »: that yarn
+          // is reserved, it is only not here yet (an « attente fil » line).
+          attendu={forme === 'lot' ? enCommande : undefined}
           vide={!rienAReserver ? undefined
             // No yarn need at all: the fini / écru already held covers the line, whatever the form.
             : yarns.every((y) => besoinTotal(y) <= 0.05) ? `${forme === 'lot' ? 'Rien à tricoter' : 'Rien à commander'} : la matière déjà réservée couvre la ligne`
@@ -837,7 +846,7 @@ function ReservationCommandeFilDialog({ data, yarn, commande: c, commandeId, lig
  *  decides, after the freinte). A yarn still to reserve adds one muted row with what is missing (the
  *  calculation in its hover). `onClick` makes the whole block the way to reserve (hover: gold edge +
  *  pencil); `vide` = nothing to hold: one sober line. */
-function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, vide, onClick, titre }: {
+function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, attendu, vide, onClick, titre }: {
   yarns: FilYarn[]
   data: FilPayload
   kgAffecte: number
@@ -846,6 +855,8 @@ function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, vide, onC
   besoinDe?: (y: FilYarn) => number
   /** the lots the line holds (their yarn in stock and in knitting together) */
   details?: (y: FilYarn) => SourceFil[]
+  /** kg of the yarn the line holds on supplier orders, said in place of « reste à réserver » */
+  attendu?: (y: FilYarn) => number
   /** nothing to hold: this one line instead of the yarns */
   vide?: string
   onClick?: () => void
@@ -854,7 +865,10 @@ function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, vide, onC
   const lotsDe = (y: FilYarn) => details?.(y) ?? []
   // A fini line reads in Ml (its rendement), a tombé de métier in kg of écru.
   const metrage = (data.rendement ?? 0) > 0
-  const potentiel = filEnUniteLigne(data, metrage, (y) => lotsDe(y).reduce((x, l) => x + l.pour_ligne, 0))
+  // What ALL the yarn reserved to the line makes, whatever its form (on a supplier order, in stock, in
+  // a knitting order): the same figure on the Fil and Tricotage tabs, there too while the line waits
+  // for its yarn (Vincent 2026-11-16) — one form alone would read 0 as soon as a yarn is elsewhere.
+  const potentiel = filEnUniteLigne(data, metrage, (y) => sourcesDuFil(y).reduce((x, l) => x + l.pour_ligne, 0))
   return (
     <div
       role={onClick ? 'button' : undefined}
@@ -876,7 +890,8 @@ function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, vide, onC
           {yarns.flatMap((y) => {
             const aCouvrir = besoinDe ? besoinDe(y) : besoinTotal(y)
             const tient = tenu ? tenu(y) : y.reserve_kg
-            const reste = Math.max(0, aCouvrir - tient)
+            const enCommande = attendu ? Math.max(0, attendu(y)) : 0
+            const reste = Math.max(0, aCouvrir - tient - enCommande)
             // Held in stock while the line needs none of it: yarn blocked for nothing, to release.
             const enTrop = !!tenu && aCouvrir <= 0.05 && tient > 0.05
             const pct = Math.round(y.pourcentage * 10) / 10
@@ -888,13 +903,21 @@ function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, vide, onC
                 <div key={`${cle}:${l.kind}:${l.id}`} className="flex items-center gap-2 px-2.5 py-2 text-xs">
                   <BobineIcon className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
                   {nom}
-                  <span className="flex-shrink-0 text-muted-foreground">· lot {l.numero}</span>
+                  <span className="flex-shrink-0 text-muted-foreground">· {l.kind === 'commande' ? `commande N° ${l.numero}` : `lot ${l.numero}`}</span>
                   <span title={enTrop && l.pour_ligne - l.enTricotage > 0.05 ? 'La ligne n’a plus besoin de ce fil : cliquez pour le libérer' : undefined}
                     className={cn('ml-auto flex-shrink-0 tabular-nums font-medium', enTrop && l.pour_ligne - l.enTricotage > 0.05 && 'text-amber-700')}>
                     {fmtNum(l.pour_ligne, 1)} kg{enTrop && l.pour_ligne - l.enTricotage > 0.05 ? ' · en trop' : ''}
                   </span>
                 </div>
               )),
+              ...(enCommande > 0.05 ? [(
+                <div key={`${cle}:attendu`} className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground"
+                  title="Fil réservé sur une commande fournisseur, pas encore reçu (onglet Fil)">
+                  <BobineIcon className="h-3.5 w-3.5 flex-shrink-0 opacity-50" />
+                  {nom}
+                  <span className="ml-auto flex-shrink-0 tabular-nums">en commande fournisseur {fmtNum(enCommande, 1)} kg</span>
+                </div>
+              )] : []),
               ...(reste > 0.05 ? [(
                 <div key={`${cle}:reste`} className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
                   <BobineIcon className="h-3.5 w-3.5 flex-shrink-0 opacity-50" />
@@ -913,7 +936,7 @@ function BesoinsFil({ yarns, data, kgAffecte, tenu, besoinDe, details, vide, onC
       )}
       {!vide && potentiel > 0.05 && (
         <div className="flex-shrink-0 flex flex-col items-end justify-center border-l border-border/40 px-3.5 py-2"
-          title="Ce que le fil réservé permet de faire : le fil le plus rare de la recette décide, freinte de tricotage déduite">
+          title="Ce que tout le fil réservé à la ligne permet de faire (en commande fournisseur, en stock, en tricotage) : le fil le plus rare de la recette décide, freinte de tricotage déduite">
           <span className="text-base font-bold tabular-nums leading-tight">{fmtNum(potentiel, 1)} {metrage ? 'Ml' : 'kg'}</span>
           <span className="text-[10px] uppercase tracking-wide text-muted-foreground">potentiel</span>
         </div>
@@ -1130,7 +1153,7 @@ function ReserverFilDialog({ open, data, soldee, forme, commandeId, ligneId, onD
                             <p className="text-sm font-medium tabular-nums">{x.kind === 'commande' ? `Commande N° ${x.numero}` : `Lot ${x.numero}`}</p>
                             <p className="text-[11px] text-muted-foreground truncate">
                               {x.kind === 'lot'
-                                ? `${x.groupe} · ${x.fournisseur || 'fournisseur inconnu'} · entré le ${x.date}`
+                                ? [x.groupe, x.fournisseur || 'fournisseur inconnu', x.initial > 0.05 ? `quantité initiale ${fmtNum(x.initial, 1)} kg` : null].filter(Boolean).join(' · ')
                                 : `${x.fournisseur || 'fournisseur inconnu'} · prévue ${x.date === 'sans date' ? 'sans date' : `le ${x.date}`}`}
                             </p>
                             {x.kind === 'lot' && <JaugeLot source={x} kgLigne={coche ? kgDe(x) : 0} />}

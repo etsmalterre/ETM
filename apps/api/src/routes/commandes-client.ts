@@ -34,7 +34,7 @@ import {
   etatReservation, compteDansReserve, RefusReservation, plafondReservation,
 } from '../lib/reservation-fil.js'
 import { lotsLibres, planLancement, ecrireAffectation, messageFilNonCouvert, nomsFils, filsALancer, ordreDeService, filNonReserve } from '../lib/lancement-tricotage.js'
-import { ciblesDuLot, planArbitrage, appliquerArbitrage, RefusArbitrage, sourcesTricotage, fixerFilEnTricotage, lectureTricotage, type CibleArbitrage, type EffetArbitrage } from '../lib/engagement-tricotage.js'
+import { ciblesDuLot, planArbitrage, appliquerArbitrage, RefusArbitrage, sourcesTricotage, fixerFilEnTricotage, lectureTricotage, resteATricoterPour, type CibleArbitrage, type EffetArbitrage } from '../lib/engagement-tricotage.js'
 import { partsTricotage, filEngageSansPart } from '../lib/parts-tricotage.js'
 import { noterCommandeSst } from '../lib/journal-commande-sst.js'
 import { freinteTricotage, freintesTricotage, origineFreinte, filPourEcru, ecruPourFil, besoinFil, MARGE_SECURITE_FIL, ARRONDI_FIL_KG } from '../lib/freinte-tricotage.js'
@@ -5440,8 +5440,10 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
         // Écru of the order → yarn of this lot (its share when the order draws the yarn from several lots).
         const tout = filPourEcru(c.reste * (c.pct / 100), c.freinte)
         const fil = (ecru: number) => filPourEcru(ecru * (c.pct / 100), c.freinte) * (tout > 0.005 ? Math.min(1, c.engage / tout) : 1)
-        for (const p of c.parts) if (p.lcc !== ligneId) lignes.set(p.lcc, (lignes.get(p.lcc) ?? 0) + fil(p.reste))
-        if (c.stockAVenir > 0.05) stock.push({ commande: c.commande, kg: round2c(fil(c.stockAVenir)) })
+        // Only what is still to knit: the yarn of the pieces waiting at the knitter has left the lot.
+        const aTricoter = resteATricoterPour(c)
+        for (const p of aTricoter.lignes) if (p.lcc !== ligneId) lignes.set(p.lcc, (lignes.get(p.lcc) ?? 0) + fil(p.kg))
+        if (aTricoter.stock > 0.05) stock.push({ commande: c.commande, kg: round2c(fil(aTricoter.stock)) })
       }
       tenuParLot.set(l.id, { lignes, stock })
     }
@@ -5499,6 +5501,8 @@ commandesClientRouter.get('/:id/lignes/:ligneId/fil', async (req: Request, res: 
             fournisseur: fournisseurs.get(l.fournisseur) ?? '',
             date_entree: l.dateEntree,
             stock: round2c(l.stock),
+            // What the lot entered with: the selector prints it beside the lot (Vincent 2026-11-16).
+            stock_initial: round2c(l.stockInitial),
             // Free for anyone else, and what this line already holds on it.
             dispo: round2c(Math.max(0, l.libre - l.reserveLigne)),
             pour_ligne: l.reserveLigne,
