@@ -1,4 +1,7 @@
 # Worktree merge log
+## 2026-11-16 · feat/bl-onglets
+**Tricobot, several BLs on one order: one tab per BL in the right-hand viewer (Vincent, follow-up of feat/bl-multiples on order 9098).** The BL panel (`MailPanneau`) shows a tab per BL of the prise en main (`OngletBl`: the bordereau, else « OF N » read from the mail subject, else « BL i »); the shown BL's block keeps its gold ring and a click on a block still switches; the bubble says « d'après ses N BL (les N à droite) ». Web only (`TricobotPriseEnMain.tsx`); not seen in the browser (dev DB has no order with several pending BLs).
+**Deploy: `/etm_deploy`** (web only, no migration).
 ## 2026-11-16 · feat/bl-multiples
 **Tricobot, several BLs on one order (Vincent, order 9098 TAD: 32 rolls proposed over several « MISE A DISPO », one PDF on the right).** TAD mails one BL per OF, so an order's prise en main can stack several reception points; the right panel was pinned to `saisies[0].runId`. Now a click on a BL block shows its own BL (gold ring + « BL à droite », others « Voir ce BL »), the panel is keyed by run (page back to 1), the bubble says « d'après ses N BL ». Single BL unchanged. Web only (`TricobotPriseEnMain.tsx`); not seen in the browser (dev DB has no order with several pending BLs).
 **Deploy: `/etm_deploy`** (web only, no migration).
