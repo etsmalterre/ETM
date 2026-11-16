@@ -70,9 +70,9 @@ import {
   Cog,
   Users,
   Gift,
-  Zap,
 } from 'lucide-react'
-import { UrgenceDialog, jjmmIso, type UrgenceLigne } from '@/components/sst/UrgenceDialog'
+import { UrgenceChoix, UrgenceEnCours, UrgenceMail, URGENCE_VIDE, jjmmIso, urgenceSaisieManque, useGesteUrgence, type MailUrgence, type UrgenceLigne, type UrgenceSaisie } from '@/components/sst/Urgence'
+import { UrgenceIcon } from '@/components/sst/UrgenceIcon'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -112,7 +112,7 @@ import { mergedNumero, splitMergedNumero } from '@/lib/roll-merge'
 import { childNumero, cutBase, nextCutIndex } from '@/lib/roll-cut'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
-import { invalidateLotQualityCaches, invalidateStockCaches, STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
+import { invalidateCommandeClientCaches, invalidateLotQualityCaches, invalidateStockCaches, STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { sstTypeTagClasses } from '@/lib/sst-type'
 import { pruneSelection } from '@/lib/transfert-picker'
@@ -157,9 +157,11 @@ interface CommandeListRow {
   /** Tricotage only: the late frame computed by the API (lib/sst-tricotage.ts).
    *  No kg gauge on the card (Vincent 2026-11-16): the ennoblissement card. */
   urgence?: 'late' | 'soon' | null
-  /** Tricotage only: an urgency asked of the knitter on a line without a délai (API lib/urgence-sst.ts):
-   *  its answer is awaited, or it is ours to chase (the card is then red). */
+  /** An urgency asked of the sous-traitant on a line (API lib/urgence-sst.ts): its answer is awaited,
+   *  or it is ours to chase (the card is then red). */
   urgence_demandee?: 'attente' | 'a_relancer' | null
+  /** A line still to deliver was passed « en urgence », answered or not (the siren, bottom-right of the card). */
+  urgente?: boolean
   /** Ennoblissement only: whose move, chase date, open lots and their step. */
   main?: MainCycle | null
   relance?: string | null
@@ -228,8 +230,6 @@ interface EtapeTricotage {
   delai: string | null
   joursRestants: number | null
   autres: string[]
-  /** No délai yet: the date we asked for. */
-  demande: string | null
   /** Since when the knitter's time runs, and the working days since. */
   depuis: string | null
   joursDepuis: number | null
@@ -259,10 +259,7 @@ interface LigneCommande {
   reports_delai?: { le: string; ancien: string; nouveau: string; motif: string; imputable: 'sous_traitant' | 'malterre' | 'client'; par: string | null }[]
   /** working days of the reports due to the client (late coloris answers), out of retard_jours */
   retard_client_jours?: number
-  /** YYYYMMDD the date we asked for (proposed at the launch from the doctrine, migration 0048); the
-   *  partner's own délai stays date_livraison */
-  date_demandee?: string | null
-  /** Knitting line without a délai: the urgency asked of the knitter and still awaited, null without one */
+  /** Knitting line: the urgency asked of the knitter, awaited or answered; null without one */
   urgence?: UrgenceLigne | null
   date_reception: string | null
   commentaire: string | null
@@ -311,6 +308,8 @@ interface AdresseLite {
 interface CommandeDetail {
   IDcommande_sous_traitant: number
   IDsous_traitant: number
+  /** Tricotage: working days this knitter gets to answer an urgency (API lib/urgence-sst.ts) */
+  urgence_reponse_jours?: number
   date_commande: string | null
   est_soldee: number | null
   commentaire: string | null
@@ -754,8 +753,10 @@ function raisonCarte(row: CommandeListRow, urgence: 'late' | 'soon' | null, tric
     if ((tricobot!.bl ?? 0) >= tricobot!.aValider + tricobot!.aide) return 'Tricobot : réception à valider'
     return `Tricobot : ${tricobot!.aValider + tricobot!.aide > 1 ? 'délais à valider' : 'délai à valider'}`
   }
-  // An urgency asked of the knitter whose answer did not come (API lib/urgence-sst.ts).
-  if (row.urgence_demandee === 'a_relancer') return 'Urgence demandée : relancer le tricoteur'
+  // An urgency asked of the sous-traitant whose answer did not come (API lib/urgence-sst.ts).
+  if (row.urgence_demandee === 'a_relancer') {
+    return `Urgence demandée : relancer ${(row.sous_traitant_type ?? '').trim().toLowerCase() === TYPE_TRICOTEUR.toLowerCase() ? 'le tricoteur' : 'l’ennoblisseur'}`
+  }
   if (!urgence) return null
   const quand = (iso: string | null | undefined) => {
     if (!iso) return ''
@@ -1694,6 +1695,12 @@ function CommandeList({
                     {fmtNum(row.total_eur)} €
                   </span>
                 )}
+                {/* Passed « en urgence » (API lib/urgence-sst.ts): the bare siren, bottom-right corner. */}
+                {row.urgente && (
+                  <span className={cn('flex', !(row.total_eur > 0) && 'ml-auto')}>
+                    <UrgenceIcon className="h-4 w-4" title="Passée en urgence" />
+                  </span>
+                )}
               </div>
             </div>
           )
@@ -1930,8 +1937,11 @@ function LignesSection({
   const enRevue = !isEditing && saisiesOuvertes.some((x) => x.statut === 'a_revoir')
   const lignesTricobot = new Set(saisiesOuvertes.map((x) => x.idligne))
   const [deleteLineConfirmId, setDeleteLineConfirmId] = useState<number | null>(null)
-  /** the knitting line whose urgency dialog is open */
-  const [urgenceLigneId, setUrgenceLigneId] = useState<number | null>(null)
+  /** a new knitting line born « en urgence » (off by default: an order names no date) */
+  const [urgenceForm, setUrgenceForm] = useState<UrgenceSaisie>(URGENCE_VIDE)
+  /** the mail that tells the sous-traitant, opened pre-filled once an urgency is asked or given up */
+  const [urgenceMail, setUrgenceMail] = useState<MailUrgence | null>(null)
+  const articleDe = (l: LigneCommande) => `${l.ref_label || '—'}${l.colori_reference ? ` - ${l.colori_reference}` : ''}`
   const [deleteLineError, setDeleteLineError] = useState<string | null>(null)
   // For ennoblisseur lines, IDreference holds an IDref_fini (the desired
   // dyed/finished reference). The drawer maps fini → écru via ref_fini.IDref_ecru
@@ -2044,10 +2054,10 @@ function LignesSection({
         IDreference: lineForm.IDreference,
         IDColoris: lineForm.IDColoris,
         quantite: Number(lineForm.quantite) || 0,
-        // Tricotage Malterre gives its délai itself: the date typed is the one we ask for.
-        ...(isTrm
-          ? { date_demandee: inputDateToHfsql(lineForm.date_livraison) }
-          : { date_livraison: inputDateToHfsql(lineForm.date_livraison) }),
+        // Tricotage Malterre gives its délai itself: no date is typed on its line.
+        ...(isTrm ? {} : { date_livraison: inputDateToHfsql(lineForm.date_livraison) }),
+        // The one date we may ask a sous-traitant: an urgency's (API lib/urgence-sst.ts).
+        ...(urgenceForm.active ? { urgence: { date_souhaitee: urgenceForm.date } } : {}),
         ...(filALancer ? { lots: filForm.lots } : {}),
       }),
     }),
@@ -2055,20 +2065,37 @@ function LignesSection({
   })
 
   const updateLineMut = useMutation({
-    mutationFn: (lineId: number) => apiFetch(`/commandes-sous-traitant/lignes/${lineId}`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        IDreference: lineForm.IDreference,
-        IDColoris: lineForm.IDColoris,
-        quantite: Number(lineForm.quantite) || 0,
-        prix: Number(lineForm.prix) || 0,
-        ...(dateDemandeeTrm
-          ? { date_demandee: inputDateToHfsql(lineForm.date_livraison) }
-          : { date_livraison: inputDateToHfsql(lineForm.date_livraison) }),
-        ...(reportEnCours ? { report: { motif: reportForm.motif.trim(), imputable: reportForm.imputable } } : {}),
-      }),
-    }),
-    onSuccess: () => { onMutationSuccess(); setEditingLineId(null); resetLineForm() },
+    mutationFn: async (lineId: number) => {
+      await apiFetch(`/commandes-sous-traitant/lignes/${lineId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          IDreference: lineForm.IDreference,
+          IDColoris: lineForm.IDColoris,
+          quantite: Number(lineForm.quantite) || 0,
+          prix: Number(lineForm.prix) || 0,
+          ...(sansDateTrm ? {} : { date_livraison: inputDateToHfsql(lineForm.date_livraison) }),
+          ...(reportEnCours ? { report: { motif: reportForm.motif.trim(), imputable: reportForm.imputable } } : {}),
+        }),
+      })
+      // « Passer en urgence », beside the date: asked once the line is saved (API lib/urgence-sst.ts).
+      if (urgenceEdition) {
+        await apiFetch(`/commandes-sous-traitant/${commande.IDcommande_sous_traitant}/lignes/${lineId}/urgence`, {
+          method: 'POST', body: JSON.stringify({ date_souhaitee: urgenceForm.date }),
+        })
+      }
+    },
+    onSuccess: (_r, lineId) => {
+      // An urgency holds the client lines that wait for this knitting: their screen reads it too.
+      // And the sous-traitant must be told: its mail opens, pre-filled.
+      if (urgenceEdition) {
+        invalidateCommandeClientCaches(queryClient)
+        const l = commande.lignes.find((x) => x.IDligne_commande_sous_traitant === lineId)
+        if (l) setUrgenceMail({ ligneId: lineId, geste: 'demande', article: articleDe(l), t: Date.now() })
+      }
+      onMutationSuccess(); setEditingLineId(null); resetLineForm()
+    },
+    // The line may be saved while the urgency was refused: show the fresh line behind the message.
+    onError: () => { onMutationSuccess() },
   })
 
   const deleteLineMut = useMutation({
@@ -2085,6 +2112,7 @@ function LignesSection({
   const resetLineForm = () => {
     setLineForm({ IDreference: 0, IDColoris: 0, quantite: '', prix: '', date_livraison: '' })
     setReportForm({ motif: '', imputable: null })
+    setUrgenceForm(URGENCE_VIDE)
     setChoixLots({})
     setShowLineForm(false)
     createLineMut.reset()
@@ -2096,10 +2124,10 @@ function LignesSection({
   const editingLine = editingLineId !== null ? commande.lignes.find((x) => x.IDligne_commande_sous_traitant === editingLineId) ?? null : null
   const delaiDonne = editingLine ? dateDonnee(editingLine) : ''
   // Tricotage Malterre, no délai on the line yet (a new line, or one TRM has not answered):
-  // the form's date is the one we ask for — the délai is TRM's to give, on its own screen.
-  const dateDemandeeTrm = isTrm && (editingLine ? !editingLine.date_livraison : true)
+  // the form has no date — the délai is TRM's to give, on its own screen; to press it, an urgency.
+  const sansDateTrm = isTrm && (editingLine ? !editingLine.date_livraison : true)
   const nouveauDelai = inputDateToHfsql(lineForm.date_livraison)
-  const reportEnCours = !dateDemandeeTrm && !!delaiDonne && /^\d{8}$/.test(nouveauDelai) && nouveauDelai > delaiDonne
+  const reportEnCours = !sansDateTrm && !!delaiDonne && /^\d{8}$/.test(nouveauDelai) && nouveauDelai > delaiDonne
 
   // Every line names a reference and a coloris (LIVA #1215) — the server
   // refuses otherwise; the button says why before the user tries.
@@ -2108,12 +2136,24 @@ function LignesSection({
     : lineForm.IDColoris === 0
       ? 'Choisissez un coloris'
       : null
+  // « Passer en urgence » lives in the line's edit dialog, beside the date (Vincent 2026-11-16: it
+  // is exceptional, not a link on every card). Offered on a knitter's or a dyer's line that awaits
+  // no answer.
+  const quiUrgence = quiSousTraitant(commande)
+  const retirerUrgence = useGesteUrgence(commande.IDcommande_sous_traitant)
+  const urgenceEnAttente = !!editingLine?.urgence && editingLine.urgence.etat !== 'repondue'
+  const urgenceOfferte = linesEditable && !!editingLine && !urgenceEnAttente
+  const urgenceEdition = urgenceOfferte && urgenceForm.active
+  // The date wished comes before the délai the form holds (the line's, or the one being typed).
+  const delaiFormIso = !sansDateTrm && /^\d{4}-\d{2}-\d{2}$/.test(lineForm.date_livraison) ? lineForm.date_livraison : null
   const editLineBlockedReason = lineSaveBlockedReason
     ?? (reportEnCours && (!reportForm.imputable || !reportForm.motif.trim())
       ? 'Indiquez pourquoi le délai est repoussé et à qui c’est dû'
       : null)
-  // A new knit line at Tricotage Malterre also needs all its yarn.
+    ?? (urgenceOfferte ? urgenceSaisieManque(urgenceForm, delaiFormIso) : null)
+  // A new knit line at Tricotage Malterre also needs all its yarn; « urgente », its date.
   const newLineBlockedReason = lineSaveBlockedReason
+    ?? urgenceSaisieManque(urgenceForm, !isTrm && /^\d{4}-\d{2}-\d{2}$/.test(lineForm.date_livraison) ? lineForm.date_livraison : null)
     ?? (filALancer && !(quantiteForm > 0)
       ? 'Saisissez la quantité'
       : filALancer && !filForm.couvert
@@ -2139,8 +2179,7 @@ function LignesSection({
       IDColoris: l.IDColoris ?? 0,
       quantite: fmtNumberInput(l.quantite),
       prix: fmtNumberInput(l.prix),
-      // The form's one date: the délai, or — at Tricotage Malterre before TRM gave it — the date asked.
-      date_livraison: hfsqlDateToInput(isTrm && !l.date_livraison ? l.date_demandee ?? null : l.date_livraison),
+      date_livraison: hfsqlDateToInput(l.date_livraison),
     })
     // The client's late coloris answer is known: a report of this line's délai starts as its own.
     const t = commande.cycle?.traitement
@@ -2264,7 +2303,6 @@ function LignesSection({
                   dateNotif={commande.date_notif}
                   cycleUrgence={commande.cycle ? commande.cycle.urgence : undefined}
                   traitement={commande.cycle?.traitement}
-                  onUrgence={commande.famille === 'tricotage' && !isEditing && !linesLocked ? () => setUrgenceLigneId(l.IDligne_commande_sous_traitant) : undefined}
                   onEdit={() => startEditLine(l)}
                   onDelete={() => setDeleteLineConfirmId(l.IDligne_commande_sous_traitant)}
                   onOpenDrawer={onOpenPiecesDrawer}
@@ -2305,10 +2343,18 @@ function LignesSection({
                 refsRectiligne={refRectiligneLookup ?? []}
                 editable={true}
                 autoPricing={isTricoteur ? false : commande.auto_pricing_enabled}
-                dateDemandee={dateDemandeeTrm}
+                sansDate={sansDateTrm}
               />
-              {/* A date asked of TRM is no engagement: nothing to warn about. */}
-              {!dateDemandeeTrm && <EngagementDelai delaiDonne="" nouveau={nouveauDelai} engagement={null} report={reportForm} setReport={setReportForm} />}
+              {!sansDateTrm && <EngagementDelai delaiDonne="" nouveau={nouveauDelai} engagement={null} report={reportForm} setReport={setReportForm} />}
+              {/* An order names no date; pressed, it asks one (API lib/urgence-sst.ts). */}
+              {linesEditable && (
+                <div className="rounded-lg border border-border/60 bg-card px-3 py-2.5">
+                  <UrgenceChoix
+                    value={urgenceForm} onChange={setUrgenceForm} disabled={createLineMut.isPending} qui={quiUrgence}
+                    avant={!isTrm && /^\d{4}-\d{2}-\d{2}$/.test(lineForm.date_livraison) ? lineForm.date_livraison : null}
+                  />
+                </div>
+              )}
               {filALancer && lineForm.IDreference > 0 && lineForm.IDColoris > 0 && (
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-muted-foreground">
@@ -2350,9 +2396,9 @@ function LignesSection({
               editable={linesEditable}
               autoPricing={isTricoteur ? false : commande.auto_pricing_enabled}
               engagement={editingLine?.date_delai}
-              dateDemandee={dateDemandeeTrm}
+              sansDate={sansDateTrm}
             />
-            {!dateDemandeeTrm && (
+            {!sansDateTrm && (
               <EngagementDelai
                 delaiDonne={delaiDonne}
                 nouveau={nouveauDelai}
@@ -2360,6 +2406,41 @@ function LignesSection({
                 report={reportForm}
                 setReport={setReportForm}
               />
+            )}
+            {/* Beside the date: the one way to ask the knitter for a date (API lib/urgence-sst.ts). */}
+            {urgenceOfferte && (
+              <div className="rounded-lg border border-border/60 bg-card px-3 py-2.5">
+                <UrgenceChoix
+                  value={urgenceForm} onChange={setUrgenceForm} disabled={updateLineMut.isPending}
+                  qui={quiUrgence} libelle="Passer en urgence" avant={delaiFormIso}
+                />
+              </div>
+            )}
+            {/* An urgency already on the line: said here, with the one way to give it up. */}
+            {editingLine?.urgence && (
+              <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+                <UrgenceIcon className="mt-0.5" />
+                <span>
+                  {urgenceEnAttente ? 'Urgence demandée' : 'Déjà passée en urgence'} le {jjmmIso(editingLine.urgence.demandeeLe)}
+                  {editingLine.urgence.dateSouhaitee ? `, souhaitée pour le ${jjmmIso(editingLine.urgence.dateSouhaitee)}` : ''}
+                  {urgenceEnAttente ? ' : la relance et le refus se notent dans « Prochaines étapes ».' : ' : le sous-traitant a répondu.'}
+                  {' '}
+                  <button
+                    type="button" disabled={retirerUrgence.isPending}
+                    onClick={() => retirerUrgence.mutate({ ligneId: editingLine.IDligne_commande_sous_traitant, geste: 'levee' }, {
+                      onSuccess: () => {
+                        // Given up: the sous-traitant is told too (it was pressed), then back to the order.
+                        setUrgenceMail({ ligneId: editingLine.IDligne_commande_sous_traitant, geste: 'levee', article: articleDe(editingLine), t: Date.now() })
+                        onMutationSuccess(); setEditingLineId(null); resetLineForm()
+                      },
+                    })}
+                    title="Nous y renonçons : la ligne n’est plus marquée urgente"
+                    className="font-medium underline underline-offset-2 hover:text-foreground cursor-pointer disabled:opacity-50"
+                  >
+                    Retirer l’urgence
+                  </button>
+                </span>
+              </p>
             )}
           </LigneSstDialog>
 
@@ -2449,6 +2530,11 @@ function LignesSection({
         )}
       </div>
 
+      <UrgenceMail
+        commandeId={commande.IDcommande_sous_traitant} mail={urgenceMail}
+        contextLabel={commande.sous_traitant_nom ?? undefined} onClose={() => setUrgenceMail(null)}
+      />
+
       <ConfirmDialog
         open={deleteLineConfirmId !== null}
         title="Supprimer la ligne"
@@ -2466,32 +2552,16 @@ function LignesSection({
         }}
       />
 
-      {/* The urgency asked of the knitter on a line still without its délai (API lib/urgence-sst.ts). */}
-      {(() => {
-        const l = urgenceLigneId !== null ? commande.lignes.find((x) => x.IDligne_commande_sous_traitant === urgenceLigneId) ?? null : null
-        return (
-          <UrgenceDialog
-            open={l !== null}
-            commandeId={commande.IDcommande_sous_traitant}
-            ligneId={l?.IDligne_commande_sous_traitant ?? 0}
-            article={l ? `${l.ref_label || '—'}${l.colori_reference ? ` - ${l.colori_reference}` : ''}` : ''}
-            urgence={l?.urgence ?? null}
-            dateDemandee={l?.date_demandee ?? null}
-            onClose={() => setUrgenceLigneId(null)}
-          />
-        )
-      })()}
     </>
   )
 }
 
 function LineCard({
-  line, isEditing, linesLocked, isEnnoblisseur, linesEditable, isDrawerOpen, bonEnvoyeAt, dateNotif, cycleUrgence, traitement, onUrgence, onEdit, onDelete, onOpenDrawer,
+  line, isEditing, linesLocked, isEnnoblisseur, linesEditable, isDrawerOpen, bonEnvoyeAt, dateNotif, cycleUrgence, traitement, onEdit, onDelete, onOpenDrawer,
 }: {
   line: LigneCommande
   /** Knitting order, view mode: opens the urgency dialog of the line (ask, chase, give up). Absent =
    *  the gesture is not offered (the urgency already asked still shows). */
-  onUrgence?: () => void
   isEditing: boolean
   linesLocked: boolean
   isEnnoblisseur: boolean
@@ -2567,7 +2637,6 @@ function LineCard({
 
   const dateDelaiRaw = line.date_delai && /^\d{8}$/.test(line.date_delai) ? line.date_delai : ''
   const dateLivRaw = line.date_livraison && /^\d{8}$/.test(line.date_livraison) ? line.date_livraison : ''
-  const dateDemRaw = line.date_demandee && /^\d{8}$/.test(line.date_demandee) ? line.date_demandee : ''
   // Attente délai: bon de commande sent, no délai confirmed yet. The line
   // shows how long we've been waiting instead of a délai.
   const isAttenteDelai = (line.sstatut ?? '').trim() === 'Attente_Delai'
@@ -2658,47 +2727,23 @@ function LineCard({
             <Hourglass className="h-3 w-3 self-center" />{label}
           </span>
         </p>
-        {dateDemRaw && <p className="mt-0.5 text-[11px] text-muted-foreground whitespace-nowrap">Demandé pour le {formatHfsqlDate(dateDemRaw)}</p>}
       </div>
     )
-  })() : dateDemRaw ? (
-    <p className="flex items-baseline justify-end gap-2">
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Demandé pour le</span>
-      <span className="text-sm font-semibold tabular-nums text-muted-foreground">{formatHfsqlDate(dateDemRaw)}</span>
-    </p>
-  ) : null
+  })() : null
 
-  // The urgency asked of the knitter while the line has no délai (API lib/urgence-sst.ts, Vincent
-  // 2026-11-16): neutral while its answer is awaited, red once the day has passed (chase it). The
-  // knitter's délai ends it. Without one, the gesture to ask.
-  const urgenceLigne = !dateLivRaw && !lineDone ? line.urgence ?? null : null
+  // The urgency asked of the knitter on the line (API lib/urgence-sst.ts, Vincent 2026-11-16): the
+  // siren says the line was pressed, and stays once answered until it is delivered. A plain mention:
+  // its clock and its gestures are a row of « Prochaines étapes » (UrgenceEnCours), asking and giving
+  // up live in the line's edit dialog. Red only when the answer is overdue.
+  const urgenceLigne = !lineDone ? line.urgence ?? null : null
   const urgenceCoin: React.ReactNode = urgenceLigne ? (
-    <button
-      type="button"
-      disabled={!onUrgence}
-      onClick={(e) => { e.stopPropagation(); onUrgence?.() }}
-      title={onUrgence ? 'Relancer ou lever l’urgence' : undefined}
-      className={cn('mt-0.5 inline-flex items-center gap-1 text-[11px] whitespace-nowrap', onUrgence && 'cursor-pointer hover:underline')}
-    >
-      <Zap className={cn('h-3 w-3', urgenceLigne.aRelancer ? 'text-red-600' : 'text-muted-foreground')} />
-      {urgenceLigne.aRelancer ? (
-        <span className="font-medium text-red-600">Urgence sans réponse depuis le {jjmmIso(urgenceLigne.reponseAttendue)} : relancer</span>
-      ) : (
-        <>
-          <span className="font-medium">Urgence demandée</span>
-          <span className="text-muted-foreground">· réponse attendue le {jjmmIso(urgenceLigne.reponseAttendue)}</span>
-        </>
-      )}
-    </button>
-  ) : onUrgence && !dateLivRaw && !lineDone ? (
-    <button
-      type="button"
-      onClick={(e) => { e.stopPropagation(); onUrgence() }}
-      title="Le tricoteur a été prié de faire au plus vite : noter la demande et le jour où sa réponse est attendue"
-      className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-accent transition-colors cursor-pointer whitespace-nowrap"
-    >
-      <Zap className="h-3 w-3" />Demander une urgence
-    </button>
+    <p className="mt-0.5 inline-flex items-center gap-1 text-[11px] whitespace-nowrap">
+      <UrgenceIcon />
+      <span className={cn('font-medium', urgenceLigne.etat === 'a_relancer' && 'text-red-600')}>
+        Urgent{urgenceLigne.dateSouhaitee ? ` · souhaité le ${jjmmIso(urgenceLigne.dateSouhaitee)}` : ''}
+        {urgenceLigne.etat === 'a_relancer' ? ' : relancer' : ''}
+      </span>
+    </p>
   ) : null
 
   return (
@@ -6950,10 +6995,10 @@ function EngagementDelai({ delaiDonne, nouveau, engagement, report, setReport }:
 }
 
 function LineFormFields({
-  form, setForm, kind, refsFini, refsEcru, refsRectiligne = [], editable, autoPricing, engagement, dateDemandee,
+  form, setForm, kind, refsFini, refsEcru, refsRectiligne = [], editable, autoPricing, engagement, sansDate,
 }: {
-  /** The date field holds the date we ask Tricotage Malterre for, not a délai. */
-  dateDemandee?: boolean
+  /** Tricotage Malterre before it gave its délai: no date to type, TRM gives it. */
+  sansDate?: boolean
   form: { IDreference: number; IDColoris: number; quantite: string; prix: string; date_livraison: string }
   /** YYYYMMDD the sous-traitant's engagement on the line being edited (LIVA #1364) */
   engagement?: string | null
@@ -7107,13 +7152,10 @@ function LineFormFields({
           helper={prixDisabled ? 'Calculé automatiquement à partir des rouleaux affectés.' : undefined}
         />
       </div>
-      {dateDemandee ? (
-        <DelaiField
-          value={form.date_livraison} onChange={(v) => setForm({ ...form, date_livraison: v })}
-          label="Date demandée"
-          aide="La date que nous demandons à Tricotage Malterre. Son délai, c’est TRM qui le donne depuis son écran Commandes."
-          vide="Pas de date demandée"
-        />
+      {sansDate ? (
+        <p className="text-[11px] text-muted-foreground">
+          Pas de date à saisir : Tricotage Malterre donne son délai depuis son écran Commandes, sous 1 jour ouvré.
+        </p>
       ) : (
         <DelaiField value={form.date_livraison} engagement={engagement} onChange={(v) => setForm({ ...form, date_livraison: v })} />
       )}
@@ -7476,7 +7518,9 @@ function CycleCard({ commande, cycle, isEditing }: {
 }) {
   const attenteDelai = commande.phase === 'attente_delai' && !!cycle.delai
   const traitement = !attenteDelai ? cycle.traitement ?? null : null
-  if (!attenteDelai && !traitement && cycle.lots.length === 0) return null
+  // An urgency asked of the dyer and still awaited: its own row, under the dyeing and the lots.
+  const urgences = lignesUrgentesDe(commande).length > 0
+  if (!attenteDelai && !traitement && cycle.lots.length === 0 && !urgences) return null
   const delai = cycle.delai
   // §41: the colour is the API's (relance due = red), never recomputed here.
   const niveau = !attenteDelai && !traitement ? null : cycle.urgence === 'late' ? 'rouge' : cycle.urgence === 'soon' ? 'ambre' : null
@@ -7485,12 +7529,14 @@ function CycleCard({ commande, cycle, isEditing }: {
       'rounded-xl border bg-card shadow-sm p-4 border-l-4',
       niveau === 'rouge' ? 'border-l-red-500' : niveau === 'ambre' ? 'border-l-amber-500' : 'border-l-border',
     )}>
-      {attenteDelai && delai && (
+      {attenteDelai && delai && (attenteToutePressee(commande) ? (
+        <AttenteDelaiPressee qui={quiSousTraitant(commande)} />
+      ) : (
         <AttenteDelaiBloc
           commandeId={commande.IDcommande_sous_traitant} delai={delai} niveau={niveau} relance={cycle.relance}
           qui="l’ennoblisseur" deQui="de l’ennoblisseur" disabled={isEditing}
         />
-      )}
+      ))}
       {traitement && <TraitementBloc traitement={traitement} niveau={niveau} solde={cycle.solde} mainClient={cycle.main === 'client'} />}
       {cycle.lots.length > 0 && (
         <div className={cn('space-y-2.5', (attenteDelai || traitement) && 'mt-3 pt-3 border-t border-border/60')}>
@@ -7498,6 +7544,7 @@ function CycleCard({ commande, cycle, isEditing }: {
           {cycle.lots.map((l) => <LotEnCours key={`${l.lot}-${l.idsuivilot}`} lot={l} />)}
         </div>
       )}
+      <UrgencesEnCours commande={commande} isEditing={isEditing} seul={!attenteDelai && !traitement && cycle.lots.length === 0} />
     </div>
   )
 }
@@ -7993,6 +8040,64 @@ interface TypeDoc {
   nom: string
 }
 
+/** Who an urgency is asked of, as the sentences name it: the sous-traitant by its name
+ *  (« Tricotage Malterre », « MATEL »), else its trade. */
+function quiSousTraitant(commande: { sous_traitant_nom?: string | null; famille?: SstFamille }): string {
+  return (commande.sous_traitant_nom ?? '').trim() || (commande.famille === 'tricotage' ? 'le tricoteur' : 'l’ennoblisseur')
+}
+
+/** The lines of an order whose urgency still awaits an answer (API lib/urgence-sst.ts). */
+function lignesUrgentesDe(commande: CommandeDetail): LigneCommande[] {
+  if (commande.phase === 'terminee' || commande.phase === 'trm_soldee') return []
+  return commande.lignes.filter((l) => !!l.urgence && l.urgence.etat !== 'repondue' && !l.livree_le)
+}
+
+/** True when the sous-traitant owes its délai AND was asked for a date on every line still without
+ *  one: the same question, on the urgency's clock — the card then draws ONE bar, the urgency's, with
+ *  its own gestures (the délai's « Relancer » would not answer the urgency). */
+function attenteToutePressee(commande: CommandeDetail): boolean {
+  const urgentes = lignesUrgentesDe(commande)
+  const sansDelai = commande.lignes.filter((l) => !l.date_livraison && !l.livree_le)
+  return commande.phase === 'attente_delai' && sansDelai.length > 0 && sansDelai.every((l) => urgentes.includes(l))
+}
+
+/** « Attente délai » when the délai is asked through an urgency: the title alone, the urgency's
+ *  row below carries the clock. */
+function AttenteDelaiPressee({ qui }: { qui: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="h-10 w-10 flex-shrink-0 rounded-lg flex items-center justify-center bg-zinc-100">
+        <Hourglass className="h-5 w-5 text-amber-600" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-base font-semibold leading-snug">Attente délai</p>
+        <p className="text-xs text-muted-foreground">Délai attendu de {qui}, demandé en urgence</p>
+      </div>
+    </div>
+  )
+}
+
+/** The urgencies awaiting an answer, one row each (UrgenceEnCours): a process beside the knitting or
+ *  the dyeing, with its own clock, chase and gestures (Vincent 2026-11-16), like the open lots of a
+ *  dyer's order. `seul`: nothing is drawn above it in the card (no divider). */
+function UrgencesEnCours({ commande, isEditing, seul }: { commande: CommandeDetail; isEditing: boolean; seul?: boolean }) {
+  const lignes = lignesUrgentesDe(commande)
+  if (lignes.length === 0) return null
+  return (
+    <div className={cn('space-y-2.5', !seul && 'mt-3 pt-3 border-t border-border/60')}>
+      {lignes.map((l) => (
+        <UrgenceEnCours
+          key={l.IDligne_commande_sous_traitant}
+          commandeId={commande.IDcommande_sous_traitant} ligneId={l.IDligne_commande_sous_traitant} urgence={l.urgence!}
+          article={commande.lignes.length > 1 ? `${l.ref_label || '—'}${l.colori_reference ? ` - ${l.colori_reference}` : ''}` : null}
+          articleMail={`${l.ref_label || '—'}${l.colori_reference ? ` - ${l.colori_reference}` : ''}`}
+          qui={quiSousTraitant(commande)} disabled={isEditing}
+        />
+      ))}
+    </div>
+  )
+}
+
 /** Tricotage « Prochaines étapes » (top of the Info tab, Vincent 2026-11-16):
  *  where the order stands INSIDE its status, drawn like the ennoblissement card
  *  (`CycleCard`). The status comes first with what it waits for; then, by status:
@@ -8018,8 +8123,10 @@ function TricotageCard({ commande, etape, isEditing }: { commande: CommandeDetai
   const nbLignes = lignes.sans_fil + lignes.a_lancer + lignes.en_tricotage + lignes.livrees
   const pl = (n: number, un: string, plusieurs: string) => `${n} ${n > 1 ? plusieurs : un}`
   // « Sortie prévue le », the dyer card's words (Vincent 2026-11-16).
-  const delaiTexte = etape.delai ? `Sortie prévue le ${date(etape.delai)}`
-    : etape.demande ? `Délai en attente, demandé pour le ${date(etape.demande)}` : 'Délai en attente'
+  const delaiTexte = etape.delai ? `Sortie prévue le ${date(etape.delai)}` : 'Délai en attente'
+  // Urgencies asked of the knitter and still awaiting an answer: their own rows, below.
+  const trm = commande.IDsous_traitant === TRICOTAGE_MALTERRE_ID
+  const urgencesEnCours = <UrgencesEnCours commande={commande} isEditing={isEditing} />
   const avantTricotage = phase === 'fil_a_affecter' || phase === 'a_lancer'
   const enTricotage = phase === 'en_tricotage'
 
@@ -8064,26 +8171,17 @@ function TricotageCard({ commande, etape, isEditing }: { commande: CommandeDetai
   // Attente délai: the dyers' block, same gestures. Tricotage Malterre gets no bon de
   // commande: the order itself asks, one working day to answer (Vincent 2026-11-16).
   if (phase === 'attente_delai' && etape.question) {
-    const trm = commande.IDsous_traitant === TRICOTAGE_MALTERRE_ID
-    // An urgency asked of the knitter on a line still without its délai (API lib/urgence-sst.ts):
-    // its answer is what is awaited, on its own day — the délai's chase date says nothing then.
-    const urgences = commande.lignes.map((l) => (l.date_livraison ? null : l.urgence ?? null)).filter((u): u is UrgenceLigne => !!u)
-    const reponse = urgences.map((u) => u.reponseAttendue).sort()[0] ?? null
-    const aRelancer = urgences.some((u) => u.aRelancer)
     return (
       <div className={cadre}>
-        <AttenteDelaiBloc
-          commandeId={commande.IDcommande_sous_traitant} delai={etape.question} niveau={niveau} relance={reponse ? null : etape.relance}
-          qui={trm ? 'Tricotage Malterre' : 'le tricoteur'} deQui={trm ? 'de Tricotage Malterre' : 'du tricoteur'} disabled={isEditing}
-        >
-          {reponse && (
-            <p className={cn('mt-0.5 flex items-center gap-1 text-xs', aRelancer ? 'font-medium text-red-700' : 'text-muted-foreground')}>
-              <Zap className="h-3 w-3 flex-shrink-0" />
-              {aRelancer ? `Urgence sans réponse depuis le ${jjmmIso(reponse)}` : `Urgence demandée · réponse attendue le ${jjmmIso(reponse)}`}
-            </p>
-          )}
-          {etape.demande && <p className="mt-0.5 text-xs text-muted-foreground">Demandé pour le {date(etape.demande)}</p>}
-        </AttenteDelaiBloc>
+        {attenteToutePressee(commande) ? (
+          <AttenteDelaiPressee qui={quiSousTraitant(commande)} />
+        ) : (
+          <AttenteDelaiBloc
+            commandeId={commande.IDcommande_sous_traitant} delai={etape.question} niveau={niveau} relance={etape.relance}
+            qui={trm ? 'Tricotage Malterre' : 'le tricoteur'} deQui={trm ? 'de Tricotage Malterre' : 'du tricoteur'} disabled={isEditing}
+          />
+        )}
+        {urgencesEnCours}
       </div>
     )
   }
@@ -8147,6 +8245,8 @@ function TricotageCard({ commande, etape, isEditing }: { commande: CommandeDetai
           )}
         </div>
       )}
+      {/* Beside the knitting: the urgency asked, on its own clock. */}
+      {urgencesEnCours}
     </div>
   )
 }
@@ -8158,7 +8258,8 @@ function TricotageCard({ commande, etape, isEditing }: { commande: CommandeDetai
  *  awaited next — the dyer's cycle card, or the knitter's. On top of the Info tab.
  *  Nothing on an order with nothing left to follow. */
 function ProchainesEtapes({ commande, isEditing }: { commande: CommandeDetail; isEditing: boolean }) {
-  const cycle = commande.cycle && (commande.phase === 'attente_delai' || !!commande.cycle.traitement || commande.cycle.lots.length > 0)
+  const cycle = commande.cycle && (commande.phase === 'attente_delai' || !!commande.cycle.traitement || commande.cycle.lots.length > 0
+    || lignesUrgentesDe(commande).length > 0)
     ? commande.cycle : null
   // Tricotage: its own card (nothing left to do once terminée).
   const tricotage = commande.famille === 'tricotage' && commande.phase !== 'terminee' ? commande.tricotage ?? null : null

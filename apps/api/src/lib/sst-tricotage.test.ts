@@ -125,7 +125,7 @@ describe('etapeTricotage', () => {
       ligne({ id: 3, a_un_of: true, date_livraison: '20261020' }),
     ]))
     // Tue 06/10 → Tue 13/10: 5 working days.
-    expect(e).toMatchObject({ delai: '2026-10-13', joursRestants: 5, autres: ['2026-10-20'], demande: null })
+    expect(e).toMatchObject({ delai: '2026-10-13', joursRestants: 5, autres: ['2026-10-20'] })
   })
 
   it('a past délai counts its late working days, the knitter’s closures aside', () => {
@@ -134,9 +134,10 @@ describe('etapeTricotage', () => {
     expect(etapeTricotage(c, 'en_tricotage', null, [{ du: '20261002', au: '20261002' }], TODAY).joursRestants).toBe(-2)
   })
 
-  it('no délai yet: the date we asked for', () => {
-    const e = etape(trm([ligne({ date_livraison: '', date_demandee: '20261030' })]))
-    expect(e).toMatchObject({ delai: null, joursRestants: null, demande: '2026-10-30' })
+  it('no délai yet: no date at all — the order asks none (Vincent 2026-11-16), an urgency is read on its line', () => {
+    const e = etape(trm([ligne({ date_livraison: '' })]))
+    expect(e).toMatchObject({ delai: null, joursRestants: null })
+    expect(e).not.toHaveProperty('demande')
   })
 
   it('the knitter’s time runs from the order', () => {

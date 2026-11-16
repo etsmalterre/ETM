@@ -49,6 +49,10 @@ describe('urgenceLigne', () => {
     expect(niveau(trico(10, 12, 0))).toBe(null) // …today: still expected
     expect(urgenceLigne(trico(10, 12, -1), today)).toMatchObject({ niveau: 'rouge', action: 'relancer_urgence' })
     expect(urgenceCommande([trico(10, 12, -1)], today)?.raison).toBe('1 ligne : urgence demandée, relancer le tricoteur')
+    // The same asked of the dyer (the écru is there): the reason names who to chase.
+    const enno: LigneUrgence = { ...l('ennoblisseur', 10), preteAuPlusTot: dans(12), urgenceReponseLe: dans(-1), urgenceChez: 'ennoblissement' }
+    expect(urgenceCommande([enno], today)?.raison).toBe('1 ligne : urgence demandée, relancer l’ennoblisseur')
+    expect(niveau({ ...enno, urgenceReponseLe: dans(1) })).toBe(null)
     // The date holds anyway: nothing to say, asked or not.
     expect(niveau(trico(10, 10, -1))).toBe(null)
     // D already passed: an urgency cannot save it.

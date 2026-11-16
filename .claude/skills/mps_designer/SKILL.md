@@ -4676,3 +4676,53 @@ Any screen displaying a human-written standing instruction on a production recor
 `ConsigneCallout` — it does not copy the markup. If a second app needs the same object, move
 the component beside the other shared ones rather than forking it: this pattern's whole value
 is that the thing looks identical on every screen that shows it.
+
+---
+
+## 47. The urgency siren (`UrgenceIcon`) — one bare icon, everywhere
+
+Reference: **`apps/web/src/components/sst/UrgenceIcon.tsx`** (TRM imports it through `@etm`),
+used by `SousTraitantsCommandes.tsx` (list card, line card, « Prochaines étapes »),
+`ClientsCommandes.tsx` (client line mention, launch dialog) and `UrgenceDialog.tsx`.
+Decided with Vincent on 2026-11-16: « une icône spéciale et reconnaissable dans notre système
+pour symboliser l'urgence ».
+
+An **urgency** is a fact, not a level of alarm: someone at Malterre asked a partner to go faster
+than its standard (API `lib/urgence-sst.ts`). It gets **one glyph and one colour of its own**,
+so that an order that was pressed is recognised at a glance on every screen of every app:
+
+- **Glyph**: Lucide `Siren`. Never `Zap`, `Flame`, `AlarmClock` nor an exclamation mark for an
+  urgency — and never the siren for anything else (a late délai is §30, a relance is §41).
+- **Look**: a **bare** navy siren (`text-primary`), **no frame, no background** — a fuchsia pastille,
+  then a navy one with a gold siren, were both tried and user-rejected the same day. No colour
+  foreign to the palette. Deliberately **neither red nor amber**: those mean « Malterre must /
+  could act now » (§41), while an urgency whose answer is awaited asks nothing of us. The siren
+  says « pressed »; the TEXT beside it turns red only when the answer is overdue (« relancer »).
+- **One form, from the shared file — never re-roll the markup**: `<UrgenceIcon />`, sized by
+  `className`. `h-3 w-3` (default) in front of a sentence (« Urgent · souhaité le 24/11 »,
+  « Urgence demandée pour le … · réponse attendue le … »); `h-4 w-4` on a left-list card, in the
+  **bottom-right corner** (last element of the card's footer row, after the amount chip) — NOT
+  beside the status pill, where it competed with it; `h-5 w-5` as a dialog title icon; muted
+  (`text-muted-foreground`) in a switch row while the switch is off.
+- **The mark stays once the partner has answered**, until the line is delivered: the order was
+  pressed, the workshop and the office should keep seeing it. Only « Retirer l'urgence » removes it.
+- **Asking**: the §35 pill « Commande urgente » when an order is prepared (`UrgenceChoix`: off by
+  default, on = a required date wished); afterwards the same pill, labelled « Passer en urgence », in
+  the line's EDIT dialog right under the date. **Never a permanent link on every card**: an urgency
+  is exceptional, and an affordance repeated on each row reads as routine (user-rejected the same
+  day). Only a line that HAS an urgency shows it (« Urgent · souhaité le … », a plain mention).
+- **A gesture that concerns the partner opens its mail** (§32 `SendEmailDialog`, wrapped by
+  `UrgenceMail`): « Passer en urgence », « Relancer » and « Retirer l'urgence » record the gesture
+  first, then open the pre-filled mail; closing it unsent is a valid exit (told by phone). Never a
+  second entry point for the same mail (no menu on the header mail button — considered, rejected).
+- **An urgency awaited is a parallel process, so it gets its own row** in the « Prochaines étapes »
+  card (`UrgenceEnCours`), in the grammar of an open lot (`LotEnCours`): title left, « N j sur M »
+  right, one `h-1.5` segment per working day granted (sky, all red once overdue), the red action
+  line only when there is one, then two `outline` `sm` buttons (« Relancer » / « Refusée », each
+  through a default-variant §33 `ConfirmDialog`). Rows of parallel processes stack under the main
+  block behind a `mt-3 pt-3 border-t border-border/60` divider. When two clocks would ask the same
+  question (« Attente délai » + an urgency on every undated line), draw ONE bar.
+  One date, never a « réponse attendue le » field: the partner's answer time is known to the API.
+
+A new place that shows an urgency imports these two components; a new KIND of urgency (the dyer's,
+a client's rush order) reuses them too — the whole value is that the sign is the same everywhere.

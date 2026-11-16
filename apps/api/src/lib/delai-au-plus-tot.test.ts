@@ -98,26 +98,20 @@ describe('délai au plus tôt (doctrine des délais §5 ter)', () => {
   })
   // A date retained N working days after the earliest one.
   const apres = (p: Partial<EntreeDelai>, n: number) => ajouterJoursOuvres(delaiAuPlusTot(base(p))!.date, n)
-  it('plan: the knitter takes the margin first, up to 20 working days', () => {
-    const p10 = delaiAuPlusTot(base({ tricotage: 1000, dateRetenue: apres({ tricotage: 1000 }, 10) }))!.plan!
-    expect(p10).toMatchObject({ marge: 10, attenteEcru: 0, tricotage: { standard: 5, marge: 10, jours: 15 } }) // 286 kg: first band
-    expect(p10.ennoblirLe).toBe(p10.tricotage!.fin)
-    const p30 = delaiAuPlusTot(base({ tricotage: 1000, dateRetenue: apres({ tricotage: 1000 }, 30) }))!.plan!
-    expect(p30).toMatchObject({ marge: 30, attenteEcru: 10, tricotage: { marge: 20, jours: 25 } })
-    expect(p30.ennoblirLe! > p30.tricotage!.fin).toBe(true)
+  it('plan: the knitter gets its standard alone, the whole margin is écru waiting before the dyeing', () => {
+    // Vincent 2026-11-16: a knitting order names no date, so no margin is handed to the knitter.
+    const d10 = delaiAuPlusTot(base({ tricotage: 1000, dateRetenue: apres({ tricotage: 1000 }, 10) }))!
+    const finTricot = d10.etapes.find((x) => x.libelle === 'Tricotage')!.au
+    expect(d10.plan).toMatchObject({ marge: 10, attenteEcru: 10 })
+    expect(d10.plan!.ennoblirLe).toBe(ajouterJoursOuvres(finTricot, 10))
+    expect(d10.plan).not.toHaveProperty('tricotage')
   })
   it('plan: écru reserved, the whole margin waits before the dyeing', () => {
     const p = delaiAuPlusTot(base({ ecru: 1000, dateRetenue: apres({ ecru: 1000 }, 10) }))!.plan!
-    expect(p).toMatchObject({ marge: 10, tricotage: null, attenteEcru: 10, ennoblirLe: '20261117' }) // 02/11 + 10 working days, 11/11 off
+    expect(p).toMatchObject({ marge: 10, attenteEcru: 10, ennoblirLe: '20261117' }) // 02/11 + 10 working days, 11/11 off
   })
   it('no plan at the earliest date', () => {
     expect(delaiAuPlusTot(base({ ecru: 1000, dateRetenue: apres({ ecru: 1000 }, 0) }))!.plan).toBeNull()
-  })
-  it('the knitter is asked its standard + its share of the margin, from today', () => {
-    expect(delaiAuPlusTot(base({ tricotage: 1000 }))!.tricotageDemande).toEqual({ jours: 5, date: '20261109' })
-    const d = delaiAuPlusTot(base({ tricotage: 1000, dateRetenue: apres({ tricotage: 1000 }, 10) }))!
-    expect(d.tricotageDemande).toEqual({ jours: 15, date: '20261124' }) // 02/11 + 15 working days, 11/11 off
-    expect(delaiAuPlusTot(base({ ecru: 1000 }))!.tricotageDemande).toBeNull()
   })
   describe('en cours (Vincent 2026-11-02): no reserve, partners on their délai', () => {
     it('écru at a dyer: its délai, then the control, no reserve', () => {
@@ -160,9 +154,11 @@ describe('délai au plus tôt (doctrine des délais §5 ter)', () => {
       expect(avec.etapes[0]).toMatchObject({ libelle: 'Tricotage', estime: true, urgence })
       // Asking changes nothing to the estimate: nobody promised better yet.
       expect(avec.date).toBe(sans.date)
-      // Once the knitter gives its délai the step is a fact, the urgency is over.
+      // Asked on a délai already given (« can you go faster? »): the step keeps that délai and carries
+      // the urgency. Which urgency still awaits is the caller's to say (lib/urgence-sst.ts).
       const donne = delaiAuPlusTot(base({ tricotage: 1000, enCours: true, tricotageLance: { partenaire: 'Tricotage Malterre', delai: '20261106', urgence } }))!
-      expect(donne.etapes[0].urgence).toBeUndefined()
+      expect(donne.etapes[0]).toMatchObject({ au: '20261106', delai: '20261106', urgence })
+      expect(donne.etapes[0].estime).toBeUndefined()
     })
     it('préparation keeps the reserve', () => {
       const d = delaiAuPlusTot(base({ ecru: 1000, ecruChezEnnoblisseur: [{ quantite: 1000, partenaire: 'MATEL', delai: '20261110' }] }))!

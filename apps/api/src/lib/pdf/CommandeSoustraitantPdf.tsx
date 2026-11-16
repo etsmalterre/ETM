@@ -52,7 +52,8 @@ export interface CommandeSoustraitantPdfData {
   } | null
   /** Earliest delivery date across all open lines (long-form French) */
   delaiLivraison: string | null
-  /** No délai on any line yet: the date we ask for (proposed at the launch), the partner confirms */
+  /** An urgency asked of the partner and not answered yet (lib/urgence-sst.ts): the date we wish,
+   *  printed instead of the délai, « URGENT ». Null on an order without one: no date is asked. */
   dateSouhaitee?: string | null
   commentaire: string | null
   /** Automatic quality comments from Qualité › Actions that apply to this
@@ -698,8 +699,8 @@ export function CommandeSoustraitantPdf({
               <View style={styles.comboMetaIconBox}>
                 <ClockIcon />
               </View>
-              <Text style={styles.comboMetaLabel}>{!data.delaiLivraison && data.dateSouhaitee ? 'Date souhaitée' : 'Délai de livraison'}</Text>
-              <Text style={styles.comboMetaValue}>{data.delaiLivraison || data.dateSouhaitee || '—'}</Text>
+              <Text style={styles.comboMetaLabel}>{data.dateSouhaitee ? 'URGENT · souhaité le' : 'Délai de livraison'}</Text>
+              <Text style={styles.comboMetaValue}>{data.dateSouhaitee || data.delaiLivraison || '—'}</Text>
             </View>
             <View style={styles.comboDivider} />
             <View style={styles.comboCardHeader}>

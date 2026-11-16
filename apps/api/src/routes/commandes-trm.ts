@@ -70,12 +70,19 @@ import { loadEtmAffectation } from '../lib/affectation-fil-trm.js'
 import { horsRefParOf, type FilHorsRef } from '../lib/hors-ref-trm.js'
 import { noterDelaiRecu } from '../lib/delai-sst.js'
 import { refusAvanceDelai } from '../lib/report-delai-sst.js'
+import { enAttenteDeReponse, noterReponseUrgence, refuserUrgence, UrgenceRefusee, urgencesLignes, type UrgenceLigne } from '../lib/urgence-sst.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 
 export const commandesTrmRouter: RouterType = Router()
 
 /** The Tricotage Malterre partition of the shared tables. */
 const TRM_SOCIETE = 2
+
+/** Today, 'YYYY-MM-DD' local time (lib/urgence-sst.ts dates). */
+const isoAujourdhui = (): string => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 // ── Small SQL/format helpers (same contract as commandes-client.ts) ──
 
@@ -739,11 +746,26 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
       kgs: number; pieces: number
     }>()
     const emptyTotals = () => ({ total_eur: 0, total_qte: 0, nb_lignes: 0, earliest_delivery: null, produit: 0, lignes_sans_delai: 0, kgs: 0, pieces: 0 })
+    // An urgency ETS Malterre asked on a mirror line (lib/urgence-sst.ts): the order wears the icon,
+    // and while the answer is awaited it is TRM's to give — its délai, or « impossible ».
+    const urgenceParCommande = new Map<number, { urgente: boolean; aRepondre: boolean }>()
     if (ids.length > 0) {
       const lignes = await query<any>(
-        `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, quantite, prix, date_livraison
+        `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, quantite, prix, date_livraison, IDligne_commande_ETM
          FROM ligne_commande_client WHERE IDcommande_client IN (${ids.join(',')})`,
       )
+      const miroirs = lignes.filter((l: any) => (Number(l.IDligne_commande_ETM) || 0) > 0)
+      const urgences = await urgencesLignes(
+        miroirs.map((l: any) => ({ id: Number(l.IDligne_commande_ETM), delai: typeof l.date_livraison === 'string' ? l.date_livraison : null })),
+        isoAujourdhui(),
+      )
+      for (const l of miroirs) {
+        const u = urgences.get(Number(l.IDligne_commande_ETM))
+        if (!u) continue
+        const cid = Number(l.IDcommande_client)
+        const acc = urgenceParCommande.get(cid) ?? { urgente: false, aRepondre: false }
+        urgenceParCommande.set(cid, { urgente: true, aRepondre: acc.aRepondre || enAttenteDeReponse(u) })
+      }
       const prodMap = await lineProductionAggregates(
         lignes.map((l: any) => Number(l.IDligne_commande_client) || 0),
       )
@@ -790,6 +812,9 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
         nb_lignes: t.nb_lignes,
         earliest_delivery: t.earliest_delivery,
         lignes_sans_delai: t.lignes_sans_delai,
+        // Open orders only: once soldée nothing is pressed any more.
+        urgente: !Number(c.est_soldee) && (urgenceParCommande.get(cid)?.urgente ?? false),
+        urgence_a_repondre: !Number(c.est_soldee) && (urgenceParCommande.get(cid)?.aRepondre ?? false),
       }
     }))
   } catch (err) {
@@ -922,6 +947,12 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
       }
     }
 
+    // The urgency ETS Malterre asked on each mirror line (lib/urgence-sst.ts), read on the sst line's
+    // own délai: TRM answers it by giving / moving its délai, or by « impossible ».
+    const urgencesEtm = sstIds.length > 0
+      ? await urgencesLignes(sstIds.map((sid) => ({ id: sid, delai: sstMap.get(sid)?.date_livraison ?? null })), isoAujourdhui())
+      : new Map<number, UrgenceLigne>()
+
     const lignes = lignesFixed.map((l, i) => {
       const refId = Number(l.IDreference) || 0
       const info = labels.ref(l)
@@ -966,6 +997,8 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
         attente_delai: sst?.sstatut === STATUT_ATTENTE_DELAI,
         // The original délai ETM froze on the first reschedule, when it differs.
         date_delai_initiale: delaiInitial,
+        // The urgency ETS Malterre asked on this line, awaited or answered; null without one.
+        urgence: urgencesEtm.get(Number(l.IDligne_commande_ETM) || 0) ?? null,
       }
     })
 
@@ -1375,6 +1408,9 @@ commandesTrmRouter.put('/lignes/:lineId/delai', async (req: Request, res: Respon
           if (premierDelai || ((cur[0].sstatut ?? '').trim() === STATUT_ATTENTE_DELAI && r.sstatut !== STATUT_ATTENTE_DELAI)) {
             await noterDelaiRecu(sstLineId, r.date_livraison || null, req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
           }
+          // TRM moved the délai it had given while an urgency awaited: that is its answer.
+          await noterReponseUrgence(sstLineId, cur[0].date_livraison, r.date_livraison,
+            req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
         }
       } catch (e: any) {
         console.error('[trm-bridge] DELAI: sst update failed for cc line', lineId, e)
@@ -1385,6 +1421,36 @@ commandesTrmRouter.put('/lignes/:lineId/delai', async (req: Request, res: Respon
     res.json({ ok: true, date_livraison: nextLiv, sst_status: sstStatus, sst })
   } catch (err) {
     console.error('Error updating commande-trm delai:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── Urgency asked by ETS Malterre (lib/urgence-sst.ts, Vincent 2026-11-16) ──
+// TRM answers an urgency by giving or moving its délai (the route above). When it
+// cannot go faster it says so here: the THIRD write a mirror accepts. The délai
+// stands, ETM stops waiting and decides what to tell its client.
+commandesTrmRouter.post('/lignes/:lineId/urgence/refus', async (req: Request, res: Response) => {
+  if (!(await requireEditCommandes(req, res))) return
+  try {
+    const lineId = parseInt(req.params.lineId, 10)
+    if (isNaN(lineId) || req.userId === undefined) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const note = typeof req.body?.note === 'string' ? req.body.note.slice(0, 1000) : ''
+    const link = await query<{ IDligne_commande_ETM: number | null }>(
+      `SELECT IDligne_commande_ETM FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
+    )
+    const sstLineId = n(link[0]?.IDligne_commande_ETM)
+    if (sstLineId <= 0) { res.status(404).json({ error: 'Ligne not found' }); return }
+    const commandeId = await loadCommandeIdForLine(lineId)
+    const g = commandeId === null ? null : await loadCommandeGuard(commandeId)
+    if (!g || g.IDcommande_ETM <= 0) { res.status(404).json({ error: 'Commande not found' }); return }
+    await refuserUrgence({
+      idcommande: null, idligne: sstLineId, note,
+      par: { id: req.userId, nom: await nomUtilisateur(req.userId) }, aujourdhui: isoAujourdhui(),
+    })
+    res.json({ ok: true })
+  } catch (err) {
+    if (err instanceof UrgenceRefusee) { res.status(err.status).json({ error: err.code, message: err.message }); return }
+    console.error('Error refusing urgency (TRM):', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })

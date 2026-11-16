@@ -20,6 +20,7 @@ import { query } from '../../hfsql-auto.js'
 import { esc, sstDelaiSets, STATUT_ATTENTE_DELAI, STATUT_NON_ENVOYE } from '../../sst-shared.js'
 import { noterDelaiRecu } from '../../delai-sst.js'
 import { dateDeReference, enregistrerReportDelai, estUnReportDelai, refusAvanceDelai } from '../../report-delai-sst.js'
+import { noterReponseUrgence } from '../../urgence-sst.js'
 import type { Decision, PointMesure, StatutPoint } from '../competences.js'
 import { enregistrerRetour } from '../retours.js'
 import { CHAMP_RECEPTION, lireReception, lotNormalise, receptionnerProposition, retirerPreRemplissage, texteReception } from './reception-bl.js'
@@ -275,6 +276,8 @@ export async function ecrireDelai(idligne: number, delai: string, par: Auteur, c
   if (avant.sstatut === STATUT_ATTENTE_DELAI && r.sstatut !== STATUT_ATTENTE_DELAI && r.sstatut !== STATUT_NON_ENVOYE) {
     await noterDelaiRecu(idligne, r.date_livraison || null, par)
   }
+  // The dyer moved the délai it had given while an urgency awaited: that is its answer.
+  await noterReponseUrgence(Math.trunc(idligne), avant.dateLivraison, r.date_livraison, par)
   if (estUnReportDelai(avant.dateLivraison, avant.dateDelai, r.date_livraison)) {
     const cite = (citation ?? '').replace(/\s+/g, ' ').trim()
     try {

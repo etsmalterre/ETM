@@ -24,7 +24,7 @@
 // the control step: something does hold them.
 
 import { ajouterJoursOuvres, joursOuvresEntre, type Periode } from './jours-ouvres.js'
-import { CONTROLE_QUALITE_JOURS, MARGE_TRICOTEUR_MAX_JOURS, RESERVE_MALTERRE_JOURS, fermetures, standards, tricotageJours, type StandardsSst } from './delais-standards.js'
+import { CONTROLE_QUALITE_JOURS, RESERVE_MALTERRE_JOURS, fermetures, standards, tricotageJours, type StandardsSst } from './delais-standards.js'
 import { MATEL_IDSOUS_TRAITANT } from './pricing-sst.js'
 import { SEUIL_EXPEDIE } from './statut-ligne-client.js'
 
@@ -51,13 +51,14 @@ export interface EtapeDelai {
   /** working days the current délai is behind that engagement (« retard MATEL 3 j »), in the partner's
    *  calendar; absent / 0 = on time */
   retard?: number
-  /** an estimated step only: the urgency asked of that partner and still awaited (lib/urgence-sst.ts) */
+  /** the urgency asked of that partner and still awaited (lib/urgence-sst.ts), on a step without a délai
+   *  as on one that has its délai (« can you go faster? ») */
   urgence?: UrgenceEtape
 }
 
-/** An urgency asked of the partner of a step still without a délai: its answer is awaited until
- *  `reponseAttendue`, then it is ours to chase. Dates YYYYMMDD. */
-export interface UrgenceEtape { demandeeLe: string; reponseAttendue: string; aRelancer: boolean }
+/** An urgency asked of the partner of a step: its answer is awaited until `reponseAttendue`, then it is
+ *  ours to chase. Dates YYYYMMDD; `dateSouhaitee` the date we wish. */
+export interface UrgenceEtape { demandeeLe: string; reponseAttendue: string; aRelancer: boolean; dateSouhaitee?: string | null }
 
 export interface DelaiAuPlusTot {
   /** YYYYMMDD */
@@ -68,19 +69,16 @@ export interface DelaiAuPlusTot {
   sansMatiere: boolean
   /** the doctrine's spending of the margin, when a later date is retained */
   plan?: PlanDoctrine | null
-  /** what to ask the knitter if the knitting were launched today: its standard + its share of the margin,
-   *  from today in its calendar (the launch dialog's proposal); null without a knitting step */
-  tricotageDemande?: { jours: number; date: string } | null
 }
 
 /** How the doctrine would spend the margin of a date retained (§4): shown, never written (Vincent
- *  2026-10-29: « la doctrine propose, l'opérateur décide »). */
+ *  2026-10-29: « la doctrine propose, l'opérateur décide »). No partner is handed margin (the knitter
+ *  no longer is, Vincent 2026-11-16: a knitting order goes out without a date, the knitter gives its
+ *  délai): the whole margin is écru waiting in stock with us, i.e. the dyeing's launch date. */
 export interface PlanDoctrine {
   /** working days between the earliest date and the date retained (Malterre's calendar) */
   marge: number
-  /** the knitter's délai to ask: standard + its share, null without a knitting step */
-  tricotage: { standard: number; marge: number; jours: number; fin: string } | null
-  /** what is left after the knitter: the écru waits in stock with us (working days) */
+  /** the margin, all of it: the écru waits in stock with us (working days) */
   attenteEcru: number
   /** the dyeing's launch date (§5), null on an écru line */
   ennoblirLe: string | null
@@ -131,8 +129,9 @@ export interface EntreeDelai {
   sansControle?: boolean
 }
 
-/** Matter at a partner on a launched order, in the line's unit. */
-export interface MatiereChezPartenaire { quantite: number; partenaire: string | null; delai: string | null; engagement?: string | null }
+/** Matter at a partner on a launched order, in the line's unit. `urgence`: asked of that partner on
+ *  its order line and still awaiting its answer (lib/urgence-sst.ts). */
+export interface MatiereChezPartenaire { quantite: number; partenaire: string | null; delai: string | null; engagement?: string | null; urgence?: UrgenceEtape | null }
 
 const pos = (x: number) => (Number.isFinite(x) && x > 0 ? x : 0)
 
@@ -179,10 +178,12 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
    *  a délai: the partner's standard from today, as an estimate. */
   const chezPartenaire = (libelle: string, m: { partenaire: string | null; delai: string | null; engagement?: string | null; urgence?: UrgenceEtape | null }, standard: number, ferm: Periode[]): EtapeDelai => {
     const delai = m.delai && /^\d{8}$/.test(m.delai) ? m.delai : null
+    // While an urgency is asked the step stays what it was (the standard as an estimate, or the délai
+    // given): nobody promised better yet.
+    const urgence = m.urgence ? { urgence: m.urgence } : {}
     if (!delai) {
       const au = ajouterJoursOuvres(e.aujourdhui, standard, ferm)
-      // The standard stays the estimate while an urgency is asked: nobody promised better yet.
-      return { libelle, du: e.aujourdhui, au, jours: standard, estime: true, partenaire: m.partenaire, delai: null, ...(m.urgence ? { urgence: m.urgence } : {}) }
+      return { libelle, du: e.aujourdhui, au, jours: standard, estime: true, partenaire: m.partenaire, delai: null, ...urgence }
     }
     const au = delai > e.aujourdhui ? delai : e.aujourdhui
     // How late the partner already is on its own engagement (its reports, LIVA #1364).
@@ -190,7 +191,7 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
     const retard = engagement && delai > engagement ? joursOuvresEntre(engagement, delai, ferm) : 0
     return {
       libelle, du: e.aujourdhui, au, jours: joursOuvresEntre(e.aujourdhui, au, ferm), partenaire: m.partenaire, delai, depasse: delai < e.aujourdhui,
-      ...(engagement ? { engagement } : {}), ...(retard > 0 ? { retard } : {}),
+      ...(engagement ? { engagement } : {}), ...(retard > 0 ? { retard } : {}), ...urgence,
     }
   }
   const suite = (depart: string, avecTricot: boolean, tricotLance?: EtapeDelai): EtapeDelai[] => {
@@ -246,48 +247,31 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
   if (!decisive || decisive.length === 0) return { date: e.aujourdhui, etapes: [], sansMatiere: false }
   if (e.enCours) {
     // En cours: the date the matter can really be ready, no reserve; read against the engagement.
-    // The launch dialog still asks the knitter its standard (no margin to spend here).
-    const t = decisive.find((x) => x.libelle === 'Tricotage' && !x.partenaire)
-    return {
-      date: fin(decisive), etapes: decisive, sansMatiere: rien > 0, plan: null,
-      tricotageDemande: t ? { jours: t.jours, date: ajouterJoursOuvres(e.aujourdhui, t.jours, e.tricoteur.fermetures) } : null,
-    }
+    return { date: fin(decisive), etapes: decisive, sansMatiere: rien > 0, plan: null }
   }
   const debutReserve = fin(decisive)
   const plan = planDoctrine(e, decisive, ajouterJoursOuvres(debutReserve, RESERVE_MALTERRE_JOURS, e.fermeturesMalterre ?? []))
-  const jTricot = plan?.tricotage?.jours ?? decisive.find((x) => x.libelle === 'Tricotage')?.jours ?? null
-  const tricotageDemande = jTricot != null
-    ? { jours: jTricot, date: ajouterJoursOuvres(e.aujourdhui, jTricot, e.tricoteur.fermetures) }
-    : null
   const date = ajouterJoursOuvres(debutReserve, RESERVE_MALTERRE_JOURS, malterre)
   return {
     date,
     etapes: [...decisive, { libelle: 'Réserve Malterre', du: debutReserve, au: date, jours: RESERVE_MALTERRE_JOURS }],
     sansMatiere: rien > 0,
     plan,
-    tricotageDemande,
   }
 }
 
-/** Doctrine §4 on the deciding portion: the knitter gets the margin first, up to 4 working weeks on top
- *  of its standard; the rest is the écru waiting with us, i.e. the dyeing's launch date. The dyer always
- *  gets its standard alone. Null without a date retained beyond the earliest one. */
+/** Doctrine §4 on the deciding portion: every partner gets its standard alone (the knitter too since
+ *  2026-11-16: its order names no date, it gives its délai), so the whole margin is the écru waiting
+ *  with us after the knitting, i.e. the dyeing's launch date. Null without a date retained beyond the
+ *  earliest one. */
 function planDoctrine(e: EntreeDelai, etapes: EtapeDelai[], auPlusTot: string): PlanDoctrine | null {
   const d = e.dateRetenue
   if (!d || !/^\d{8}$/.test(d) || d <= auPlusTot) return null
   const marge = joursOuvresEntre(auPlusTot, d, e.fermeturesMalterre ?? [])
   if (marge <= 0) return null
-  const trico = etapes.find((x) => x.libelle === 'Tricotage')
   const enno = etapes.find((x) => x.libelle === 'Ennoblissement')
-  const part = trico ? Math.min(marge, MARGE_TRICOTEUR_MAX_JOURS) : 0
-  const tricotage = trico
-    ? { standard: trico.jours, marge: part, jours: trico.jours + part, fin: ajouterJoursOuvres(trico.du, trico.jours + part, e.tricoteur.fermetures) }
-    : null
-  const attenteEcru = marge - part
-  const ennoblirLe = enno
-    ? ajouterJoursOuvres(tricotage?.fin ?? enno.du, attenteEcru, e.fermeturesMalterre ?? [])
-    : null
-  return { marge, tricotage, attenteEcru, ennoblirLe }
+  const ennoblirLe = enno ? ajouterJoursOuvres(enno.du, marge, e.fermeturesMalterre ?? []) : null
+  return { marge, attenteEcru: marge, ennoblirLe }
 }
 
 // ── Partners (I/O) ──────────────────────────────────────────

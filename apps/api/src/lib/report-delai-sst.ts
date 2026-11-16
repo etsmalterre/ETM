@@ -14,7 +14,10 @@
 //     service), never by moving the délai — 30 délais had been set to « the day
 //     the rolls came in », which turned a half delivery red. Two exceptions: the
 //     bon de commande is not out yet (Non_Envoye, the date is hypothetical), and
-//     a typo the same day the date was given (delai_recu / report_delai today);
+//     a typo the same day the date was given (delai_recu / report_delai today).
+//     And one case where we asked for it: an urgency awaits the partner's answer
+//     (lib/urgence-sst.ts, Vincent 2026-11-16) — the earlier délai is that answer,
+//     the engagement (`date_delai`) stays the first promise;
 //   - the delay a line carries = working days from the engagement to the current
 //     date, in the sous-traitant's own calendar, MINUS the days of the reports
 //     due to the client (retardClientReports): never the sous-traitant's. Clients › Commandes prints it
@@ -26,6 +29,7 @@ import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 import { joursOuvresEntre, type Periode } from './jours-ouvres.js'
 import type { Imputable } from './delai-sst.js'
+import { urgenceEnAttente } from './urgence-sst.js'
 
 /** Who a line's report is due to. The order's « Repousser » (délai not given
  *  yet, lib/delai-sst.ts) keeps its two: no client waits before the dyeing. */
@@ -83,6 +87,8 @@ export async function refusAvanceDelai(idligne: number, cur: { date_livraison: u
   if (!estUneAvanceDelai(cur.date_livraison, cur.date_delai, nouvelle)) return null
   if (String(cur.sstatut ?? '').trim() === 'Non_Envoye') return null
   if (await delaiDonneAujourdhui(idligne, sql)) return null
+  // We asked for it: an urgency awaits the partner's answer, and an earlier délai IS that answer.
+  if (await urgenceEnAttente(idligne, cur.date_livraison, sql)) return null
   return MESSAGE_AVANCE_DELAI(dateDeReference(cur.date_livraison, cur.date_delai))
 }
 

@@ -23,6 +23,7 @@ import {
   MessageSquare,
   AlertTriangle,
   CheckCircle2,
+  CornerDownRight,
   Check,
   Eye,
   Clock,
@@ -54,7 +55,6 @@ import {
   Barcode,
   BadgeEuro,
   FlaskConical,
-  Zap,
 } from 'lucide-react'
 import { ML_NON_FACTURES_PERMISSION, MlNonFacturesDialog } from '@/components/shared/MlNonFactures'
 import { KnitIcon } from '@/components/icons/KnitIcon'
@@ -75,6 +75,8 @@ import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { cn } from '@/lib/utils'
 import { LineStat, SOULIGNE_INFO } from '@/components/commandes/LineStat'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
+import { UrgenceChoix, URGENCE_VIDE, urgenceSaisieManque, type UrgenceSaisie } from '@/components/sst/Urgence'
+import { UrgenceIcon } from '@/components/sst/UrgenceIcon'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateCommandeClientCaches, invalidateStockCaches, invalidateSstCommandeCaches } from '@/lib/cache-sync'
@@ -218,8 +220,9 @@ interface AuPlusTot {
     partenaire?: string | null; delai?: string | null; depasse?: boolean
     /** that partner's first délai on its order, and how many working days its current one is behind (LIVA #1364) */
     engagement?: string | null; retard?: number
-    /** an estimated step: the urgency asked of that partner and still awaited (API lib/urgence-sst.ts), YYYYMMDD */
-    urgence?: { demandeeLe: string; reponseAttendue: string; aRelancer: boolean }
+    /** the urgency asked of that partner and still awaiting its answer, on a step with or without a délai
+     *  (API lib/urgence-sst.ts), YYYYMMDD */
+    urgence?: { demandeeLe: string; reponseAttendue: string; aRelancer: boolean; dateSouhaitee?: string | null }
   }[]
   /** part of the quantity has no matter reserved */
   sansMatiere: boolean
@@ -230,12 +233,9 @@ interface AuPlusTot {
   /** how the doctrine (§4) would spend that margin: proposed, never written */
   plan?: {
     marge: number
-    tricotage: { standard: number; marge: number; jours: number; fin: string } | null
     attenteEcru: number
     ennoblirLe: string | null
   } | null
-  /** what to ask the knitter if launched today: standard + its share of the margin (launch dialog) */
-  tricotageDemande?: { jours: number; date: string } | null
 }
 
 const fmtJours = (n: number) => `${String(n).replace('.', ',')} j`
@@ -315,12 +315,17 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
                     {e.engagement && <span className="font-normal text-muted-foreground"> (engagement {formatHfsqlDate(e.engagement).slice(0, 5)})</span>}
                   </p>
                 )}
-                {/* An urgency asked of that partner while it has given no délai (Vincent 2026-11-16). */}
+                {/* An urgency asked of that partner (Vincent 2026-11-16): a detail OF THIS STEP, so indented
+                    under its label behind a « ↳ », then the siren and the day it was asked — nothing else
+                    while it is awaited; overdue, the action. */}
                 {e.urgence && (
-                  <p className={cn('pl-[18px] text-[11px]', e.urgence.aRelancer ? 'font-medium text-red-600' : 'text-muted-foreground')}>
-                    {e.urgence.aRelancer
-                      ? `Urgence demandée le ${formatHfsqlDate(e.urgence.demandeeLe).slice(0, 5)}, sans réponse : relancer${e.partenaire ? ` ${e.partenaire}` : ''}`
-                      : `Urgence demandée le ${formatHfsqlDate(e.urgence.demandeeLe).slice(0, 5)} · réponse attendue le ${formatHfsqlDate(e.urgence.reponseAttendue).slice(0, 5)}`}
+                  <p className={cn('flex items-center gap-1.5 pl-[18px] text-[11px]', e.urgence.aRelancer ? 'font-medium text-red-600' : 'text-muted-foreground')}>
+                    <CornerDownRight className="h-3 w-3 flex-shrink-0 text-muted-foreground/60" aria-hidden />
+                    <UrgenceIcon />
+                    <span>
+                      Urgence demandée le {formatHfsqlDate(e.urgence.demandeeLe).slice(0, 5)}
+                      {e.urgence.aRelancer ? `, sans réponse : relancer${e.partenaire ? ` ${e.partenaire}` : ''}` : ''}
+                    </span>
                   </p>
                 )}
                 </div>
@@ -2535,8 +2540,8 @@ function LineCard({
       </div>
       {enEtude && <EtudeLigneBandeau line={line} canRelancer={!isEditing} />}
       {/* An urgency asked of the knitter on the knitting this line waits for (API lib/urgence-sst.ts,
-          Vincent 2026-11-16): asked and chased on the knitting order; here it says why a date that
-          cannot be held is not red, or that the knitter must be chased. */}
+          Vincent 2026-11-16): asked and chased on the knitting order; here the siren says why a date
+          that cannot be held is not red, or that the knitter must be chased. */}
       {(() => {
         const etape = line.statut?.etat === 'expediee' || line.statut?.etat === 'soldee' ? null : line.au_plus_tot?.etapes.find((e) => e.urgence)
         const u = etape?.urgence
@@ -2545,11 +2550,12 @@ function LineCard({
         const due = u.aRelancer && line.urgence === 'rouge'
         return (
           <div className="flex items-center gap-1.5 mt-2 text-[11px]">
-            <Zap className={cn('h-3 w-3 flex-shrink-0', due ? 'text-red-600' : 'text-muted-foreground/60')} />
+            <UrgenceIcon />
             <span className={cn('truncate', due ? 'text-red-600 font-medium' : 'text-muted-foreground')}>
               Urgence demandée{qui} le {formatHfsqlDate(u.demandeeLe).slice(0, 5)}
+              {u.dateSouhaitee ? ` pour le ${formatHfsqlDate(u.dateSouhaitee).slice(0, 5)}` : ''}
               {u.aRelancer
-                ? ` · sans réponse depuis le ${formatHfsqlDate(u.reponseAttendue).slice(0, 5)} : relancer sur la commande de tricotage`
+                ? ` · sans réponse depuis le ${formatHfsqlDate(u.reponseAttendue).slice(0, 5)} : relancer sur la commande ${etape?.libelle === 'Ennoblissement' ? 'd’ennoblissement' : 'de tricotage'}`
                 : ` · réponse attendue le ${formatHfsqlDate(u.reponseAttendue).slice(0, 5)}`}
             </span>
           </div>
@@ -2775,8 +2781,8 @@ function AffectationDrawer({
     if (soldee || (ligne.statut?.etat !== 'a_lancer' && ligne.statut?.etat !== 'planifiee')) return null
     const ici = !!ligne.date_lancement && (ligne.etape_lancement === etape || !ligne.etape_lancement)
     if (!ici && !aPlanifier[etape]) return null
-    // The doctrine's dyeing launch date (§4: what is left of the margin after the knitter, the écru
-    // waiting with us), proposed in the dialog, never written by itself (Vincent 2026-10-29).
+    // The doctrine's dyeing launch date (§4: the margin is the écru waiting with us after the knitting),
+    // proposed in the dialog, never written by itself (Vincent 2026-10-29).
     const plan = ligne.au_plus_tot?.plan
     const proposee = etape === 'ennoblissement' && plan?.ennoblirLe && plan.attenteEcru > 0
       ? { date: plan.ennoblirLe, pourquoi: `${plan.attenteEcru} j ouvrés de marge laissés à l’écru en stock, selon la doctrine` }
@@ -5544,6 +5550,8 @@ function CreateEnnoblisseurOrderDialog({
   const ligneId = ligne.IDligne_commande_client
   const [dateCommande, setDateCommande] = useState(() => new Date().toISOString().slice(0, 10))
   const [dateLivraison, setDateLivraison] = useState('')
+  // « Commande urgente » (API lib/urgence-sst.ts): off by default, the dyer gives its délai.
+  const [urgence, setUrgence] = useState<UrgenceSaisie>(URGENCE_VIDE)
   const [commentaire, setCommentaire] = useState('')
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState(false)
@@ -5622,14 +5630,15 @@ function CreateEnnoblisseurOrderDialog({
     lastSelectedRef.current = id
   }
 
-  const canSubmit = nbLigne > 0 && dateCommande.length > 0 && !busy
+  const urgenceManque = urgenceSaisieManque(urgence, dateLivraison || null)
+  const canSubmit = nbLigne > 0 && dateCommande.length > 0 && !urgenceManque && !busy
   const blocage = pourLigne.length === 0
     ? `Aucune pièce réservée à la ligne chez ${location.location_nom}`
     : nbLigne === 0
       ? 'Sélectionnez les pièces réservées à envoyer'
       : dateCommande.length === 0
         ? 'Indiquez la date de commande'
-        : null
+        : urgenceManque
   const handleSubmit = async () => {
     if (!canSubmit) return
     setError(null)
@@ -5643,6 +5652,7 @@ function CreateEnnoblisseurOrderDialog({
           date_livraison: dateLivraison ? inputDateToHfsql(dateLivraison) : undefined,
           commentaire: commentaire.trim() || undefined,
           stockEcruIds: Array.from(selected),
+          ...(urgence.active ? { urgence: { date_souhaitee: urgence.date } } : {}),
         }),
       })
       onSuccess()
@@ -5741,6 +5751,7 @@ function CreateEnnoblisseurOrderDialog({
                 <label className="text-xs font-medium text-muted-foreground">Date d’expédition</label>
                 <input type="date" value={dateLivraison} onChange={(e) => setDateLivraison(e.target.value)} className={inputCls} />
               </div>
+              <UrgenceChoix value={urgence} onChange={setUrgence} disabled={busy} qui={location.location_nom || 'l’ennoblisseur'} avant={dateLivraison || null} />
               <div className="flex-1 flex flex-col gap-1">
                 <label className="text-xs font-medium text-muted-foreground">Commentaire</label>
                 <textarea value={commentaire} onChange={(e) => setCommentaire(e.target.value)} disabled={busy}
@@ -5951,10 +5962,9 @@ function CreateTricotageOrderDialog({
   const [affecteStr, setAffecteStr] = useState('')
   const [stockStr, setStockStr] = useState('')
   const [choix, setChoix] = useState<ChoixLots>({})
-  // The date asked of the knitter, proposed by the doctrine (standard + the line's margin, §4); the
-  // knitter still confirms its own délai (Attente délai). '' = none asked.
-  const propose = ligne.au_plus_tot?.tricotageDemande ?? null
-  const [dateDemandee, setDateDemandee] = useState(() => propose ? hfsqlDateToInput(propose.date) : '')
+  // No date is asked of the knitter: it gives its délai (Attente délai). Pressed, the order goes out
+  // « en urgence » with the date wished (API lib/urgence-sst.ts, Vincent 2026-11-16).
+  const [urgence, setUrgence] = useState<UrgenceSaisie>(URGENCE_VIDE)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -6018,7 +6028,8 @@ function CreateTricotageOrderDialog({
   const projected = dim === 'metrage' ? reserved + affecte * rendement : reserved + affecte
   const fil = couvertureFils(yarns, total, choix)
   const surReserve = affecte > couvertKg + 0.05
-  const canSubmit = affecte > 0 && !surReserve && stock >= 0 && fil.couvert && !busy
+  const urgenceManque = urgenceSaisieManque(urgence)
+  const canSubmit = affecte > 0 && !surReserve && stock >= 0 && fil.couvert && !urgenceManque && !busy
   const blocage = !(couvertKg > 0)
     ? `Aucun fil réservé à la ligne chez ${location.magasin_nom}`
     : !(affecte > 0)
@@ -6027,7 +6038,7 @@ function CreateTricotageOrderDialog({
         ? `Au plus ${fmtNum(couvertKg, 1)} kg pour la commande : c’est ce que couvre le fil réservé`
         : !fil.couvert
           ? 'Les lots cochés ne couvrent pas tout le fil'
-          : null
+          : urgenceManque
 
   const handleSubmit = async () => {
     if (!canSubmit) return
@@ -6038,7 +6049,7 @@ function CreateTricotageOrderDialog({
         method: 'POST',
         body: JSON.stringify({
           IDsous_traitant: location.magasin_id, poids_affecte: affecte, poids_stock: stock, lots: fil.lots,
-          ...(dateDemandee ? { date_demandee: inputDateToHfsql(dateDemandee) } : {}),
+          ...(urgence.active ? { urgence: { date_souhaitee: urgence.date } } : {}),
         }),
       })
       onSuccess()
@@ -6117,15 +6128,9 @@ function CreateTricotageOrderDialog({
                   {fmtNum(total, 1)} <span className="text-sm font-medium text-muted-foreground">kg</span>
                 </span>
               </div>
-              <div className="px-4 py-3 border-t border-border/60 space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Date demandée au tricoteur</label>
-                <input type="date" value={dateDemandee} onChange={(e) => setDateDemandee(e.target.value)} disabled={busy} autoComplete="off"
-                  className="w-full h-9 px-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
-                <p className="text-[11px] text-muted-foreground">
-                  {propose
-                    ? `Proposée : ${propose.jours} j ouvrés${ligne.au_plus_tot?.plan?.tricotage?.marge ? `, dont ${ligne.au_plus_tot.plan.tricotage.marge} j de marge de la ligne` : ''}. Le tricoteur confirme son délai.`
-                    : 'Le tricoteur confirme son délai.'}
-                </p>
+              <div className="px-4 py-3 border-t border-border/60">
+                <UrgenceChoix value={urgence} onChange={setUrgence} disabled={busy}
+                  qui={location.magasin_id === 1 ? 'Tricotage Malterre' : location.magasin_nom || 'le tricoteur'} />
               </div>
             </div>
 

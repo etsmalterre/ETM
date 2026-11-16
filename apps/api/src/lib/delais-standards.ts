@@ -13,8 +13,6 @@ export const RESERVE_MALTERRE_JOURS = 7.5
  *  « Valider le lot » (journal_activite, 53 lots received 2026-10-01..11-02): median 3, p75 6, p90 11
  *  working days, 17 more still open (the long ones). 5 = the decided standard, Malterre working days. */
 export const CONTROLE_QUALITE_JOURS = 5
-/** Doctrine §4: the knitter gets the margin first, up to 4 working weeks. */
-export const MARGE_TRICOTEUR_MAX_JOURS = 20
 
 export interface StandardsSst {
   /** dyer: working days */

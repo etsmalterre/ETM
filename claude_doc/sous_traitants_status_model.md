@@ -174,8 +174,10 @@ Attente délai / contrôle / reprise / soumission mean nothing there.
 | À envoyer | external knitters only (4 orders in 2 years), the bon de commande chain |
 
 **Attente délai at Tricotage Malterre (Vincent 2026-11-16).** The knitter gives
-its délai like a dyer does; we only say the date we ask for (`date_demandee`,
-doctrine des délais). Measured before the change on the 14 TRM orders since
+its délai like a dyer does; **a knitting order names no date at all** (the
+« date demandée » of 2026-10-29 was dropped the same day: on the 3 lines that
+carried one it was the plain standard, and TRM answered earlier both times it
+answered) — the one date we may ask is an urgency's, below. Measured before the change on the 14 TRM orders since
 2026-10-22: TRM answered in 0 or 1 working day when it answered (5 orders), but
 5 others carried a « délai » typed on the ETM side and frozen as TRM's
 engagement, one was knitted and closed without any date (9149) and one sat
@@ -193,20 +195,42 @@ three weeks without a date nor an alert (9127, cols / bandes). So:
 - **Only TRM gives the délai**, on its own screen (`PUT
   /commandes-trm/lignes/:id/delai`, recorded as « Délai reçu » on the first
   date whatever the line's `sstatut`). On the ETM side a TRM line without a
-  délai takes the **date demandée**: the line form's date field is labelled so
-  and writes `date_demandee`; a new line is born « Attente_Delai » with no
+  délai has **no date field**: a new line is born « Attente_Delai » with no
   date; `PUT /lignes/:id` answers 409 `delai_par_trm` to a first
   `date_livraison`. Once TRM has answered, the ETM side keeps the report rules
-  (#1364). External knitters and dyers are unchanged.
-- **With an urgency asked of the knitter** (`lib/urgence-sst.ts`, doctrine des délais
-  §5 quinquies, landed the same day): both live on a knitting line without a délai.
-  One rule, `urgenceAvecDemande()`: an urgency whose answer did not come is red
-  (« Urgence demandée : relancer le tricoteur »); while the answer is awaited on
-  EVERY line still without its délai, « Attente délai » is not red even past its
-  own chase day — the knitter was asked again through the urgency, and waiting is
+  (#1364). External knitters and dyers are unchanged. The column
+  `ligne_commande_sous_traitant.date_demandee` (0048) is no longer read nor
+  written.
+- **« Passer en urgence »** (`lib/urgence-sst.ts`, doctrine des délais §5
+  quinquies): on a knitting line, when the order is prepared (« Commande
+  urgente » switch of the launch dialog and of a new line) or at any time (the
+  « Passer en urgence » switch of « Modifier la ligne », beside the date — never
+  a link on every card: it is exceptional), with or without its délai. One field, the date wished; the answer is due after the
+  knitter's own answer time (TRM 1 working day, another knitter 2), never typed.
+  **The same on a dyer's order since the same day** (2 working days to answer):
+  the switch in « Modifier la ligne » and in « Ennoblir », the row in the dyer's
+  « Prochaines étapes » card under « En traitement » and the open lots, the
+  colour through `urgenceCommande()` of `lib/cycle-ennoblissement.ts`.
+  The answer is the knitter's délai — given, or brought EARLIER than the one in
+  place (the one case `refusAvanceDelai` lets through; the engagement stays the
+  first promise) — or « Refusée ». One rule for the card, `urgenceAvecDemande()`:
+  an urgency whose answer did not come is red (« Urgence demandée : relancer le
+  tricoteur »); while the answer is awaited on EVERY line still without its
+  délai, « Attente délai » is not red even past its own chase day — waiting is
   never red; a line nobody asked about keeps the order on the délai chase. The
-  card then prints « Urgence demandée · réponse attendue le … » instead of its
-  relance date.
+  « Prochaines étapes » card gives the urgency awaited **a row of its own**
+  (`UrgenceEnCours`, like an open lot on a dyer's order): the siren, « souhaité
+  le … », « N j sur M » over one segment per working day the knitter gets to
+  answer, red « Relancer … » the day after, and the gestures « Relancer » /
+  « Refusée ». The knitting keeps its own bar above it; in « Attente délai » with
+  every undated line pressed, the urgency's bar is the only one (same question).
+  Each gesture that concerns the partner (asked, chased, given up) opens a
+  pre-filled mail to the contacts « envoi commande » (`UrgenceMail`); sent, it is
+  a fact `mail` of `urgence_sst`, never an `envoi_email` row of type 13.
+  Once answered the line stays « urgente » until delivered: the siren
+  (`components/sst/UrgenceIcon.tsx`) on the line (a plain mention) and in the
+  bottom-right corner of the list card.
+  The bon de commande prints « URGENT · souhaité le … » while it is awaited.
 - Fixed on the way: `sstDelaiSets` flipped an « Attente_Delai » line to
   « En_Cours » on ANY patch, even one without a date (a quantity edited while
   the délai was awaited recorded a false « Délai reçu »); only a date flips now.
@@ -225,8 +249,8 @@ working days, closures included):
 
 | Status | The card says |
 |---|---|
-| Fil à affecter | lines without yarn, working days since the order, « Sortie prévue le … » (or the date we asked for) |
-| Attente délai | the dyers' block: working days since the demand over the days granted, « Relance le … » (red: « Relancer Tricotage Malterre : N j de retard »), « Demandé pour le … », Relancer / Repousser |
+| Fil à affecter | lines without yarn, working days since the order, « Sortie prévue le … » |
+| Attente délai | the dyers' block: working days since the demand over the days granted, « Relance le … » (red: « Relancer Tricotage Malterre : N j de retard »), the urgency awaited if one was asked, Relancer / Repousser |
 | À lancer | « OF à créer par Tricotage Malterre », working days since the order, « Sortie prévue le … » |
 | En tricotage | « Sortie prévue le … » + J-N (« +N j de retard ») and the dyer's « En traitement » segments: one per working day from the ORDER's date to the earliest open délai, the days behind us coloured (sky, amber / red with the order), legend « Tricoteur N j »; later délais of the other lines named |
 | Soldée par TRM | « vérifier la réception, puis clôturer » |

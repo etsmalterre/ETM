@@ -93,12 +93,14 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
     sql<{ id: number; lot: string }[]>`
       SELECT idsuivilot AS id, trim(lot::text) AS lot FROM suivilot WHERE idcommande_sous_traitant = ${idcommande} ORDER BY idsuivilot`,
     // A knitting line names an écru reference (type 1), a rectiligne one (type 4).
-    sql<{ type: string; le: Date; reponse: string | null; souhaitee: string | null; note: string | null; par: string | null; ref: string | null }[]>`
+    sql<{ type: string; le: Date; reponse: string | null; souhaitee: string | null; avant: string | null; donne: string | null; note: string | null; par: string | null; ref: string | null; geste: string | null; destinataires: string | null }[]>`
       SELECT u.type, u.le, to_char(u.reponse_attendue, 'YYYY-MM-DD') AS reponse, to_char(u.date_souhaitee, 'YYYY-MM-DD') AS souhaitee,
-             u.note, u.par, re.reference AS ref
+             to_char(u.delai_avant, 'YYYY-MM-DD') AS avant, to_char(u.delai_donne, 'YYYY-MM-DD') AS donne,
+             u.note, u.par, u.geste, u.destinataires, COALESCE(re.reference, rf.reference) AS ref
       FROM urgence_sst u
       LEFT JOIN ligne_commande_sous_traitant l ON l.idligne_commande_sous_traitant = u.idligne_commande_sous_traitant
       LEFT JOIN ref_ecru re ON re.idref_ecru = l.idreference AND l.type = 1
+      LEFT JOIN ref_fini rf ON rf.idref_fini = l.idreference AND l.type = 2
       WHERE u.idcommande_sous_traitant = ${idcommande} ORDER BY u.le, u.id`,
   ])
 
@@ -186,11 +188,29 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
 
   // Urgencies asked of the sous-traitant on a line (lib/urgence-sst.ts).
   for (const u of urgences) {
+    // The mail that told the sous-traitant (lib/urgence-sst.ts noterMailUrgence).
+    if (u.type === 'mail') {
+      out.push(commande({
+        le: iso(u.le), type: 'urgence',
+        titre: u.geste === 'levee' ? 'Annulation de l’urgence envoyée par e-mail' : u.geste === 'relance' ? 'Relance de l’urgence envoyée par e-mail' : 'Demande d’urgence envoyée par e-mail',
+        detail: [u.ref?.trim() || null, u.destinataires ? `À ${u.destinataires}` : null].filter(Boolean).join(' — ') || null,
+        par: u.par, auteur: qui(u.par),
+      }))
+      continue
+    }
     const attendue = u.reponse ? `réponse attendue le ${jjmm(u.reponse)}` : null
     const souhaitee = u.souhaitee ? `souhaité pour le ${jjmm(u.souhaitee)}` : null
+    // The partner's answer: the délai it had given, moved (earlier = it accepted).
+    const reponse = u.type === 'reponse' && u.avant && u.donne
+      ? `Urgence ${u.donne < u.avant ? 'acceptée : délai avancé' : 'sans suite : délai repoussé'} du ${jjmm(u.avant)} au ${jjmm(u.donne)}`
+      : null
     out.push(commande({
       le: iso(u.le), type: 'urgence',
-      titre: u.type === 'levee' ? 'Urgence levée' : u.type === 'relance' ? 'Urgence relancée' : 'Urgence demandée',
+      titre: reponse ?? (u.type === 'levee' ? 'Urgence annulée'
+        : u.type === 'refus' ? `Urgence refusée par le sous-traitant${u.avant ? ` : délai maintenu au ${jjmm(u.avant)}` : ''}`
+        : u.type === 'relance' ? 'Urgence relancée'
+        : u.type === 'reponse' ? 'Réponse à l’urgence'
+        : 'Passage en urgence'),
       detail: [u.ref?.trim() || null, souhaitee, attendue, u.note].filter(Boolean).join(' — ') || null,
       par: u.par, auteur: qui(u.par),
     }))

@@ -50,6 +50,7 @@ import { consumedEcruIds } from './fini-sources.js'
 import { faitsReprises } from './reprises.js'
 import { clientsDesLots, cleLotLigne } from './rapport-controle-lot.js'
 import { echeanceDelai, lireFaitsDelai, relanceDue, derniereRelance, historiqueDelai, type EvenementDelai, type FaitsDelai } from './delai-sst.js'
+import { urgenceDemandee, urgencesLignes, type UrgenceLigne } from './urgence-sst.js'
 import { natureInferee, naturesDemandees, type NatureSoumission } from './soumission-lot.js'
 import { CONTROLES_PAR_DEFAUT, controlesDeRef, mesuresManquantes, type ControlesRef } from './controles-lot.js'
 import { colorisAControler, rondsZero, rondZeroDe, type RondZero } from './coloris-lot.js'
@@ -326,6 +327,18 @@ export interface CommandeFait {
   lots: LotFait[]
   /** Écru pieces still at the dyer (handed over, not back dyed): the « solde ». */
   ecruChezTeinturier: number
+  /** Urgencies asked of the dyer on its open lines (lib/urgence-sst.ts). */
+  urgences?: UrgencesCommande
+}
+
+/** What a dyer's order holds of « passer en urgence » (lib/urgence-sst.ts, Vincent 2026-11-16: the
+ *  knitter's feature, extended to the dyer the same day). */
+export interface UrgencesCommande {
+  /** the urgencies of its open lines, awaited or answered */
+  lignes: Pick<UrgenceLigne, 'etat' | 'reponseAttendue'>[]
+  /** every open line still without a délai was pressed and awaits its answer: « Attente délai » and
+   *  the urgency are then ONE question, on the urgency's clock */
+  couvreAttente: boolean
 }
 
 /** A lot back at the dyer for a reprise (LIVA #1377). */
@@ -354,6 +367,8 @@ export interface EtatCommande {
   traitement?: EtatTraitement
   /** Lots back at the dyer for a reprise. */
   enReprise?: RepriseEnCours[]
+  /** Urgencies asked of the dyer on its open lines (lib/urgence-sst.ts). */
+  urgences?: UrgencesCommande
 }
 
 /** The client answers a coloris soumission while the dyed matter waits at the
@@ -476,6 +491,12 @@ export interface EtatDelai {
 }
 
 export function etatCommande(c: CommandeFait): EtatCommande {
+  const e = etatSansUrgence(c)
+  // Nothing is pressed any more once the order is closed.
+  return c.urgences && e.etape !== 'terminee' ? { ...e, urgences: c.urgences } : e
+}
+
+function etatSansUrgence(c: CommandeFait): EtatCommande {
   const tous = c.lots.map(etatLot)
   const ouverts = tous.filter((l) => l.etape !== 'valide')
   // « En contrôle » starts with a reception (Vincent 2026-11-03: the BL in, the
@@ -534,14 +555,28 @@ export function etatCommande(c: CommandeFait): EtatCommande {
   return { etape: 'a_cloturer', main: 'nous', relance: null, lots: ouverts, solde }
 }
 
-/** Red when the chase date is today or past, amber on the last working day before. */
+/** Red when the chase date is today or past, amber on the last working day before.
+ *  An urgency asked of the dyer (lib/urgence-sst.ts) reads like the knitter's: its answer overdue is
+ *  red whatever the rest says (« relancer l'ennoblisseur »); and while it is awaited on every line
+ *  still without a délai, « Attente délai » has nothing to chase — the dyer was asked again through
+ *  the urgency, waiting is never red. */
 export function urgenceCommande(e: EtatCommande, today: string): 'late' | 'soon' | null {
-  if (!e.relance || e.etape === 'terminee') return null
+  if (e.etape === 'terminee') return null
+  const demandee = urgenceDemandeeDe(e, today)
+  if (demandee === 'a_relancer') return 'late'
+  if (e.etape === 'attente_delai' && demandee === 'attente' && e.urgences?.couvreAttente) return null
+  if (!e.relance) return null
   if (e.relance <= today) return 'late'
   // Waiting for the délai: nothing to get ahead on — the Point asks by itself (2026-11-02).
   if (e.etape === 'attente_delai') return null
   if (e.relance <= plusJoursOuvres(today, 1)) return 'soon'
   return null
+}
+
+/** The order's urgency asked of the dyer: 'attente' while an answer is awaited, 'a_relancer' once
+ *  one is overdue, null without any awaited. */
+export function urgenceDemandeeDe(e: EtatCommande, today: string): 'attente' | 'a_relancer' | null {
+  return e.urgences && e.etape !== 'terminee' ? urgenceDemandee(e.urgences.lignes, today) : null
 }
 
 /** A lot's card colour on Qualité › Suivi lots (mps_designer §41). */
@@ -671,6 +706,10 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     if (r.a && r.n && r.n > r.a) reporteClient.set(Number(r.idl), (reporteClient.get(Number(r.idl)) ?? 0) + joursOuvresDepuis(r.a, r.n))
   }
   const lineIds = lignes.map((l) => Number(l.id))
+  // Urgencies asked of the dyer, on its lines not delivered yet (lib/urgence-sst.ts). The day they are
+  // read on does not matter here: urgenceCommande() decides « overdue » on the answer day.
+  const ouverte = (l: { sstatut: string | null }) => !String(l.sstatut ?? '').startsWith('Termin')
+  const urgencesParLigne = await urgencesLignes(lignes.filter(ouverte).map((l) => ({ id: Number(l.id), delai: l.delai })), '0000-00-00', sql)
   const [lots, ecru, clientsPieces] = lineIds.length === 0 ? [[], [], []] : await Promise.all([
     sql<{
       idsuivilot: number; ligne: number; lot: string | null; etat: number; reception: string | null; idref_fini: number
@@ -879,7 +918,13 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     }
     const ouvertes = sesLignes.filter((l) => !String(l.sstatut ?? '').startsWith('Termin') && !!l.delai)
     const delais = ouvertes.map((l) => l.delai!).sort()
+    const pressees = sesLignes.filter(ouverte).map((l) => ({ l, u: urgencesParLigne.get(Number(l.id)) })).filter((x): x is { l: typeof x.l; u: UrgenceLigne } => !!x.u)
+    const sansDelai = sesLignes.filter((l) => ouverte(l) && !l.delai)
     out.set(id, {
+      ...(pressees.length > 0 ? { urgences: {
+        lignes: pressees.map(({ u }) => ({ etat: u.etat, reponseAttendue: u.reponseAttendue })),
+        couvreAttente: sansDelai.length > 0 && sansDelai.every((l) => { const u = urgencesParLigne.get(Number(l.id)); return !!u && u.etat !== 'repondue' }),
+      } } : {}),
       est_soldee: Number(e.est_soldee) === 1,
       rangStatut: Math.max(0, ...sesLignes.map((l) => rang(l.sstatut))) as 0 | 1 | 2,
       delaiFaits: faitsDelai.get(id),

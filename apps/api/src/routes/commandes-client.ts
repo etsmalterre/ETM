@@ -88,7 +88,7 @@ import { enregistrerReport, estUnReport, IMPUTABLES, reportsLigne } from '../lib
 import { ETAPES_LANCEMENT, datesLancement, fixerDateLancement, historiqueLancement, leverAuLancement, versDatePg } from '../lib/lancement-ligne.js'
 import { besoinsParStade, type StadesLigne } from '../lib/besoin-stades.js'
 import { aujourdhuiYmd, delaiAuPlusTot, FIL_ESTIME_JOURS, partenairesParDefaut, type DelaiAuPlusTot, type UrgenceEtape } from '../lib/delai-au-plus-tot.js'
-import { urgencesOuvertes } from '../lib/urgence-sst.js'
+import { demanderUrgence, enAttenteDeReponse, UrgenceRefusee, urgencesLignes } from '../lib/urgence-sst.js'
 import { ajouterJoursOuvres, joursOuvresEntre } from '../lib/jours-ouvres.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
@@ -336,6 +336,7 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
       preteSiLanceLe: pretes.get(Number(l.IDligne_commande_client)) ?? null,
       preteAuPlusTot: auPlusTot.get(Number(l.IDligne_commande_client))?.date ?? null,
       urgenceReponseLe: urgenceEtapeDe(auPlusTot.get(Number(l.IDligne_commande_client)))?.reponseAttendue ?? null,
+      urgenceChez: urgenceChezDe(auPlusTot.get(Number(l.IDligne_commande_client))),
     })
     parCommande.set(cid, arr)
   }
@@ -1918,6 +1919,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
             preteSiLanceLe: preteSiLance,
             preteAuPlusTot: auPlusTotLigne?.date ?? null,
             urgenceReponseLe: urgenceEtapeDe(auPlusTotLigne)?.reponseAttendue ?? null,
+            urgenceChez: urgenceChezDe(auPlusTotLigne),
           }, new Date())?.niveau ?? null
           : null,
       }
@@ -4772,9 +4774,12 @@ const tricoOrderBody = z.object({
   // Kg knitted for the ETM general stock — never negative.
   poids_stock: z.number().finite().min(0).default(0),
   date_commande: z.string().optional(),
-  // The date asked of the knitter (YYYYMMDD): the dialog proposes the doctrine's (standard + the line's
-  // margin, doctrine des délais §4); the knitter still confirms its own délai (Attente_Delai).
-  date_demandee: z.string().regex(/^\d{8}$/).optional(),
+  // The order goes out « en urgence » (lib/urgence-sst.ts): the date wished. Absent = no date is asked,
+  // the knitter gives its délai (Attente_Delai) — never a « date demandée » by default.
+  urgence: z.object({
+    date_souhaitee: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    note: z.string().max(1000).optional(),
+  }).optional(),
   // The yarn lots the order goes out with (stock_fil ids at the knitter) — every yarn of the
   // composition must be covered (lib/lancement-tricotage.ts).
   lots: z.array(z.number().int().positive()).default([]),
@@ -4856,7 +4861,9 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/tricotage/orders', async
       coloriEcruId: ecruColoris[0] ?? 0,
       quantiteKg: total,
       dateCommande: d.date_commande,
-      dateDemandee: d.date_demandee,
+      ...(d.urgence && req.userId !== undefined
+        ? { urgence: { dateSouhaitee: d.urgence.date_souhaitee, note: d.urgence.note, par: { id: req.userId, nom: await nomUtilisateur(req.userId) } } }
+        : {}),
     })
 
     // The line's share of the order is the yarn reserved to it that the order takes, just below
@@ -5195,8 +5202,8 @@ function commandeFilAttendue(f: FaitsLigneClient | undefined): { partenaire: str
 /** Matter of a client line already at a partner on a launched order (lib/delai-au-plus-tot.ts): the écru
  *  at a dyer (per dyer line, with its délai) and the knitting launched (its latest délai). Flat queries. */
 interface OrdresLigne {
-  enno: { metrage: number; poids: number; partenaire: string | null; delai: string | null; engagement: string | null }[]
-  /** `urgence`: asked of the knitter on that line while it has no délai (lib/urgence-sst.ts) */
+  enno: { metrage: number; poids: number; partenaire: string | null; delai: string | null; engagement: string | null; urgence: UrgenceEtape | null }[]
+  /** `urgence`: asked of the knitter on that line and still awaiting its answer (lib/urgence-sst.ts) */
   tricotage: { partenaire: string | null; delai: string | null; engagement: string | null; urgence: UrgenceEtape | null } | null
 }
 async function ordresEnCoursParLigne(lineIds: readonly number[], agg: Map<number, AgregatLigne>): Promise<Map<number, OrdresLigne>> {
@@ -5219,29 +5226,36 @@ async function ordresEnCoursParLigne(lineIds: readonly number[], agg: Map<number
       LEFT JOIN sous_traitant st ON st.idsous_traitant = c.idsous_traitant
      WHERE l.idligne_commande_sous_traitant = ANY(${[...sstIds] as any})`
   const parId = new Map(lignes.map((l) => [Number(l.id), l]))
-  // Urgencies asked of the knitter on the knitting lines still without a délai.
+  // Urgencies asked of the knitter or the dyer on those order lines, with or without a délai.
   const today = aujourdhuiYmd()
   const compact = (iso: string) => iso.replace(/-/g, '')
-  const urgences = await urgencesOuvertes(
-    [...new Set(alloc.map((a) => Number(a.lsst)))].map((id) => ({ id, aUnDelai: /^\d{8}$/.test(parId.get(id)?.delai ?? '') })),
+  const urgences = await urgencesLignes(
+    [...sstIds].map((id) => ({ id, delai: parId.get(id)?.delai ?? null })),
     `${today.slice(0, 4)}-${today.slice(4, 6)}-${today.slice(6, 8)}`, sql)
+  // Only an urgency still awaiting its answer holds the line: once answered, the délai speaks.
+  const urgenceDe = (idLigneSst: number): UrgenceEtape | null => {
+    const u = urgences.get(idLigneSst)
+    return enAttenteDeReponse(u) ? {
+      demandeeLe: compact(u.demandeeLe), reponseAttendue: compact(u.reponseAttendue), aRelancer: u.etat === 'a_relancer',
+      dateSouhaitee: u.dateSouhaitee ? compact(u.dateSouhaitee) : null,
+    } : null
+  }
   const nom = (l: { nom: string | null } | undefined) => String(l?.nom ?? '').trim() || null
   const ouverte = (l: { sstatut: string | null; soldee: number | null } | undefined) =>
     !!l && !String(l.sstatut ?? '').startsWith('Termin') && Number(l.soldee) !== 1
   for (const id of ids) {
     const enno = Object.entries(agg.get(id)?.ecru_chez_sst ?? {}).map(([k, v]) => {
       const l = parId.get(Number(k))
-      return { ...v, partenaire: nom(l), delai: l?.delai ?? null, engagement: l?.engagement ?? null }
+      return { ...v, partenaire: nom(l), delai: l?.delai ?? null, engagement: l?.engagement ?? null, urgence: ouverte(l) ? urgenceDe(Number(k)) : null }
     })
     // The knitting launched: the latest délai of its open knitting lines (one knitting order in practice).
     const trico = alloc.filter((a) => Number(a.lcc) === id).map((a) => parId.get(Number(a.lsst))).filter(ouverte)
     const tard = trico.sort((x, y) => String(y!.delai ?? '99999999').localeCompare(String(x!.delai ?? '99999999')))[0]
-    const u = tard && !tard.delai ? urgences.get(Number(tard.id)) : undefined
     out.set(id, {
       enno,
       tricotage: tard ? {
         partenaire: nom(tard), delai: tard.delai ?? null, engagement: tard.engagement ?? null,
-        urgence: u ? { demandeeLe: compact(u.demandeeLe), reponseAttendue: compact(u.reponseAttendue), aRelancer: u.aRelancer } : null,
+        urgence: urgenceDe(Number(tard.id)),
       } : null,
     })
   }
@@ -5307,6 +5321,12 @@ async function auPlusTotLignes(lignes: LigneAuPlusTot[], dateRetenue: string | n
 /** The urgency asked of a partner on a step of the earliest date still without a délai (the knitting). */
 function urgenceEtapeDe(a: DelaiAuPlusTot | null | undefined): UrgenceEtape | null {
   return a?.etapes.find((e) => e.urgence)?.urgence ?? null
+}
+
+/** …and whose step carries it: the reason names who to chase (lib/urgence-commande-client.ts). */
+function urgenceChezDe(a: DelaiAuPlusTot | null | undefined): 'tricotage' | 'ennoblissement' | null {
+  const e = a?.etapes.find((x) => x.urgence)
+  return !e ? null : e.libelle === 'Ennoblissement' ? 'ennoblissement' : 'tricotage'
 }
 
 /** The later of a launch date (YYYYMMDD) and today: a passed date launches today. */
@@ -6508,6 +6528,11 @@ const ennoOrderBody = z.object({
   /** Ignored since 2026-10-28 (was LIVA #1115's per-roll « lien »): the order no longer reserves.
    *  A roll already reserved to the line is dyed for it, a free roll for the stock. */
   linkStockEcruIds: z.array(z.number().int().positive()).optional(),
+  /** The order goes out « en urgence » (lib/urgence-sst.ts): the date wished. */
+  urgence: z.object({
+    date_souhaitee: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    note: z.string().max(1000).optional(),
+  }).optional(),
 })
 
 commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', async (req: Request, res: Response) => {
@@ -6655,8 +6680,23 @@ commandesClientRouter.post('/:id/lignes/:ligneId/supply/ennoblissement/orders', 
       await leverAuLancement({ ligneId: l, etape: 'ennoblissement', parId: req.userId ?? 0, par })
     }
 
+    // Born « en urgence »: asked with the order. The order exists whatever happens here.
+    let urgenceErreur: string | undefined
+    if (d.urgence && req.userId !== undefined) {
+      try {
+        await demanderUrgence({
+          idcommande: newCmdId, idligne: newLineId, dateSouhaitee: d.urgence.date_souhaitee, note: d.urgence.note,
+          par: { id: req.userId, nom: par }, aujourdhui: `${aujourdhuiYmd().slice(0, 4)}-${aujourdhuiYmd().slice(4, 6)}-${aujourdhuiYmd().slice(6, 8)}`,
+        })
+      } catch (e) {
+        urgenceErreur = e instanceof UrgenceRefusee ? e.message : 'L’urgence n’a pas pu être notée.'
+        if (!(e instanceof UrgenceRefusee)) console.error('Error recording urgency on a new dyer order:', e)
+      }
+    }
+
     res.status(201).json({
       ok: true,
+      ...(urgenceErreur ? { urgence_erreur: urgenceErreur } : {}),
       IDcommande_sous_traitant: newCmdId,
       IDligne_commande_sous_traitant: newLineId,
       affected: usable.length,

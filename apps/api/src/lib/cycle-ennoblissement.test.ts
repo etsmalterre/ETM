@@ -12,6 +12,7 @@ import {
   prealablesDetail,
   prealablesValidation,
   urgenceCommande,
+  urgenceDemandeeDe,
   calendrierTraitement,
   urgenceLot,
   type CommandeFait,
@@ -423,5 +424,44 @@ describe('depuisEtape: how long the lot has been at its step (2026-11-05)', () =
   it('a soumission counts from its sending, a reprise has no date', () => {
     expect(depuisEtape(lot({ stabilites: soum({ le: '2026-10-20' }) }))).toEqual({ depuis: '2026-10-20', delai: 5 })
     expect(depuisEtape(lot({ repriseOuverte: true }))).toBeNull()
+  })
+})
+
+describe('« passer en urgence » chez l’ennoblisseur (lib/urgence-sst.ts, Vincent 2026-11-16)', () => {
+  // The dyer was asked on the 20/10, its answer due the 22/10.
+  const urgence = (etat: 'attente' | 'repondue' = 'attente') => ({ etat, reponseAttendue: '2026-10-22' })
+  it('en traitement: neutral while the answer is awaited, red once it is overdue — whatever the délai says', () => {
+    // Délai far away (30/10): nothing to chase on the dyeing itself.
+    const e = etatCommande(commande({ delai: '2026-10-30', urgences: { lignes: [urgence()], couvreAttente: false } }))
+    expect(e.etape).toBe('en_teinture')
+    expect(urgenceCommande(e, '2026-10-21')).toBeNull()
+    expect(urgenceCommande(e, '2026-10-22')).toBeNull() // the day itself: still expected
+    expect(urgenceCommande(e, '2026-10-23')).toBe('late')
+    expect(urgenceDemandeeDe(e, '2026-10-21')).toBe('attente')
+    expect(urgenceDemandeeDe(e, '2026-10-23')).toBe('a_relancer')
+  })
+  it('an urgency awaited does not hide a délai that is late on its own', () => {
+    const e = etatCommande(commande({ delai: '2026-10-20', urgences: { lignes: [urgence()], couvreAttente: false } }))
+    expect(urgenceCommande(e, '2026-10-21')).toBe('late')
+  })
+  it('attente délai: not red while every undated line was pressed and awaits its answer', () => {
+    const faits = faitsDelai({ dateNotif: '2026-10-12' }) // chase due the 13/10
+    const sans = etatCommande(commande({ rangStatut: 1, delaiFaits: faits }))
+    expect(urgenceCommande(sans, '2026-10-21')).toBe('late')
+    const pressee = etatCommande(commande({ rangStatut: 1, delaiFaits: faits, urgences: { lignes: [urgence()], couvreAttente: true } }))
+    expect(urgenceCommande(pressee, '2026-10-21')).toBeNull()
+    expect(urgenceCommande(pressee, '2026-10-23')).toBe('late') // the urgency's own chase
+    // A line nobody pressed keeps the order on the délai chase.
+    const partielle = etatCommande(commande({ rangStatut: 1, delaiFaits: faits, urgences: { lignes: [urgence()], couvreAttente: false } }))
+    expect(urgenceCommande(partielle, '2026-10-21')).toBe('late')
+  })
+  it('answered, or the order closed: nothing is asked any more', () => {
+    const repondue = etatCommande(commande({ delai: '2026-10-30', urgences: { lignes: [urgence('repondue')], couvreAttente: false } }))
+    expect(urgenceDemandeeDe(repondue, '2026-10-25')).toBeNull()
+    expect(urgenceCommande(repondue, '2026-10-25')).toBeNull()
+    expect(repondue.urgences?.lignes).toHaveLength(1) // the siren stays
+    const close = etatCommande(commande({ est_soldee: true, urgences: { lignes: [urgence()], couvreAttente: false } }))
+    expect(close.urgences).toBeUndefined()
+    expect(urgenceCommande(close, '2026-10-25')).toBeNull()
   })
 })

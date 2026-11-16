@@ -2064,6 +2064,38 @@ ${grantApi('SELECT, INSERT', 'urgence_sst')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE urgence_sst_id_seq')}
 `,
   },
+  {
+    // The urgency reworked the day it was born (Vincent 2026-11-16, lib/urgence-sst.ts):
+    // it is asked on a line that already has its délai too, so each fact keeps the
+    // délai the line had (`delai_avant`: the urgency awaits while the délai has not
+    // moved); two new facts, 'reponse' (the partner moved the délai it had given,
+    // `delai_donne`) and 'refus' (it cannot). `reponse_attendue` is no longer typed
+    // (the partner's known answer time) and stays required on an ask only.
+    name: '0077_urgence_sst_reponse',
+    sql: `
+ALTER TABLE urgence_sst ADD COLUMN IF NOT EXISTS delai_avant date;
+ALTER TABLE urgence_sst ADD COLUMN IF NOT EXISTS delai_donne date;
+ALTER TABLE urgence_sst DROP CONSTRAINT IF EXISTS urgence_sst_type_check;
+ALTER TABLE urgence_sst ADD CONSTRAINT urgence_sst_type_check CHECK (type IN ('demande', 'relance', 'reponse', 'refus', 'levee'));
+ALTER TABLE urgence_sst DROP CONSTRAINT IF EXISTS urgence_sst_check;
+ALTER TABLE urgence_sst ADD CONSTRAINT urgence_sst_reponse_check CHECK (type NOT IN ('demande', 'relance') OR reponse_attendue IS NOT NULL);
+`,
+  },
+  {
+    // The mail that tells the partner (Vincent 2026-11-16): passing a line « en
+    // urgence », chasing it or giving it up opens a pre-filled mail to the contacts
+    // who receive the orders. A mail sent is a fact 'mail' — `geste` says which
+    // message, `destinataires` to whom — so the Journal tells it. It is NOT an
+    // envoi_email row of type 13: that one is the bon de commande, which starts
+    // the wait for the délai.
+    name: '0078_urgence_sst_mail',
+    sql: `
+ALTER TABLE urgence_sst ADD COLUMN IF NOT EXISTS geste text;
+ALTER TABLE urgence_sst ADD COLUMN IF NOT EXISTS destinataires text;
+ALTER TABLE urgence_sst DROP CONSTRAINT IF EXISTS urgence_sst_type_check;
+ALTER TABLE urgence_sst ADD CONSTRAINT urgence_sst_type_check CHECK (type IN ('demande', 'relance', 'reponse', 'refus', 'levee', 'mail'));
+`,
+  },
 ]
 
 export interface MigrationStatus {

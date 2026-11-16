@@ -38,7 +38,7 @@
 import { mpsPg } from './mps-pg.js'
 import { SEUIL_EXPEDIE } from './statut-ligne-client.js'
 import { LINE_TYPE_RECTILIGNE } from './sst-line-kind.js'
-import { urgencesOuvertes } from './urgence-sst.js'
+import { enAttenteDeReponse, urgenceDemandee, urgencesLignes, type UrgenceLigne } from './urgence-sst.js'
 import { joursOuvresEntre, type Periode } from './jours-ouvres.js'
 import {
   DELAI_TRM_J, derniereRelance, echeanceDelai, historiqueDelai, lireFaitsDelai, ouvresEntre, relanceDue,
@@ -78,8 +78,6 @@ export interface LigneTricotage {
   quantite: number
   /** YYYYMMDD or '' */
   date_livraison: string
-  /** YYYYMMDD or '': the date we asked for, while the knitter has given none. */
-  date_demandee?: string
   /** Legacy line status rank: 0 Non_Envoye, 1 Attente_Delai, 2 anything else. */
   rang_statut: 0 | 1 | 2
   fil_affecte: boolean
@@ -177,8 +175,6 @@ export interface EtapeTricotage {
   joursRestants: number | null
   /** The later délais of the other lines not yet delivered. */
   autres: string[]
-  /** No délai yet: the earliest date we asked for. */
-  demande: string | null
   /** Since when the knitter's time runs: the bon de commande while its délai
    *  is awaited, else the order's date. */
   depuis: string | null
@@ -249,7 +245,6 @@ export function etapeTricotage(
   const ouvertes = fini ? [] : c.lignes.filter((l) => !ligneLivree(l))
   const delais = [...new Set(ouvertes.map((l) => l.date_livraison).filter(estDate))].sort()
   const delai = delais[0] ?? null
-  const demandes = delai ? [] : ouvertes.map((l) => l.date_demandee).filter(estDate).sort()
 
   let depuis: string | null = null
   const attente = phase === 'attente_delai' ? faits : null
@@ -271,7 +266,6 @@ export function etapeTricotage(
     delai: delai ? iso(delai) : null,
     joursRestants: delai ? joursOuvresEntre(t, delai, fermetures) : null,
     autres: delais.slice(1).map(iso),
-    demande: demandes[0] ? iso(demandes[0]) : null,
     depuis: depuis ? iso(depuis) : null,
     joursDepuis,
     joursTotal,
@@ -295,15 +289,17 @@ export interface EtatTricotage {
   commande: CommandeTricotage
   /** Attente délai only: the délai facts (asked, relances, reports). */
   faits: FaitsDelai | null
-  /** An urgency asked of the knitter on a line without a délai (lib/urgence-sst.ts): 'attente' while
-   *  its answer is expected, 'a_relancer' once the day has passed (the card is then red). */
+  /** An urgency asked of the knitter on a line (lib/urgence-sst.ts): 'attente' while its answer is
+   *  expected, 'a_relancer' once the day has passed (the card is then red). */
   urgenceDemandee: 'attente' | 'a_relancer' | null
+  /** A line still to deliver was passed « en urgence », answered or not: the order wears the icon. */
+  urgente: boolean
 }
 
-/** The order's urgency asked of the knitter, from its lines' open ones: one to chase wins. Pure. */
-export function urgenceDemandeeCommande(ouvertes: readonly { aRelancer: boolean }[]): EtatTricotage['urgenceDemandee'] {
-  if (ouvertes.length === 0) return null
-  return ouvertes.some((u) => u.aRelancer) ? 'a_relancer' : 'attente'
+/** The order's urgency asked of the knitter, from its lines' urgencies still awaiting an answer: one
+ *  to chase wins (lib/urgence-sst.ts urgenceDemandee, shared with the dyers' orders). Pure. */
+export function urgenceDemandeeCommande(urgences: readonly Pick<UrgenceLigne, 'etat' | 'reponseAttendue'>[], aujourdhui: string): EtatTricotage['urgenceDemandee'] {
+  return urgenceDemandee(urgences, aujourdhui)
 }
 
 /** The card's colour once the urgency asked of the knitter is read (lib/urgence-sst.ts). One whose
@@ -352,10 +348,9 @@ export async function etatsTricotage(ids: number[], today: Date = new Date()): P
       SELECT idcommande_sous_traitant AS id, idsous_traitant, est_soldee,
              to_char(date_commande, 'YYYYMMDD') AS date_commande
       FROM commande_sous_traitant WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
-    sql<{ id: number; cmd: number; type: number; quantite: number; date_livraison: string | null; date_demandee: string | null; sstatut: string | null }[]>`
+    sql<{ id: number; cmd: number; type: number; quantite: number; date_livraison: string | null; sstatut: string | null }[]>`
       SELECT idligne_commande_sous_traitant AS id, idcommande_sous_traitant AS cmd, type, quantite,
-             to_char(date_livraison, 'YYYYMMDD') AS date_livraison,
-             to_char(date_demandee, 'YYYYMMDD') AS date_demandee, sstatut::text AS sstatut
+             to_char(date_livraison, 'YYYYMMDD') AS date_livraison, sstatut::text AS sstatut
       FROM ligne_commande_sous_traitant WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
     sql<{ cmd: number; est_soldee: number }[]>`
       SELECT idcommande_etm AS cmd, est_soldee FROM commande_client WHERE idcommande_etm = ANY(${cmdIds})`,
@@ -401,7 +396,6 @@ export async function etatsTricotage(ids: number[], today: Date = new Date()): P
       type: Number(l.type) || 0,
       quantite: Number(l.quantite) || 0,
       date_livraison: l.date_livraison ?? '',
-      date_demandee: l.date_demandee ?? '',
       rang_statut: rangStatut(l.sstatut),
       fil_affecte: filSet.has(lid),
       a_un_of: (prod?.nb_of ?? 0) > 0,
@@ -411,10 +405,9 @@ export async function etatsTricotage(ids: number[], today: Date = new Date()): P
     lignesByCmd.set(Number(l.cmd), arr)
   }
 
-  // Urgencies asked of the knitter (lib/urgence-sst.ts): open on a line still without its délai.
+  // Urgencies asked of the knitter (lib/urgence-sst.ts), on a line with or without its délai.
   const aujourdhui = iso(ymdOf(today))
-  const urgences = await urgencesOuvertes(lignes.map((l) => ({ id: Number(l.id), aUnDelai: /^\d{8}$/.test(l.date_livraison ?? '') })), aujourdhui, sql)
-  const cmdDeLigne = new Map(lignes.map((l) => [Number(l.id), Number(l.cmd)]))
+  const urgences = await urgencesLignes(lignes.map((l) => ({ id: Number(l.id), delai: l.date_livraison })), aujourdhui, sql)
 
   const commandes = new Map<number, { c: CommandeTricotage; phase: TricotagePhase }>()
   for (const e of entetes) {
@@ -433,20 +426,21 @@ export async function etatsTricotage(ids: number[], today: Date = new Date()): P
   const faitsLus = enAttente.length > 0 ? await lireFaitsDelai(enAttente, sql) : new Map<number, FaitsDelai>()
   for (const [id, { c, phase }] of commandes) {
     const faits = phase === 'attente_delai' ? faitsDelaiTricotage(c, faitsLus.get(id)) : null
-    // Nothing left to ask once the goods are in (soldée, soldée par TRM).
-    const demandee = phase === 'terminee' || phase === 'trm_soldee'
-      ? null
-      : urgenceDemandeeCommande([...urgences].filter(([lid]) => cmdDeLigne.get(lid) === id).map(([, u]) => u))
+    // Nothing left to ask once the goods are in (soldée, soldée par TRM, a line delivered).
+    const fini = phase === 'terminee' || phase === 'trm_soldee'
+    const deLaCommande = fini ? [] : c.lignes.filter((l) => !ligneLivree(l)).map((l) => urgences.get(l.id)).filter((u): u is UrgenceLigne => !!u)
+    const demandee = urgenceDemandeeCommande(deLaCommande, aujourdhui)
     const sansDelai = c.lignes.filter((l) => !ligneLivree(l) && !l.date_livraison)
     out.set(id, {
       phase,
       urgence: urgenceAvecDemande(
         urgenceTricotage(c, phase, faits ? relanceDue(faits) : null, today),
-        phase, demandee, sansDelai.length > 0 && sansDelai.every((l) => urgences.has(l.id)),
+        phase, demandee, sansDelai.length > 0 && sansDelai.every((l) => enAttenteDeReponse(urgences.get(l.id))),
       ),
       commande: c,
       faits,
       urgenceDemandee: demandee,
+      urgente: deLaCommande.length > 0,
     })
   }
   return out

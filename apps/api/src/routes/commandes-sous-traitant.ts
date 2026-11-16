@@ -78,7 +78,7 @@ import {
 import { sstDeleteBlocker } from '../lib/sst-delete.js'
 import { isRectiligneType, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
 import { etapeTricotage, etatsTricotage, familleOfTypeSst, parseFamille, tricoteurIds, type EtatTricotage, type SstFamille, type TricotagePhase } from '../lib/sst-tricotage.js'
-import { calendrierTraitement, cleLot, etatCommande, joursOuvresDepuis, lireCommandesEnnoblissement, urgenceCommande, type EtapeCommande, type EtapeLot, type EtatCommande } from '../lib/cycle-ennoblissement.js'
+import { calendrierTraitement, cleLot, etatCommande, joursOuvresDepuis, lireCommandesEnnoblissement, urgenceCommande, urgenceDemandeeDe, type EtapeCommande, type EtapeLot, type EtatCommande } from '../lib/cycle-ennoblissement.js'
 import {
   loadRectiligneRefLabels,
   loadRectiligneColorisLabels,
@@ -97,7 +97,7 @@ import { adressesDuClient, clientEnCopie, nomFichierRc, PHRASE_RC_SOUMISSION, PI
 import { compteursParCommande, ligneModifiee } from '../lib/agents/flux-ennoblisseur/saisies.js'
 import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
-import { demanderUrgence, leverUrgence, UrgenceRefusee, urgencesOuvertes, type UrgenceOuverte } from '../lib/urgence-sst.js'
+import { contexteMailUrgence, demanderUrgence, GESTES_MAIL, joursReponseUrgence, leverUrgence, noterMailUrgence, noterReponseUrgence, refuserUrgence, texteMailUrgence, UrgenceRefusee, urgencesLignes, type UrgenceLigne } from '../lib/urgence-sst.js'
 import { fermetures } from '../lib/delais-standards.js'
 import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, refusAvanceDelai, reportsDelaiParLigne, retardClientReports, retardDelai } from '../lib/report-delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
@@ -568,9 +568,9 @@ export async function createKnitOrder(opts: {
   quantiteKg: number
   /** YYYYMMDD; defaults to today. */
   dateCommande?: string
-  /** YYYYMMDD the date we ask the knitter for (ligne_commande_sous_traitant.date_demandee, 0048), never
-   *  its délai: the line stays in Attente_Delai until the knitter answers. */
-  dateDemandee?: string
+  /** The order goes out « en urgence » (lib/urgence-sst.ts): the date wished, never the knitter's
+   *  délai — the line stays in Attente_Delai until it answers. Absent = no date asked at all. */
+  urgence?: { dateSouhaitee: string; note?: string; par: { id: number; nom: string | null } }
 }): Promise<KnitOrderResult> {
   const sstId = opts.sstId
   const isTrm = sstId === TRICOTAGE_MALTERRE_ID
@@ -642,10 +642,11 @@ export async function createKnitOrder(opts: {
   )
   const lineId = Number(lineRows[0]?.IDligne_commande_sous_traitant) || 0
   if (lineId <= 0) throw new Error('Line insert lookup failed')
-  if (opts.dateDemandee && /^\d{8}$/.test(opts.dateDemandee)) {
-    const d = opts.dateDemandee
-    await mpsPg()`UPDATE ligne_commande_sous_traitant SET date_demandee = ${`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`}::date
-      WHERE idligne_commande_sous_traitant = ${lineId}`
+  if (opts.urgence) {
+    await demanderUrgence({
+      idcommande: cmdId, idligne: lineId, dateSouhaitee: opts.urgence.dateSouhaitee, note: opts.urgence.note,
+      par: opts.urgence.par, aujourdhui: todayIso(),
+    })
   }
 
   // Mirror line on the TRM cc (lowercase IDcolori quirk preserved).
@@ -691,23 +692,20 @@ const ligneBody = z.object({
   unite: z.number().int().optional(),
   prix: z.number().optional(),
   date_livraison: z.string().optional(),
-  /** The date we ask the partner for (0048) — at Tricotage Malterre the only
-   *  date ETM types before TRM has given its délai. */
-  date_demandee: z.string().optional(),
   sstatut: z.string().optional(),
   commentaire: z.string().optional(),
+  /** A new knitting line passed « en urgence » (lib/urgence-sst.ts): the date wished. */
+  urgence: z.object({
+    date_souhaitee: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    note: z.string().max(1000).optional(),
+  }).optional(),
 })
 
 /** Tricotage Malterre gives its délai itself, on its own screen (TRM Clients ›
- *  Commandes, `PUT /commandes-trm/lignes/:id/delai` writes both ledgers): until
- *  then ETM may only say the date it asks for (Vincent 2026-11-16 — half the
- *  « engagements » of TRM had been typed by ETM). */
-const MESSAGE_DELAI_PAR_TRM = 'Le délai d’une commande chez Tricotage Malterre est donné par TRM, depuis son écran Commandes. Indiquez ici la date demandée.'
-
-async function ecrireDateDemandee(idligne: number, yyyymmdd: string): Promise<void> {
-  const d = /^\d{8}$/.test(yyyymmdd) ? `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}` : null
-  await mpsPg()`UPDATE ligne_commande_sous_traitant SET date_demandee = ${d}::date WHERE idligne_commande_sous_traitant = ${idligne}`
-}
+ *  Commandes, `PUT /commandes-trm/lignes/:id/delai` writes both ledgers): ETM
+ *  types no date on it (Vincent 2026-11-16 — half the « engagements » of TRM had
+ *  been typed by ETM). The one date ETM may ask is an urgency's. */
+const MESSAGE_DELAI_PAR_TRM = 'Le délai d’une commande chez Tricotage Malterre est donné par TRM, depuis son écran Commandes. Pour la presser, passez la ligne en urgence.'
 
 // ── Lookups ──────────────────────────────────────────────
 
@@ -960,6 +958,9 @@ async function etatsEnnoblissement(ids: number[]): Promise<Map<number, EtatComma
 function cycleFields(e: EtatCommande) {
   return {
     urgence: urgenceCommande(e, todayIso()),
+    // « Passer en urgence » asked of the dyer (lib/urgence-sst.ts): awaited / to chase, and the siren.
+    urgence_demandee: urgenceDemandeeDe(e, todayIso()),
+    urgente: (e.urgences?.lignes.length ?? 0) > 0,
     main: e.main,
     relance: e.relance,
     solde: e.solde,
@@ -1731,7 +1732,7 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
         bon_envoye_at: bonEnvoyeMap.get(cid) ?? null,
         ...totals,
         // No kg gauge on the card since 2026-11-16 (same card as an ennoblissement order).
-        ...(etatsTric.has(cid) ? { urgence: etatsTric.get(cid)!.urgence, urgence_demandee: etatsTric.get(cid)!.urgenceDemandee } : {}),
+        ...(etatsTric.has(cid) ? { urgence: etatsTric.get(cid)!.urgence, urgence_demandee: etatsTric.get(cid)!.urgenceDemandee, urgente: etatsTric.get(cid)!.urgente } : {}),
         ...(etatsEnn.has(cid) ? cycleFields(etatsEnn.get(cid)!) : {}),
       }
     })
@@ -1812,7 +1813,7 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
         `SELECT lcs.IDligne_commande_sous_traitant, lcs.IDcommande_sous_traitant,
                 lcs.type AS type_kind, lcs.IDreference, lcs.IDColoris,
                 lcs.quantite, lcs.unite, lcs.prix, lcs.date_livraison, lcs.date_delai,
-                to_char(lcs.date_demandee, 'YYYYMMDD') AS date_demandee, lcs.date_reception, lcs.commentaire, lcs.sstatut, lcs.num_facture
+                lcs.date_reception, lcs.commentaire, lcs.sstatut, lcs.num_facture
          FROM ligne_commande_sous_traitant lcs
          WHERE lcs.IDcommande_sous_traitant = ${id}
          ORDER BY lcs.IDligne_commande_sous_traitant`,
@@ -2104,13 +2105,11 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
     const etatTric = famille === 'tricotage' ? (await etatsTricotage([id])).get(id) ?? null : null
     const etatEnn = famille === 'ennoblissement' ? (await etatsEnnoblissement([id])).get(id) ?? null : null
     const phase: SstPhase = etatTric?.phase ?? etatEnn?.etape ?? await computePhase(id, Number(header.est_soldee) || 0)
-    // Urgencies asked of the knitter, on its lines still without a délai (lib/urgence-sst.ts).
-    const urgencesLignes = famille === 'tricotage'
-      ? await urgencesOuvertes(fixedLignes.map((l) => ({
-        id: Number(l.IDligne_commande_sous_traitant) || 0,
-        aUnDelai: typeof l.date_livraison === 'string' && /^\d{8}$/.test(l.date_livraison),
-      })), todayIso())
-      : new Map<number, UrgenceOuverte>()
+    // Urgencies asked of the knitter or the dyer on its lines, answered or not (lib/urgence-sst.ts).
+    const urgencesParLigne: Map<number, UrgenceLigne> = await urgencesLignes(fixedLignes.map((l) => ({
+      id: Number(l.IDligne_commande_sous_traitant) || 0,
+      delai: typeof l.date_livraison === 'string' ? l.date_livraison : null,
+    })), todayIso())
 
     const lignesEnriched = fixedLignes.map((l) => {
       const refId = Number(l.IDreference) || 0
@@ -2134,8 +2133,8 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
         ref_rendement: refRendement,
         colori_reference: resolveColoris(colId, typeKind, refId) || null,
         ...agg,
-        /** the urgency asked of the knitter and still awaited (lib/urgence-sst.ts), null without one */
-        urgence: urgencesLignes.get(Number(l.IDligne_commande_sous_traitant)) ?? null,
+        /** the urgency asked of the sous-traitant on the line, awaited or answered (lib/urgence-sst.ts), null without one */
+        urgence: urgencesParLigne.get(Number(l.IDligne_commande_sous_traitant)) ?? null,
         // A lot of the line is back at the dyer for a reprise (LIVA #1377): the line
         // is no longer delivered, its délai alerts again until the lot returns.
         ...(() => {
@@ -2259,9 +2258,12 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
       ...(etatTric ? {
         urgence: etatTric.urgence,
         urgence_demandee: etatTric.urgenceDemandee,
+        urgente: etatTric.urgente,
         tricotage: etapeTricotage(etatTric.commande, etatTric.phase, etatTric.faits, fermSst),
       } : {}),
       ...(etatEnn ? { cycle: cycleFields(etatEnn) } : {}),
+      /** working days this sous-traitant gets to answer an urgency (lib/urgence-sst.ts) */
+      urgence_reponse_jours: joursReponseUrgence(Number(header.IDsous_traitant) || 0),
       bon_envoye_at: bonEnvoyeAt,
       trm_mirror: trmMirror,
       affectations: await affectationsCommandeSst(id, Number(header.IDcommande_client) || 0),
@@ -2346,8 +2348,7 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
       // type aliased — see detail endpoint comment on the HFSQL reserved-word
       // quirk that uppercases `type` otherwise.
       `SELECT lcs.IDligne_commande_sous_traitant, lcs.type AS type_kind, lcs.IDreference,
-              lcs.IDColoris, lcs.quantite, lcs.unite, lcs.prix, lcs.date_livraison, lcs.date_delai,
-              to_char(lcs.date_demandee, 'YYYYMMDD') AS date_demandee
+              lcs.IDColoris, lcs.quantite, lcs.unite, lcs.prix, lcs.date_livraison, lcs.date_delai
        FROM ligne_commande_sous_traitant lcs
        WHERE lcs.IDcommande_sous_traitant = ${id}
        ORDER BY lcs.IDligne_commande_sous_traitant`,
@@ -2639,10 +2640,15 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
     .map((l) => (typeof l.date_livraison === 'string' ? l.date_livraison : ''))
     .filter((s: string) => /^\d{8}$/.test(s)) as string[])
     .sort()[0] ?? null
-  // No délai yet: the date we ask for (0048, proposed at the launch from the doctrine), the knitter confirms.
-  const earliestDemandee = (fixedLignes
-    .map((l) => (typeof l.date_demandee === 'string' ? l.date_demandee : ''))
-    .filter((s: string) => /^\d{8}$/.test(s)) as string[])
+  // An urgency asked of the knitter and not answered yet (lib/urgence-sst.ts): the date wished is
+  // printed, « URGENT ». An order without one names no date: the knitter gives its délai.
+  const urgencesPdf = await urgencesLignes(fixedLignes.map((l) => ({
+    id: Number(l.IDligne_commande_sous_traitant) || 0,
+    delai: typeof l.date_livraison === 'string' ? l.date_livraison : null,
+  })), todayIso())
+  const earliestSouhaitee = [...urgencesPdf.values()]
+    .filter((u) => u.etat !== 'repondue' && u.dateSouhaitee)
+    .map((u) => u.dateSouhaitee!.replace(/-/g, ''))
     .sort()[0] ?? null
 
   // Quantity unit for the PDF table header + totals row. Tricoteur lines
@@ -2664,7 +2670,7 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
     sousTraitantAdresse: cleanAddress(fixedAdresseSt[0] as any),
     adresseLivraison: cleanAddress(fixedAdresseLiv[0] as any),
     delaiLivraison: earliestDelivery ? formatHfsqlDateLongFr(earliestDelivery) : null,
-    dateSouhaitee: !earliestDelivery && earliestDemandee ? formatHfsqlDateLongFr(earliestDemandee) : null,
+    dateSouhaitee: earliestSouhaitee ? formatHfsqlDateLongFr(earliestSouhaitee) : null,
     commentaire: (header.commentaire ?? null) as string | null,
     // Automatic quality comments (Qualité › Actions). Resolved live rather than
     // copied into commande_sous_traitant.commentaire — legacy never persisted
@@ -2865,10 +2871,19 @@ async function buildEmailDefaults(id: number): Promise<EmailDefaultsPayload | nu
   }
 
   const numero = String(id)
-  const subject = `Bon de commande sous-traitant N°${numero} — ETS Malterre`
+  // An urgency asked on a line and still awaited (lib/urgence-sst.ts): the bon prints « URGENT ·
+  // souhaité le … », its mail says it too — an order born urgent needs no second mail.
+  const lignesCmd = await query<{ IDligne_commande_sous_traitant: number; date_livraison: string | null }>(
+    `SELECT IDligne_commande_sous_traitant, date_livraison FROM ligne_commande_sous_traitant WHERE IDcommande_sous_traitant = ${id}`,
+  )
+  const souhaitee = [...(await urgencesLignes(lignesCmd.map((l) => ({ id: n(l.IDligne_commande_sous_traitant), delai: typeof l.date_livraison === 'string' ? l.date_livraison : null })), todayIso())).values()]
+    .filter((u) => u.etat !== 'repondue' && u.dateSouhaitee).map((u) => u.dateSouhaitee!).sort()[0] ?? null
+  const souhaiteeFr = souhaitee ? `${souhaitee.slice(8, 10)}/${souhaitee.slice(5, 7)}/${souhaitee.slice(0, 4)}` : null
+  const subject = `${souhaiteeFr ? 'URGENT — ' : ''}Bon de commande sous-traitant N°${numero} — ETS Malterre`
   const body =
     `Bonjour,\n\n` +
     `Veuillez trouver ci-joint notre bon de commande N°${numero}${sousTraitantNom ? ` à destination de ${sousTraitantNom}` : ''}.\n\n` +
+    (souhaiteeFr ? `Cette commande est urgente : nous souhaitons la recevoir le ${souhaiteeFr}. Pouvez-vous nous confirmer cette date, ou nous indiquer au plus vite ce qui est possible ?\n\n` : '') +
     `Merci de bien vouloir nous confirmer la bonne réception de cette commande.\n\n` +
     `Cordialement,`
 
@@ -2913,6 +2928,24 @@ const emailBody = z.object({
  *  Tied to NODE_ENV so a production build silently ignores it even if a
  *  client (e.g. a curl test) tries to set it. */
 const ALLOW_DEV_SKIP_SEND = process.env.NODE_ENV !== 'production'
+
+/** The sender of a mail written by a user: its mapped address and « Prénom Nom — ETS Malterre ».
+ *  Null when the account has no address (the caller answers 400 `no_sender_email`). */
+async function expediteurDe(userId: number): Promise<{ from: string; fromName: string } | null> {
+  const senderEmail = await getUserEmail(userId)
+  if (!senderEmail) return null
+  const userRows = await query<{ prenom: string | null; nom: string | null }>(
+    `SELECT IDutilisateur, prenom, nom FROM utilisateur WHERE IDutilisateur = ${userId}`,
+  )
+  const fixedUser = await fixEncoding(userRows, 'utilisateur', 'IDutilisateur', ['prenom', 'nom'])
+  const u = (fixedUser[0] as any) ?? null
+  const displayName = u
+    ? [u.prenom, u.nom].filter((x: string | null) => x && x.trim()).map((x: string) => x.trim()).join(' ')
+    : ''
+  return { from: senderEmail, fromName: displayName ? `${displayName} — ETS Malterre` : 'ETS Malterre' }
+}
+
+const MESSAGE_SANS_ADRESSE = "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs."
 
 commandesSousTraitantRouter.post('/:id/email', async (req: Request, res: Response) => {
   try {
@@ -4932,9 +4965,7 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
     // TRM-specific mirror gate — only the sister company gets the
     // cross-ledger commande_client write.
     const isTrm = await isTricotageMalterreSst(id)
-    // At Tricotage Malterre the line is born waiting for TRM's délai: a date typed
-    // here is the date we ask for, never its engagement.
-    const dateDemandee = dateStr(d.date_demandee) || (isTrm ? dateStr(d.date_livraison) : '')
+    // At Tricotage Malterre the line is born waiting for TRM's délai: ETM types no date on it.
     const dateLiv = isTrm ? '' : dateStr(d.date_livraison)
     const lineType = d.type ?? (isTricoteur ? 1 : 2)
     // A knit line at Tricotage Malterre goes out with its yarn (lib/lancement-tricotage.ts): the
@@ -5012,7 +5043,6 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
         )
         newSstLineId = Number(rs[0]?.IDligne_commande_sous_traitant) || 0
         if (newSstLineId === 0) throw new Error('cannot resolve new sst line id')
-        if (dateDemandee) await ecrireDateDemandee(newSstLineId, dateDemandee)
 
         const mirrorId = await getTrmMirror(id)
         if (mirrorId == null) {
@@ -5050,7 +5080,31 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
       await ecrireAffectation({ sstLine: newSstLineId, ligneClient: 0, entrees: planFil.entrees })
     }
 
+    // The line is born « en urgence » (lib/urgence-sst.ts): the date wished, asked with the order.
+    // The line exists whatever happens here: a refusal is reported, never a failed creation.
+    let urgenceErreur: string | undefined
+    if (d.urgence && req.userId !== undefined) {
+      try {
+        if (newSstLineId === 0) {
+          const rs = await query<{ IDligne_commande_sous_traitant: number }>(
+            `SELECT IDligne_commande_sous_traitant FROM ligne_commande_sous_traitant
+             WHERE IDcommande_sous_traitant = ${id}
+             ORDER BY IDligne_commande_sous_traitant DESC`,
+          )
+          newSstLineId = Number(rs[0]?.IDligne_commande_sous_traitant) || 0
+        }
+        await demanderUrgence({
+          idcommande: id, idligne: newSstLineId, dateSouhaitee: d.urgence.date_souhaitee, note: d.urgence.note,
+          par: { id: req.userId, nom: await nomUtilisateur(req.userId) }, aujourdhui: todayIso(),
+        })
+      } catch (e) {
+        urgenceErreur = e instanceof UrgenceRefusee ? e.message : 'L’urgence n’a pas pu être notée.'
+        if (!(e instanceof UrgenceRefusee)) console.error('Error recording urgency on a new line:', e)
+      }
+    }
+
     const body: Record<string, unknown> = { ok: true }
+    if (urgenceErreur) body.urgence_erreur = urgenceErreur
     if (mirrorStatus) body.mirror_status = mirrorStatus
     if (mirrorError) body.mirror_error = mirrorError
     res.status(201).json(body)
@@ -5219,14 +5273,16 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
       sets.push(`prix = ${n(recomputedTrmPrix)}`)
     }
 
-    if (sets.length === 0 && d.date_demandee === undefined) { res.status(400).json({ error: 'No fields to update' }); return }
+    if (sets.length === 0) { res.status(400).json({ error: 'No fields to update' }); return }
 
-    if (sets.length > 0) {
-      await query(
-        `UPDATE ligne_commande_sous_traitant SET ${sets.join(', ')} WHERE IDligne_commande_sous_traitant = ${lineId}`,
-      )
+    await query(
+      `UPDATE ligne_commande_sous_traitant SET ${sets.join(', ')} WHERE IDligne_commande_sous_traitant = ${lineId}`,
+    )
+    // The délai the knitter had given moved while an urgency awaited: that is its answer.
+    if (d.date_livraison !== undefined) {
+      await noterReponseUrgence(lineId, cur.date_livraison, delaiApres,
+        req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
     }
-    if (d.date_demandee !== undefined) await ecrireDateDemandee(lineId, dateStr(d.date_demandee))
     // The dyer answered the délai question (LIVA #1314: Qualité de service).
     if ((cur.sstatut ?? '').trim() === STATUT_ATTENTE_DELAI && statutApres !== STATUT_ATTENTE_DELAI && statutApres !== STATUT_NON_ENVOYE) {
       await noterDelaiRecu(lineId, delaiApres, req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
@@ -7611,16 +7667,17 @@ commandesSousTraitantRouter.post('/:id/delai/reports', async (req: Request, res:
 
 // ── Urgency asked of the knitter (lib/urgence-sst.ts, Vincent 2026-11-16) ──
 //
-// POST /:commandeId/lignes/:ligneId/urgence { reponse_attendue, date_souhaitee?, note? }
-//   we asked the knitter to go faster and wait for its answer until that day; a
-//   second call while one is open is a relance (a new day).
-// POST /:commandeId/lignes/:ligneId/urgence/levee { note? } — given up.
+// POST /:commandeId/lignes/:ligneId/urgence { date_souhaitee?, note? }
+//   the line is passed « en urgence »: we wish it on that date. The knitter's answer is due after
+//   its own answer time (never typed); a second call while it is awaited is a relance, which may
+//   leave the date out (it keeps the one asked).
+// POST /:commandeId/lignes/:ligneId/urgence/refus { note? } — the knitter cannot: its délai stands.
+// POST /:commandeId/lignes/:ligneId/urgence/levee { note? } — given up on our side.
 const urgenceBody = z.object({
-  reponse_attendue: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   date_souhaitee: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   note: z.string().max(1000).optional().default(''),
 })
-const leveeUrgenceBody = z.object({ note: z.string().max(1000).optional().default('') })
+const finUrgenceBody = z.object({ note: z.string().max(1000).optional().default('') })
 
 commandesSousTraitantRouter.post('/:commandeId/lignes/:ligneId/urgence', async (req: Request, res: Response) => {
   try {
@@ -7630,9 +7687,9 @@ commandesSousTraitantRouter.post('/:commandeId/lignes/:ligneId/urgence', async (
     if (isNaN(id) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (refuseIfTerminee(res, await loadCommandeSoldee(id))) return
     const p = urgenceBody.safeParse(req.body)
-    if (!p.success) { res.status(400).json({ error: 'reponse_attendue_requise', message: 'Indiquez le jour où la réponse du tricoteur est attendue.' }); return }
+    if (!p.success) { res.status(400).json({ error: 'date_souhaitee_requise', message: 'Indiquez la date souhaitée.' }); return }
     await demanderUrgence({
-      idcommande: id, idligne: ligneId, reponseAttendue: p.data.reponse_attendue, dateSouhaitee: p.data.date_souhaitee ?? null,
+      idcommande: id, idligne: ligneId, dateSouhaitee: p.data.date_souhaitee ?? null,
       note: p.data.note, par: { id: req.userId, nom: await nomUtilisateur(req.userId) }, aujourdhui: todayIso(),
     })
     res.json({ ok: true })
@@ -7643,20 +7700,93 @@ commandesSousTraitantRouter.post('/:commandeId/lignes/:ligneId/urgence', async (
   }
 })
 
-commandesSousTraitantRouter.post('/:commandeId/lignes/:ligneId/urgence/levee', async (req: Request, res: Response) => {
+for (const fin of ['refus', 'levee'] as const) {
+  commandesSousTraitantRouter.post(`/:commandeId/lignes/:ligneId/urgence/${fin}`, async (req: Request, res: Response) => {
+    try {
+      if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+      const id = parseInt(req.params.commandeId, 10)
+      const ligneId = parseInt(req.params.ligneId, 10)
+      if (isNaN(id) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+      const p = finUrgenceBody.safeParse(req.body ?? {})
+      if (!p.success) { res.status(400).json({ error: 'Validation failed' }); return }
+      const d = { idcommande: id, idligne: ligneId, note: p.data.note, par: { id: req.userId, nom: await nomUtilisateur(req.userId) }, aujourdhui: todayIso() }
+      await (fin === 'refus' ? refuserUrgence(d) : leverUrgence(d))
+      res.json({ ok: true })
+    } catch (err) {
+      if (err instanceof UrgenceRefusee) { res.status(err.status).json({ error: err.code, message: err.message }); return }
+      console.error('Error closing urgency:', err)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  })
+}
+
+// The mail that tells the sous-traitant of an urgency gesture (Vincent 2026-11-16): the web opens it
+// pre-filled right after « Passer en urgence », « Relancer » or « Retirer l'urgence »; closing it
+// without sending is fine (asked by phone). To the contacts who receive the orders, the bon de
+// commande attached (it prints « URGENT » while the urgency awaits). Sent, it is a fact 'mail' of
+// urgence_sst — never an envoi_email row of type 13, which is the bon and starts the délai wait.
+// GET  /:commandeId/lignes/:ligneId/urgence/email-defaults?geste=demande|relance|levee&article=…
+// POST /:commandeId/lignes/:ligneId/urgence/email?geste=…
+const gesteMail = z.enum(GESTES_MAIL)
+
+commandesSousTraitantRouter.get('/:commandeId/lignes/:ligneId/urgence/email-defaults', async (req: Request, res: Response) => {
   try {
-    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
     const id = parseInt(req.params.commandeId, 10)
     const ligneId = parseInt(req.params.ligneId, 10)
-    if (isNaN(id) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const p = leveeUrgenceBody.safeParse(req.body ?? {})
-    if (!p.success) { res.status(400).json({ error: 'Validation failed' }); return }
-    await leverUrgence({ idcommande: id, idligne: ligneId, note: p.data.note, par: { id: req.userId, nom: await nomUtilisateur(req.userId) }, aujourdhui: todayIso() })
+    const geste = gesteMail.safeParse(req.query.geste)
+    if (isNaN(id) || isNaN(ligneId) || !geste.success) { res.status(400).json({ error: 'Invalid request' }); return }
+    const [defaults, ctx] = await Promise.all([buildEmailDefaults(id), contexteMailUrgence(id, ligneId)])
+    if (!defaults || !ctx) { res.status(404).json({ error: 'Ligne not found' }); return }
+    const article = typeof req.query.article === 'string' ? req.query.article.trim().slice(0, 200) || null : null
+    const texte = texteMailUrgence({ geste: geste.data, numero: id, article, ...ctx })
+    res.json({ recipients: defaults.recipients, sousTraitantNom: defaults.sousTraitantNom, numero: defaults.numero, ...texte })
+  } catch (err) {
+    console.error('Error building urgency email defaults:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesSousTraitantRouter.post('/:commandeId/lignes/:ligneId/urgence/email', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.commandeId, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    const geste = gesteMail.safeParse(req.query.geste)
+    if (isNaN(id) || isNaN(ligneId) || !geste.success) { res.status(400).json({ error: 'Invalid request' }); return }
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const parsed = emailBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    if (!(await contexteMailUrgence(id, ligneId))) { res.status(404).json({ error: 'Ligne not found' }); return }
+
+    // Dev-only fake send, as for the bon de commande: everything but Gmail.
+    if (parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND) {
+      console.log(`[dev-skip-send] urgence commande_sst #${id} ligne ${ligneId} (${geste.data}) — fake send to ${parsed.data.to.join(', ')}`)
+    } else {
+      const exp = await expediteurDe(req.userId)
+      if (!exp) { res.status(400).json({ error: 'no_sender_email', message: MESSAGE_SANS_ADRESSE }); return }
+      const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = []
+      if (parsed.data.attach_pdf !== false) {
+        const data = await buildCommandePdfData(id)
+        if (!data) { res.status(404).json({ error: 'Commande not found' }); return }
+        attachments.push({ filename: `commande-sous-traitant-${data.numero}.pdf`, content: await renderCommandePdfBuffer(data), contentType: 'application/pdf' })
+      }
+      for (const a of parsed.data.extra_attachments ?? []) {
+        attachments.push({ filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type })
+      }
+      await sendMail({
+        ...exp, to: parsed.data.to, cc: parsed.data.cc, bcc: parsed.data.bcc,
+        subject: parsed.data.subject, body: parsed.data.body,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      })
+    }
+    await noterMailUrgence({
+      idcommande: id, idligne: ligneId, geste: geste.data,
+      destinataires: [...parsed.data.to, ...(parsed.data.cc ?? [])],
+      par: { id: req.userId, nom: await nomUtilisateur(req.userId) },
+    })
     res.json({ ok: true })
   } catch (err) {
-    if (err instanceof UrgenceRefusee) { res.status(err.status).json({ error: err.code, message: err.message }); return }
-    console.error('Error lifting urgency:', err)
-    res.status(500).json({ error: 'Internal server error' })
+    console.error('Error sending urgency email:', err)
+    res.status(500).json({ error: 'send_failed', message: err instanceof Error ? err.message : 'Erreur d’envoi' })
   }
 })
 
