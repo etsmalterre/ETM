@@ -40,7 +40,7 @@ describe('urgenceLigne', () => {
     expect(niveau(enno(10, 10))).toBe(null)
     expect(urgenceLigne({ ...l('tricotage', 10, 1), preteAuPlusTot: dans(11) }, today)?.action).toBe('intenable')
     expect(urgenceLigne(enno(-1, 5), today)?.action).toBe('ennoblisseur') // already late: chase first
-    expect(urgenceCommande([enno(10, 12), enno(20, 25)], today)?.raison).toBe('2 lignes : date client intenable, prévenir le client')
+    expect(urgenceCommande([enno(10, 12), enno(20, 25)], today)?.raison).toBe('2 lignes : date client intenable')
   })
   it('shipped or closed lines are always neutral, even late or without délai', () => {
     expect(niveau(l('expediee', -100))).toBe(null)

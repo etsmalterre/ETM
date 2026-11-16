@@ -243,7 +243,7 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
 }
 
 const LIBELLE: Record<Action, [string, string]> = {
-  intenable: ['ligne : date client intenable, prévenir le client', 'lignes : date client intenable, prévenir le client'],
+  intenable: ['ligne : date client intenable', 'lignes : date client intenable'],
   planif_tardive: ['ligne planifiée trop tard', 'lignes planifiées trop tard'],
   lancer: ['ligne à lancer', 'lignes à lancer'],
   commander_fil: ['ligne : fil à commander', 'lignes : fil à commander'],
