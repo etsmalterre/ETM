@@ -35,6 +35,13 @@ liste de références (une douzaine d'endpoints, dont le site public `lib/webser
 séparées rendent l'erreur impossible ; volume faible (quelques échantillons par an). On ne
 reconsidère la fusion que si les échantillons doivent passer par OF / visitage / stock.
 
+**Revu le 2026-11-16 (LIVA #1370).** Les échantillons passent bien par OF / visitage / stock /
+ennoblisseur dès leur essai industriel, et le contournement (références « ech NN » tapées à la
+main) a fait le dégât prévu. Les tables restent séparées pour l'essai de laboratoire ; à l'essai
+industriel l'échantillon crée sa référence provisoire (`ref_ecru.essai = 1`, nommée « E055 »),
+visible dans les listes internes avec sa pastille, jamais sur le site. Détail :
+`screen_notes.md` § 7 « Essai industriel d'un échantillon ».
+
 ## Proposition retenue (à confirmer sur les questions ouvertes)
 
 - **Écran** Tombé Métier › Échantillons, même grammaire que Références (Classeur, tuiles de

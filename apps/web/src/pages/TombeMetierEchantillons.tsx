@@ -3,6 +3,11 @@
 // (claude_doc/echantillons_plan.md). Same grammar as Références (Classeur,
 // spec tiles); the API is routes/echantillons.ts, rules lib/echantillons.ts.
 //
+// A sample has two trials (LIVA #1370): the laboratory one, which lives here
+// alone, and the INDUSTRIAL one, for which it creates its provisional
+// reference (« E055 », flagged essai) — orders, OF, stock and dyer run on it,
+// the technical sheet lives on it, and « Retenu » only renames it.
+//
 // Shared with TRM through `@etm`: local modules are imported RELATIVELY, and
 // the only per-app difference is the API mount (`apiBase`), which carries the
 // app's own Écrans grant and client ledger.
@@ -29,6 +34,7 @@ import {
   ArrowRight,
   Lock,
   BellRing,
+  Factory,
 } from 'lucide-react'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
@@ -41,8 +47,10 @@ import { PopoverSelect, SearchableCombobox } from '@/components/ui/popover-selec
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { TmRollIcon } from '@/components/icons/TmRollIcon'
+import { BobineIcon } from '@/components/icons/BobineIcon'
 import { cn } from '@/lib/utils'
 import { apiFetch, API_URL } from '@/lib/api'
+import { STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
 import { SpecTile, TileText, TileValue, TextTile, tileInput } from './tombe-metier/spec-tiles'
@@ -51,14 +59,24 @@ import { ColorisCompoLineRow, type CompoDraftLine, type RefFilLookup } from './t
 
 // ── Types ──────────────────────────────────────────────
 
-type Statut = 'en_cours' | 'reference' | 'archive'
+type Statut = 'en_cours' | 'essai' | 'reference' | 'archive'
+/** The list's three filters: « En cours » holds every followed sample,
+ *  laboratory and industrial trials alike. */
+type Filtre = 'en_cours' | 'reference' | 'archive'
+const filtreDe = (s: Statut): Filtre => (s === 'essai' ? 'en_cours' : s)
+/** Still followed: editable, relanced. */
+const estSuivi = (s: Statut) => s === 'en_cours' || s === 'essai'
 
-interface ReferenceCreee { IDref_ecru: number; reference: string; designation: string }
+/** `essai` = the provisional reference of the industrial trial (not retained yet). */
+interface ReferenceCreee { IDref_ecru: number; reference: string; designation: string; essai: boolean }
 
 interface EchantillonListRow {
   IDref_echantillon: number
   numero: string
   statut: Statut
+  /** Industrial trial: contexture, jauge, Ø, LFA, TBM and composition are the
+   *  provisional reference's, edited on Références. */
+  fiche_sur_reference: boolean
   IDcontexture: number
   contexture_nom: string | null
   Jauge: number
@@ -96,9 +114,30 @@ interface Piece {
   laize: number
 }
 
+/** A real roll of the provisional reference (knitted on an OF), read only. */
+interface PieceStock {
+  IDstock_ecru: number
+  numero: string
+  lot: string | null
+  date: string | null
+  poids: number
+  IDordre_fabrication: number
+  coloris: string | null
+  second_choix: boolean
+  /** « En stock · MATEL », « En ennoblissement chez… », « Ennoblie (…) ». */
+  situation: string
+  en_stock: boolean
+}
+
+interface FiniEssai { IDref_fini: number; reference: string; designation: string; archive: boolean }
+
 interface EchantillonDetail extends Omit<EchantillonListRow, 'pieces_count'> {
   composition: CompoLine[]
+  /** Laboratory pieces, typed by hand. */
   pieces: Piece[]
+  /** Industrial trial: rolls of the provisional reference, and its finis. */
+  pieces_stock: PieceStock[]
+  finis: FiniEssai[]
   relances: RelanceFaite[]
 }
 
@@ -126,10 +165,11 @@ interface Draft {
 
 const STATUT_META: Record<Statut, { label: string; filtre: string; icon: typeof FlaskConical; solid: string }> = {
   en_cours: { label: 'En cours', filtre: 'En cours', icon: FlaskConical, solid: 'bg-primary border-primary' },
+  essai: { label: 'Essai industriel', filtre: 'En cours', icon: Factory, solid: 'bg-teal border-teal' },
   reference: { label: 'Devenu référence', filtre: 'Retenus', icon: CheckCircle2, solid: 'bg-success border-success' },
   archive: { label: 'Archivé', filtre: 'Archivés', icon: Archive, solid: 'bg-zinc-500 border-zinc-500' },
 }
-const STATUTS: Statut[] = ['en_cours', 'reference', 'archive']
+const FILTRES: Filtre[] = ['en_cours', 'reference', 'archive']
 
 interface Mesures { laize: number; poids: number }
 const numDraft = (v: number) => (v > 0 ? String(v) : '')
@@ -176,9 +216,9 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
   const queryClient = useQueryClient()
   // `?id=…&statut=…` opens a sample (Références › « Issue de l'échantillon »).
   const [searchParams] = useSearchParams()
-  const [statut, setStatut] = useState<Statut>(() => {
-    const s = searchParams.get('statut') as Statut | null
-    return s && STATUTS.includes(s) ? s : 'en_cours'
+  const [statut, setStatut] = useState<Filtre>(() => {
+    const s = searchParams.get('statut') as Filtre | null
+    return s && FILTRES.includes(s) ? s : 'en_cours'
   })
   const [selectedId, setSelectedId] = useState<number | null>(() => Number(searchParams.get('id')) || null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -196,6 +236,13 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
   const [deepLinkId, setDeepLinkId] = useState<number | null>(() =>
     searchParams.get('id') && !searchParams.get('statut') ? Number(searchParams.get('id')) || null : null)
   const [creerOpen, setCreerOpen] = useState(false)
+  const [essaiOpen, setEssaiOpen] = useState(false)
+  // A status change moves the sample to another filter: it stays selected
+  // until that list has arrived (the auto-select would otherwise jump to the
+  // first row while the list is still loading).
+  const [suivreId, setSuivreId] = useState<number | null>(null)
+  // Abandoning an industrial trial archives its reference too: confirmed first.
+  const [abandonOpen, setAbandonOpen] = useState(false)
 
   // Per-key dirty registry (§28.3.b): the composition dialog and the piece
   // dialog can each hold unsaved input.
@@ -210,14 +257,18 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
     })
   }, [])
 
-  const { data: rows, isLoading, isError, error } = useQuery<EchantillonListRow[]>({
+  const { data: rows, isLoading, isFetching: listeEnCours, isError, error } = useQuery<EchantillonListRow[]>({
     queryKey: ['echantillons', apiBase, statut],
     queryFn: () => apiFetch(`${apiBase}?statut=${statut}`),
+    // An industrial trial shows its reference's sheet and its real rolls,
+    // which Références, visitage and Sous-traitants write: never a cached copy.
+    ...STOCK_QUERY_FRESHNESS,
   })
   const { data: detail, isLoading: detailLoading, isError: detailError } = useQuery<EchantillonDetail>({
     queryKey: ['echantillon', apiBase, selectedId],
     queryFn: () => apiFetch(`${apiBase}/${selectedId}`),
     enabled: selectedId !== null,
+    ...STOCK_QUERY_FRESHNESS,
   })
   const { data: contextures } = useQuery<ContextureLookup[]>({
     queryKey: ['ref-ecru-lk-contextures'],
@@ -263,14 +314,24 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
     selectedId,
     getId: (r) => r.IDref_echantillon,
     select: setSelectedId,
-    suspended: isEditing || autoEditForId !== null || deepLinkId !== null,
+    suspended: isEditing || autoEditForId !== null || deepLinkId !== null || suivreId !== null,
   })
 
   useEffect(() => {
+    if (suivreId !== null && rows !== undefined && !listeEnCours) setSuivreId(null)
+  }, [suivreId, rows, listeEnCours])
+
+  // Released only once the list of the sample's own filter is loaded: the
+  // auto-select would otherwise run on the empty list in between and jump to
+  // the first row.
+  useEffect(() => {
     if (deepLinkId === null) return
-    if (detail?.IDref_echantillon === deepLinkId) setStatut(detail.statut)
-    if (detail?.IDref_echantillon === deepLinkId || detailError) setDeepLinkId(null)
-  }, [deepLinkId, detail, detailError])
+    if (detailError) { setDeepLinkId(null); return }
+    if (detail?.IDref_echantillon !== deepLinkId) return
+    const filtre = filtreDe(detail.statut)
+    if (statut !== filtre) { setStatut(filtre); return }
+    if (rows !== undefined) setDeepLinkId(null)
+  }, [deepLinkId, detail, detailError, statut, rows])
 
   const startEdit = useCallback(() => {
     if (!detail) return
@@ -354,6 +415,10 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
     mutationFn: (action: 'archiver' | 'rouvrir') => apiFetch(`${apiBase}/${selectedId}/${action}`, { method: 'POST' }),
     onSuccess: (_data, action) => {
       invalidate()
+      // An industrial trial takes its provisional reference along.
+      queryClient.invalidateQueries({ queryKey: ['refs-ecru'] })
+      setAbandonOpen(false)
+      setSuivreId(selectedId)
       setStatut(action === 'archiver' ? 'archive' : 'en_cours')
     },
     onError: (err) => setActionError(messageErreur(err, 'Le changement de statut a échoué. Veuillez réessayer.')),
@@ -451,9 +516,10 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
             draft={draft}
             onDraftChange={setDraft}
             onMutationSuccess={invalidate}
-            onArchiver={() => statutMutation.mutate('archiver')}
+            onArchiver={() => (detail?.statut === 'essai' ? setAbandonOpen(true) : statutMutation.mutate('archiver'))}
             onRouvrir={() => statutMutation.mutate('rouvrir')}
             onCreerReference={() => setCreerOpen(true)}
+            onEssai={() => setEssaiOpen(true)}
             isChanging={statutMutation.isPending}
           />
         ) : null}
@@ -497,10 +563,36 @@ export function TombeMetierEchantillons({ apiBase = '/echantillons' }: {
             setCreerOpen(false)
             invalidate()
             queryClient.invalidateQueries({ queryKey: ['refs-ecru'] })
+            queryClient.invalidateQueries({ queryKey: ['refs-fini'] })
+            setSuivreId(selectedId)
             setStatut('reference')
           }}
         />
       )}
+
+      {essaiOpen && detail && (
+        <EssaiIndustrielDialog
+          apiBase={apiBase}
+          detail={detail}
+          onClose={() => setEssaiOpen(false)}
+          onDone={() => {
+            setEssaiOpen(false)
+            invalidate()
+            queryClient.invalidateQueries({ queryKey: ['refs-ecru'] })
+          }}
+        />
+      )}
+
+      <ConfirmDialog
+        open={abandonOpen && !!detail}
+        variant="default"
+        title="Abandonner l'essai industriel"
+        description={detail ? descriptionAbandon(detail) : undefined}
+        confirmLabel="Archiver"
+        isPending={statutMutation.isPending}
+        onCancel={() => setAbandonOpen(false)}
+        onConfirm={() => statutMutation.mutate('archiver')}
+      />
 
     </>
   )
@@ -523,8 +615,8 @@ function EchantillonList({
   onSelect: (id: number) => void
   searchQuery: string
   onSearchChange: (q: string) => void
-  statut: Statut
-  onStatutChange: (s: Statut) => void
+  statut: Filtre
+  onStatutChange: (s: Filtre) => void
   onNew: () => void
   isCreating: boolean
   isEditing: boolean
@@ -551,7 +643,7 @@ function EchantillonList({
           ))}
         </div>
         <div className="flex flex-wrap gap-1">
-          {STATUTS.map((s) => (
+          {FILTRES.map((s) => (
             <button
               key={s}
               type="button"
@@ -609,11 +701,18 @@ function EchantillonList({
                 <div className="flex items-center gap-2 min-w-0">
                   <FlaskConical className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                   <p className="font-medium text-sm truncate flex-1 tabular-nums">{r.numero}</p>
-                  {r.reference && (
+                  {r.reference && (r.reference.essai ? (
+                    <span
+                      className="flex-shrink-0 inline-flex items-center gap-0.5 rounded-full border border-teal/30 bg-teal/10 px-1.5 py-0 text-[10px] font-medium text-teal"
+                      title={`Essai industriel sur la référence provisoire ${r.reference.reference}`}
+                    >
+                      <Factory className="h-2.5 w-2.5" />Essai industriel
+                    </span>
+                  ) : (
                     <span className="flex-shrink-0 inline-flex items-center gap-0.5 rounded-full border border-success/30 bg-success/10 px-1.5 py-0 text-[10px] font-medium text-success">
                       <ArrowRight className="h-2.5 w-2.5" />Réf. {r.reference.reference}
                     </span>
-                  )}
+                  ))}
                 </div>
                 {ident && <p className="text-xs text-muted-foreground mt-0.5 truncate">{ident}</p>}
                 {premiereLigne && <p className="text-xs text-muted-foreground/80 italic mt-0.5 line-clamp-2">{premiereLigne}</p>}
@@ -691,7 +790,7 @@ function DetailHeader({
   onPrint: () => void
 }) {
   if (!detail && !isLoading) return null
-  const ouvert = detail?.statut === 'en_cours'
+  const ouvert = !!detail && estSuivi(detail.statut)
   const sousTitre = detail ? [detail.client_nom, identite(detail)].filter(Boolean).join(' — ') : ''
   return (
     <div className="flex-shrink-0 pt-0.5">
@@ -729,15 +828,19 @@ function DetailHeader({
                   <Save className="h-3.5 w-3.5 mr-1.5" />
                   {isSaving ? 'Enregistrement...' : 'Enregistrer'}
                 </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9 text-destructive hover:text-destructive hover:bg-destructive/10"
-                  title="Supprimer"
-                  onClick={onDelete}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
+                {/* A sample at its industrial trial has a reference, orders and
+                    rolls behind it: it is abandoned (archived), never deleted. */}
+                {detail.statut === 'en_cours' && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 text-destructive hover:text-destructive hover:bg-destructive/10"
+                    title="Supprimer"
+                    onClick={onDelete}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
               </>
             ) : (
               <>
@@ -811,7 +914,7 @@ function DetailMain({
   }
   if (!detail) return null
 
-  const counts: Partial<Record<MainTab, number>> = { pieces: detail.pieces.length }
+  const counts: Partial<Record<MainTab, number>> = { pieces: detail.pieces.length + detail.pieces_stock.length }
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -869,9 +972,25 @@ function SpecsCard({
 }) {
   const d = draft
   const ident = identite(detail)
+  // Industrial trial: ONE technical sheet, the provisional reference's — the
+  // one the OF reads. Shown here, edited there.
+  const surReference = detail.fiche_sur_reference ? detail.reference : null
+  const editTech = isEditing && !surReference
   return (
     <Card className={cn('card-premium', isEditing && editSectionClass)}>
       <CardContent className="pt-4 pb-4 space-y-3">
+        {surReference && isEditing && (
+          <div className="rounded-lg border border-teal/30 bg-teal/[0.06] px-3 py-2 flex items-start gap-2.5">
+            <Factory className="h-4 w-4 text-teal flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-muted-foreground flex-1">
+              Fiche technique de la{' '}
+              <Link to={`/tombe-metier/references?id=${surReference.IDref_ecru}`} className="font-semibold text-foreground hover:underline">
+                référence {surReference.reference}
+              </Link>
+              {' '}: elle se modifie là-bas.
+            </p>
+          </div>
+        )}
         {/* Identity band: contexture, jauge, diamètre */}
         <div className="rounded-lg border border-border/60 bg-zinc-100/80 px-3 py-2 flex items-center gap-2.5">
           <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
@@ -879,7 +998,7 @@ function SpecsCard({
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Contexture · Jauge · Ø</p>
-            {isEditing && d ? (
+            {editTech && d ? (
               <div className="mt-1 grid grid-cols-4 gap-2">
                 <div className="col-span-2">
                   <PopoverSelect
@@ -929,7 +1048,7 @@ function SpecsCard({
         <SpecTile label="LFA / tour">
           <div className="grid grid-cols-4 gap-1.5">
             {[0, 1, 2, 3].map((i) =>
-              isEditing && d ? (
+              editTech && d ? (
                 <input
                   key={i}
                   type="text"
@@ -954,7 +1073,7 @@ function SpecsCard({
           <MesuresTile
             label="Tombé métier"
             mesures={detail.tbm}
-            draft={isEditing && d ? d.tbm : null}
+            draft={editTech && d ? d.tbm : null}
             onChange={(tbm) => d && onDraftChange({ ...d, tbm })}
           />
           <MesuresTile
@@ -966,7 +1085,7 @@ function SpecsCard({
           />
         </div>
 
-        <CompositionTile apiBase={apiBase} detail={detail} isEditing={isEditing} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
+        <CompositionTile apiBase={apiBase} detail={detail} isEditing={editTech} onMutationSuccess={onMutationSuccess} reportDirty={reportDirty} />
 
         <TextTile
           label="Commentaire"
@@ -1080,7 +1199,7 @@ function CompositionTile({ apiBase, detail, isEditing, onMutationSuccess, report
         detail.composition.map((c) => (
           <div key={c.IDfil_ref_echantillon} className="rounded-lg border-l-4 border border-border/60 border-l-amber-400/60 bg-white p-2.5 flex items-center gap-2">
             <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10">
-              <FlaskConical className="h-3.5 w-3.5 text-amber-600" />
+              <BobineIcon className="h-3.5 w-3.5 text-amber-600" />
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium truncate">{c.ref_fil_reference ?? '—'}</p>
@@ -1164,7 +1283,7 @@ function CompositionDialog({ apiBase, detail, onClose, onSaved, reportDirty }: {
           </p>
           {lines.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-              <FlaskConical className="h-10 w-10 mb-2 opacity-40" />
+              <BobineIcon className="h-10 w-10 mb-2 opacity-40" />
               <p className="text-sm">Aucun fil</p>
               <Button variant="outline" size="sm" className="mt-3" onClick={addLine}>
                 <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter un fil
@@ -1248,10 +1367,18 @@ function PiecesTab({ apiBase, detail, isEditing, onMutationSuccess, reportDirty 
 
   const pieces = detail.pieces
   const poidsTotal = pieces.reduce((s, p) => s + p.poids, 0)
+  // Industrial trial: the real rolls come first; the hand-typed laboratory
+  // pieces only show when there are some (or to add one).
+  const essai = detail.fiche_sur_reference
+  const montrerLabo = !essai || pieces.length > 0 || isEditing
 
   return (
     <>
-      {pieces.length === 0 ? (
+      {essai && <PiecesStock detail={detail} />}
+      {essai && montrerLabo && (
+        <p className="pt-2 px-1 text-[10px] uppercase tracking-wide font-semibold text-muted-foreground">Essais laboratoire · saisie manuelle</p>
+      )}
+      {!montrerLabo ? null : pieces.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
           <Layers className="h-12 w-12 mb-3 opacity-40" />
           <p className="text-sm">Aucune pièce d'essai</p>
@@ -1349,6 +1476,75 @@ function PiecesTab({ apiBase, detail, isEditing, onMutationSuccess, reportDirty 
       />
     </>
   )
+}
+
+/** The industrial trial's real pieces: the rolls of the provisional reference,
+ *  as visitage weighed them, with where each one stands. Read only — a roll is
+ *  moved by the screen that owns it (visitage, Sous-traitants, Transferts). */
+function PiecesStock({ detail }: { detail: EchantillonDetail }) {
+  const stock = detail.pieces_stock
+  const ref = detail.reference?.reference ?? ''
+  if (stock.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
+        <Layers className="h-12 w-12 mb-3 opacity-40" />
+        <p className="text-sm">Aucune pièce tricotée sur la référence {ref}</p>
+      </div>
+    )
+  }
+  const poidsTotal = stock.reduce((s, p) => s + p.poids, 0)
+  return (
+    <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-zinc-200/60 border-b border-border/60">
+          <tr className="text-xs uppercase tracking-wide text-muted-foreground">
+            <th className="px-3 py-2.5 text-left font-semibold">N°</th>
+            <th className="px-3 py-2.5 text-left font-semibold">Date</th>
+            <th className="px-3 py-2.5 text-left font-semibold">OF</th>
+            <th className="px-3 py-2.5 text-left font-semibold">Coloris</th>
+            <th className="px-3 py-2.5 text-right font-semibold">Poids</th>
+            <th className="px-3 py-2.5 text-left font-semibold">Où est-elle</th>
+          </tr>
+        </thead>
+        <tbody>
+          {stock.map((p) => (
+            <tr key={p.IDstock_ecru} className="border-b border-border/40 last:border-b-0">
+              <td className="px-3 py-2 font-medium whitespace-nowrap">
+                {p.numero || '—'}
+                {p.second_choix && (
+                  <span className="ml-1.5 rounded-full border border-red-200 bg-red-100 px-1.5 py-0 text-[10px] font-medium text-red-700">2ᵉ choix</span>
+                )}
+              </td>
+              <td className="px-3 py-2 tabular-nums whitespace-nowrap">{p.date ? formatHfsqlDate(p.date) : '—'}</td>
+              <td className="px-3 py-2 tabular-nums">{p.IDordre_fabrication > 0 ? p.IDordre_fabrication : '—'}</td>
+              <td className="px-3 py-2">{p.coloris ?? '—'}</td>
+              <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{p.poids > 0 ? `${fmtNum(p.poids, 1)} kg` : '—'}</td>
+              <td className={cn('px-3 py-2', !p.en_stock && 'text-muted-foreground')}>{p.situation}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot className="bg-zinc-100/80 border-t border-border/60">
+          <tr className="text-xs text-muted-foreground">
+            <td className="px-3 py-2" colSpan={4}>
+              {stock.length} pièce{stock.length !== 1 ? 's' : ''} sur la référence {ref}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums font-semibold text-foreground whitespace-nowrap">{fmtNum(poidsTotal, 1)} kg</td>
+            <td />
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  )
+}
+
+/** What abandoning an industrial trial does, and what it leaves behind. */
+function descriptionAbandon(detail: EchantillonDetail): string {
+  const ref = detail.reference?.reference ?? ''
+  const reste = detail.pieces_stock.filter((p) => p.en_stock)
+  const base = `L'échantillon et la référence ${ref} seront archivés.`
+  if (reste.length === 0) return base
+  const kg = fmtNum(reste.reduce((s, p) => s + p.poids, 0), 1)
+  return `${base} ${reste.length} pièce${reste.length !== 1 ? 's' : ''} (${kg} kg) encore en stock.`
 }
 
 function PieceDialog({ apiBase, echantillonId, piece, numeroPropose, onClose, onSaved, reportDirty }: {
@@ -1480,7 +1676,7 @@ function RelanceCard({ apiBase, detail, isEditing, draft, onDraftChange, onMutat
 }) {
   const [open, setOpen] = useState(false)
   const r = detail.relance
-  const ouvert = detail.statut === 'en_cours'
+  const ouvert = estSuivi(detail.statut)
   const ton = r.urgence === 'retard' ? 'text-red-600' : r.urgence === 'bientot' ? 'text-amber-700' : 'text-foreground'
   return (
     <div className={cn(
@@ -1605,7 +1801,7 @@ function RelanceDialog({ apiBase, detail, onClose, onSaved }: {
   )
 }
 
-function DetailSidebar({ detail, apiBase, isEditing, draft, onDraftChange, onMutationSuccess, onArchiver, onRouvrir, onCreerReference, isChanging }: {
+function DetailSidebar({ detail, apiBase, isEditing, draft, onDraftChange, onMutationSuccess, onArchiver, onRouvrir, onCreerReference, onEssai, isChanging }: {
   detail: EchantillonDetail | null
   apiBase: string
   isEditing: boolean
@@ -1615,6 +1811,7 @@ function DetailSidebar({ detail, apiBase, isEditing, draft, onDraftChange, onMut
   onArchiver: () => void
   onRouvrir: () => void
   onCreerReference: () => void
+  onEssai: () => void
   isChanging: boolean
 }) {
   if (!detail) {
@@ -1624,8 +1821,11 @@ function DetailSidebar({ detail, apiBase, isEditing, draft, onDraftChange, onMut
       </div>
     )
   }
-  const dates = detail.pieces.map((p) => p.date).filter((d): d is string => !!d).sort()
-  const poidsTotal = detail.pieces.reduce((s, p) => s + p.poids, 0)
+  // Laboratory pieces (typed) and the industrial trial's real rolls together.
+  const toutes = [...detail.pieces, ...detail.pieces_stock]
+  const dates = toutes.map((p) => p.date).filter((d): d is string => !!d).sort()
+  const poidsTotal = toutes.reduce((s, p) => s + p.poids, 0)
+  const refEssai = !!detail.reference?.essai
   return (
     <div className="w-96 flex-shrink-0 flex flex-col gap-3 min-h-0">
       <div className="flex-1 min-h-0 rounded-xl border flex flex-col overflow-hidden bg-zinc-100/80">
@@ -1635,7 +1835,7 @@ function DetailSidebar({ detail, apiBase, isEditing, draft, onDraftChange, onMut
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-transparent">
-          {(detail.statut === 'en_cours' || detail.relances.length > 0) && (
+          {(estSuivi(detail.statut) || detail.relances.length > 0) && (
             <RelanceCard
               apiBase={apiBase}
               detail={detail}
@@ -1647,23 +1847,37 @@ function DetailSidebar({ detail, apiBase, isEditing, draft, onDraftChange, onMut
           )}
           {detail.reference && (
             <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
-              <p className="text-xs font-semibold text-muted-foreground">Référence créée</p>
+              <p className="text-xs font-semibold text-muted-foreground">{refEssai ? 'Référence provisoire · essai industriel' : 'Référence créée'}</p>
               <Link
                 to={`/tombe-metier/references?id=${detail.reference.IDref_ecru}`}
-                className="flex items-center gap-2 rounded-md border border-success/30 bg-success/10 px-2.5 py-2 hover:bg-success/15 transition-colors"
+                className={cn(
+                  'flex items-center gap-2 rounded-md border px-2.5 py-2 transition-colors',
+                  refEssai ? 'border-teal/30 bg-teal/10 hover:bg-teal/15' : 'border-success/30 bg-success/10 hover:bg-success/15',
+                )}
               >
-                <TmRollIcon className="h-4 w-4 text-success flex-shrink-0" />
+                <TmRollIcon className={cn('h-4 w-4 flex-shrink-0', refEssai ? 'text-teal' : 'text-success')} />
                 <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold text-success">Référence {detail.reference.reference}</span>
+                  <span className={cn('block text-sm font-semibold', refEssai ? 'text-teal' : 'text-success')}>Référence {detail.reference.reference}</span>
                   {detail.reference.designation && <span className="block text-xs text-muted-foreground truncate">{detail.reference.designation}</span>}
                 </span>
-                <ArrowRight className="h-4 w-4 text-success flex-shrink-0" />
+                <ArrowRight className={cn('h-4 w-4 flex-shrink-0', refEssai ? 'text-teal' : 'text-success')} />
               </Link>
+              {detail.finis.length > 0 && (
+                <div className="pt-1 space-y-0.5">
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">Finis de l'essai</p>
+                  {detail.finis.map((f) => (
+                    <p key={f.IDref_fini} className="text-xs truncate">
+                      <span className="font-medium">{f.reference}</span>
+                      {f.designation && <span className="text-muted-foreground"> · {f.designation}</span>}
+                    </p>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           <div className="p-3 rounded-lg border bg-card shadow-sm space-y-2">
             <p className="text-xs font-semibold text-muted-foreground">Pièces d'essai</p>
-            <KV label="Pièces tricotées" value={<span className="tabular-nums">{detail.pieces.length}</span>} />
+            <KV label="Pièces tricotées" value={<span className="tabular-nums">{toutes.length}</span>} />
             <KV label="Poids total" value={<span className="tabular-nums">{fmtNum(poidsTotal, 1)} kg</span>} />
             <KV label="Première pièce" value={dates.length > 0 ? formatHfsqlDate(dates[0]) : '—'} />
             <KV label="Dernière pièce" value={dates.length > 0 ? formatHfsqlDate(dates[dates.length - 1]) : '—'} />
@@ -1683,20 +1897,23 @@ function DetailSidebar({ detail, apiBase, isEditing, draft, onDraftChange, onMut
         onArchiver={onArchiver}
         onRouvrir={onRouvrir}
         onCreerReference={onCreerReference}
+        onEssai={onEssai}
       />
     </div>
   )
 }
 
-/** §29 pill. En cours → menu (Créer la référence… / Archiver); Archivé →
+/** §29 pill. En cours → menu (essai industriel… / retenir sans essai… /
+ *  archiver); Essai industriel → menu (retenir… / abandonner); Archivé →
  *  Rouvrir; Devenu référence → no action: one passage, the reference carries on. */
-function StatutFooter({ statut, disabled, isChanging, onArchiver, onRouvrir, onCreerReference }: {
+function StatutFooter({ statut, disabled, isChanging, onArchiver, onRouvrir, onCreerReference, onEssai }: {
   statut: Statut
   disabled: boolean
   isChanging: boolean
   onArchiver: () => void
   onRouvrir: () => void
   onCreerReference: () => void
+  onEssai: () => void
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -1717,7 +1934,7 @@ function StatutFooter({ statut, disabled, isChanging, onArchiver, onRouvrir, onC
           <Icon className="h-4 w-4 flex-shrink-0" />
           <span className="text-sm font-bold uppercase tracking-wide truncate">{meta.label}</span>
         </div>
-        {statut === 'en_cours' && (
+        {estSuivi(statut) && (
           <button type="button" onClick={() => setMenuOpen((v) => !v)} disabled={disabled || isChanging} title="Changer le statut" className={actionClass}>
             {isChanging ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ChevronUp className={cn('h-3.5 w-3.5 transition-transform', menuOpen && 'rotate-180')} />}
             Changer
@@ -1737,13 +1954,23 @@ function StatutFooter({ statut, disabled, isChanging, onArchiver, onRouvrir, onC
       </div>
       {menuOpen && (
         <div className="absolute bottom-full right-0 mb-1 w-full min-w-[220px] rounded-lg border bg-white shadow-lg overflow-hidden z-50">
+          {statut === 'en_cours' && (
+            <button
+              type="button"
+              onClick={() => { setMenuOpen(false); onEssai() }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors hover:bg-zinc-100"
+            >
+              <Factory className="h-4 w-4 text-teal" />
+              Lancer l'essai industriel…
+            </button>
+          )}
           <button
             type="button"
             onClick={() => { setMenuOpen(false); onCreerReference() }}
             className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors hover:bg-zinc-100"
           >
             <TmRollIcon className="h-4 w-4 text-success" />
-            Créer la référence…
+            {statut === 'essai' ? 'Retenir : devient une référence…' : 'Retenir sans essai industriel…'}
           </button>
           <button
             type="button"
@@ -1751,7 +1978,7 @@ function StatutFooter({ statut, disabled, isChanging, onArchiver, onRouvrir, onC
             className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors hover:bg-zinc-100"
           >
             <Archive className="h-4 w-4 text-muted-foreground" />
-            Archiver
+            {statut === 'essai' ? "Abandonner l'essai (archiver)" : 'Archiver'}
           </button>
         </div>
       )}
@@ -1759,39 +1986,145 @@ function StatutFooter({ statut, disabled, isChanging, onArchiver, onRouvrir, onC
   )
 }
 
-// ── Créer la référence (§18.D bilan dialog) ────────────
+// ── Lancer l'essai industriel (§18.A) ──────────────────
 
+/** The sample creates its provisional reference, named like itself: from
+ *  there a knitting order, an OF, stock and a dyer order can exist. */
+function EssaiIndustrielDialog({ apiBase, detail, onClose, onDone }: {
+  apiBase: string
+  detail: EchantillonDetail
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [designation, setDesignation] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const total = detail.composition.reduce((s, c) => s + c.pourcentage, 0)
+  const compositionOk = detail.composition.length === 0 || Math.abs(total - 100) < 0.01
+  const lancerMut = useMutation({
+    mutationFn: () => apiFetch(`${apiBase}/${detail.IDref_echantillon}/essai-industriel`, {
+      method: 'POST',
+      body: JSON.stringify({ designation: designation.trim() }),
+    }),
+    onSuccess: onDone,
+    onError: (err) => setError(messageErreur(err, "Le lancement de l'essai industriel a échoué. Veuillez réessayer.")),
+  })
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-md" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Factory className="h-5 w-5 text-accent" />
+            Essai industriel
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Crée la référence provisoire <span className="font-semibold text-foreground tabular-nums">{detail.numero}</span>.
+          </p>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Désignation</label>
+            <input
+              value={designation}
+              onChange={(e) => setDesignation(e.target.value)}
+              className={inputClass}
+              autoFocus
+            />
+          </div>
+          {!compositionOk && (
+            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+              <span>Composition à {fmtNum(Math.round(total * 100) / 100, 2)} % : à corriger (100 %).</span>
+            </div>
+          )}
+        </div>
+        {error && (
+          <div className="mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
+            <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose}>Annuler</Button>
+          <Button onClick={() => { setError(null); lancerMut.mutate() }} disabled={!compositionOk || lancerMut.isPending}>
+            {lancerMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Factory className="h-3.5 w-3.5 mr-1.5" />}
+            Lancer l'essai
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── Retenir : créer / renommer la référence (§18.D bilan dialog) ──
+
+interface ReferenceProposee {
+  reference: string
+  /** The provisional reference's designation (industrial trial), '' otherwise. */
+  designation: string
+  /** The trial's finis, with the name each would take for the reference typed. */
+  finis: Array<FiniEssai & { proposee: string | null }>
+  peut_renommer_finis: boolean
+}
+
+/** « Retenu ». From the laboratory: a new reference takes what the sample
+ *  knows. From the industrial trial: the provisional reference is renamed —
+ *  same reference, so its pieces, OFs and lots follow with nothing to convert. */
 function CreerReferenceDialog({ apiBase, detail, onClose, onCreated }: {
   apiBase: string
   detail: EchantillonDetail
   onClose: () => void
   onCreated: () => void
 }) {
+  const essai = detail.fiche_sur_reference
+  const provisoire = detail.reference?.reference ?? ''
   const [reference, setReference] = useState('')
   const [designation, setDesignation] = useState('')
+  // null = the default (every fini that can follow the reference).
+  const [finisCoches, setFinisCoches] = useState<Set<number> | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const { data: proposee, isLoading } = useQuery<{ reference: string }>({
-    queryKey: ['echantillon-reference-proposee', apiBase, detail.IDref_echantillon],
-    queryFn: () => apiFetch(`${apiBase}/${detail.IDref_echantillon}/reference-proposee`),
+  const prerempli = useRef(false)
+  // The finis' new names depend on the number typed: asked again as it changes.
+  const cible = essai ? reference.trim() : ''
+  const { data: proposee, isLoading } = useQuery<ReferenceProposee>({
+    queryKey: ['echantillon-reference-proposee', apiBase, detail.IDref_echantillon, cible],
+    queryFn: () => apiFetch(`${apiBase}/${detail.IDref_echantillon}/reference-proposee${cible ? `?reference=${encodeURIComponent(cible)}` : ''}`),
     staleTime: 0,
+    placeholderData: (prev) => prev,
   })
   // Fill the proposal once it arrives, without clobbering what was typed.
   useEffect(() => {
-    if (proposee && reference === '') setReference(proposee.reference)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!proposee || prerempli.current) return
+    prerempli.current = true
+    setReference((r) => (r === '' ? proposee.reference : r))
+    setDesignation((d) => (d === '' ? proposee.designation : d))
   }, [proposee])
 
   const total = detail.composition.reduce((s, c) => s + c.pourcentage, 0)
   const compositionOk = detail.composition.length === 0 || Math.abs(total - 100) < 0.01
   const lfa = detail.lfa.some((v) => v > 0) ? detail.lfa.map((v) => (v > 0 ? v.toFixed(2) : '—')).join(' · ') : ''
 
+  const finis = proposee?.finis ?? []
+  const peutRenommer = !!proposee?.peut_renommer_finis
+  const renommables = finis.filter((f) => f.proposee !== null && f.proposee !== f.reference)
+  const coches = finisCoches ?? new Set(peutRenommer ? renommables.map((f) => f.IDref_fini) : [])
+  const basculer = (id: number) => {
+    const next = new Set(coches)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    setFinisCoches(next)
+  }
+
   const createMut = useMutation({
     mutationFn: () => apiFetch(`${apiBase}/${detail.IDref_echantillon}/creer-reference`, {
       method: 'POST',
-      body: JSON.stringify({ reference: reference.trim(), designation: designation.trim() }),
+      body: JSON.stringify({
+        reference: reference.trim(),
+        designation: designation.trim(),
+        ...(essai ? { renommer_finis: renommables.filter((f) => coches.has(f.IDref_fini)).map((f) => f.IDref_fini) } : {}),
+      }),
     }),
     onSuccess: onCreated,
-    onError: (err) => setError(messageErreur(err, 'La création de la référence a échoué. Veuillez réessayer.')),
+    onError: (err) => setError(messageErreur(err, essai ? "L'échantillon n'a pas pu être retenu. Veuillez réessayer." : 'La création de la référence a échoué. Veuillez réessayer.')),
   })
 
   const repris: [string, string][] = [
@@ -1809,8 +2142,12 @@ function CreerReferenceDialog({ apiBase, detail, onClose, onCreated }: {
             <TmRollIcon className="h-[18px] w-[18px]" />
           </div>
           <div className="min-w-0 flex-1">
-            <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">Créer la référence</h2>
-            <p className="text-xs text-white/70 truncate">Depuis l'échantillon {detail.numero}</p>
+            <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">
+              {essai ? `Retenir l'échantillon ${detail.numero}` : 'Créer la référence'}
+            </h2>
+            <p className="text-xs text-white/70 truncate">
+              {essai ? `La référence ${provisoire} prend son numéro définitif` : `Depuis l'échantillon ${detail.numero}`}
+            </p>
           </div>
           <Button variant="ghost" size="icon" className="h-8 w-8 text-white/80 hover:bg-white/15 hover:text-white" title="Fermer" onClick={onClose}>
             <X className="h-4 w-4" />
@@ -1821,7 +2158,7 @@ function CreerReferenceDialog({ apiBase, detail, onClose, onCreated }: {
           <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card p-3 shadow-sm">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Référence</label>
+                <label className="text-xs font-medium text-muted-foreground">{essai ? 'Numéro définitif' : 'Référence'}</label>
                 <div className="relative">
                   <input value={reference} onChange={(e) => setReference(e.target.value)} className={cn(inputClass, 'font-semibold tabular-nums')} autoFocus />
                   {isLoading && <Loader2 className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin text-accent" />}
@@ -1834,6 +2171,42 @@ function CreerReferenceDialog({ apiBase, detail, onClose, onCreated }: {
             </div>
           </div>
 
+          {essai && finis.length > 0 && (
+            <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card p-3 shadow-sm space-y-1.5">
+              <h3 className="text-sm font-semibold">Finis à renommer</h3>
+              {finis.map((f) => {
+                const renommable = f.proposee !== null && f.proposee !== f.reference
+                return (
+                  <label
+                    key={f.IDref_fini}
+                    className={cn('flex items-center gap-2 text-sm', renommable && peutRenommer ? 'cursor-pointer' : 'text-muted-foreground')}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={renommable && coches.has(f.IDref_fini)}
+                      disabled={!renommable || !peutRenommer}
+                      onChange={() => basculer(f.IDref_fini)}
+                      className="h-4 w-4 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer disabled:cursor-not-allowed"
+                    />
+                    <span className="font-medium tabular-nums">{f.reference}</span>
+                    {renommable ? (
+                      <>
+                        <ArrowRight className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                        <span className="font-semibold tabular-nums">{f.proposee}</span>
+                      </>
+                    ) : (
+                      <span className="text-xs italic">garde son nom</span>
+                    )}
+                  </label>
+                )
+              })}
+              {!peutRenommer && renommables.length > 0 && (
+                <p className="text-[11px] text-muted-foreground">À renommer sur Finis › Références (droit requis).</p>
+              )}
+            </div>
+          )}
+
+          {!essai && (
           <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-2">
             <h3 className="text-sm font-semibold">Repris de l'échantillon</h3>
             {repris.map(([label, value]) => <KV key={label} label={label} value={value} />)}
@@ -1853,6 +2226,7 @@ function CreerReferenceDialog({ apiBase, detail, onClose, onCreated }: {
               )}
             </div>
           </div>
+          )}
 
           {compositionOk ? (
             <div className="rounded-lg border-l-4 border-l-amber-400/60 border border-border/60 bg-card p-3 shadow-sm flex items-start gap-2.5">
@@ -1860,8 +2234,9 @@ function CreerReferenceDialog({ apiBase, detail, onClose, onCreated }: {
                 <Lock className="h-3.5 w-3.5 text-amber-600" />
               </div>
               <p className="text-xs text-muted-foreground">
-                L'échantillon sera clos et lié à la nouvelle référence ; il ne pourra plus être rouvert.
-                Le reste de la fiche (prix, laize, poids, réglages…) se complète sur Tombé Métier › Références.
+                {essai
+                  ? "L'échantillon sera clos, sans retour possible."
+                  : "L'échantillon sera clos et lié à la nouvelle référence ; il ne pourra plus être rouvert. Le reste de la fiche (prix, laize, poids, réglages…) se complète sur Tombé Métier › Références."}
               </p>
             </div>
           ) : (
@@ -1870,7 +2245,8 @@ function CreerReferenceDialog({ apiBase, detail, onClose, onCreated }: {
                 <AlertCircle className="h-3.5 w-3.5 text-destructive/70" />
               </div>
               <p className="text-xs text-destructive">
-                La composition totalise {fmtNum(Math.round(total * 100) / 100, 2)} % : corrigez-la (100 %) avant de créer la référence.
+                La composition totalise {fmtNum(Math.round(total * 100) / 100, 2)} % : corrigez-la (100 %){' '}
+                {essai ? `sur la référence ${provisoire} avant de la retenir.` : 'avant de créer la référence.'}
               </p>
             </div>
           )}
@@ -1887,7 +2263,7 @@ function CreerReferenceDialog({ apiBase, detail, onClose, onCreated }: {
             <Button variant="outline" onClick={onClose}>Annuler</Button>
             <Button onClick={() => { setError(null); createMut.mutate() }} disabled={!compositionOk || reference.trim() === '' || createMut.isPending}>
               {createMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <TmRollIcon className="h-3.5 w-3.5 mr-1.5" />}
-              Créer la référence
+              {essai ? 'Retenir' : 'Créer la référence'}
             </Button>
           </div>
         </div>

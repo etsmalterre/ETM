@@ -131,6 +131,8 @@ function normalizeRefEcru(row: Record<string, unknown>) {
     // Sold by the metre to a few historical clients (LIVA #1355, lib/unite-ecru.ts).
     vente_au_metre: Number(row.vente_au_metre) ? 1 : 0,
     rendement_metre: toNumOrNull(row.rendement_metre),
+    // 1 = the provisional reference of a sample's industrial trial (LIVA #1370).
+    essai: Number(row.essai) ? 1 : 0,
     vitesse_cible: toNumOrNull(row.vitesse_cible),
     nb_chutes: toNumOrNull(row.nb_chutes),
     nb_aiguilles: toNumOrNull(row.nb_aiguilles),
@@ -141,6 +143,32 @@ function normalizeRefEcru(row: Record<string, unknown>) {
 }
 
 type RefEcru = ReturnType<typeof normalizeRefEcru>
+
+/** A reference flagged `essai` is a sample's industrial trial (Tombé Métier ›
+ *  Échantillons, LIVA #1370): its name, its archiving and its end are the
+ *  sample's gestures (« Retenu » renames it and clears the flag, « Archiver »
+ *  takes both), never Références' — or the two would drift apart again. Returns
+ *  the sample's number, or null for a running reference. A missing column
+ *  (before migration 0079) = not an essai, never a broken route. */
+async function essaiDe(id: number): Promise<string | null> {
+  try {
+    const [r] = await mpsPg()<{ idref_echantillon: number | null }[]>`
+      SELECT (SELECT MIN(e.idref_echantillon) FROM ref_echantillon e WHERE e.idref_ecru = r.idref_ecru) AS idref_echantillon
+        FROM ref_ecru r WHERE r.idref_ecru = ${id} AND r.essai = 1`
+    if (!r) return null
+    return r.idref_echantillon ? numeroEchantillon(Number(r.idref_echantillon)) : ''
+  } catch (err) {
+    console.warn('[references-ecru] essai flag unreadable:', (err as Error).message)
+    return null
+  }
+}
+
+function refusEssai(res: Response, numero: string, geste: string): void {
+  res.status(409).json({
+    error: 'reference_essai',
+    message: `Cette référence est l'essai industriel de l'échantillon ${numero} : ${geste} (Tombé Métier › Échantillons).`,
+  })
+}
 
 function isArchive(row: Record<string, unknown>): boolean {
   return Number(pickKey(row, /^archiv/i)) === 1
@@ -371,6 +399,7 @@ referencesEcruRouter.get('/', async (req: Request, res: Response) => {
       prix: r.prix,
       Jauge: r.Jauge,
       diametre: r.diametre,
+      essai: r.essai,
       coloris_count: coloriCountByRef.get(r.IDref_ecru) ?? 0,
     }))
     res.json(out)
@@ -917,6 +946,15 @@ referencesEcruRouter.put('/:id', async (req: Request, res: Response) => {
       res.status(409).json({ error: 'Cette référence existe déjà.' })
       return
     }
+    // An industrial-trial reference keeps the sample's name until « Retenu ».
+    const numeroEssai = await essaiDe(id)
+    if (numeroEssai !== null) {
+      const avant = await query<{ reference: string | null }>(`SELECT reference FROM ref_ecru WHERE IDref_ecru = ${id}`)
+      if (String(avant[0]?.reference ?? '').trim().toLowerCase() !== parsed.data.reference.trim().toLowerCase()) {
+        refusEssai(res, numeroEssai, 'elle prend son numéro définitif quand l\'échantillon est retenu')
+        return
+      }
+    }
     // Freeze the fabric-defining fields (contexture, jauge, diamètre, bio,
     // recyclé) once rolls or orders exist — changing them would desync produced
     // stock from its declared nature. Silently keep the stored values so a
@@ -976,7 +1014,7 @@ const REF_ECRU_PHYSICAL_COLS = [
   'ecarteur', 'laize_tbm', 'poids_m2_tbm', 'rendement', 'tombe_metier', 'observations',
   'archive', 'IDcontexture', 'Jauge', 'diametre', 'bio', 'recycle', 'sonneter',
   'nb_chutes', 'nb_aiguilles', 'vitesse_cible', 'freinte_tricotage',
-  'vente_au_metre', 'rendement_metre',
+  'vente_au_metre', 'rendement_metre', 'essai',
 ] as const
 const TEXT_COL_IDX = new Set([2, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 24, 25]) // text/memo/date columns
 
@@ -1012,6 +1050,8 @@ referencesEcruRouter.post('/:id/archive', async (req: Request, res: Response) =>
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const numeroEssai = await essaiDe(id)
+    if (numeroEssai !== null) { refusEssai(res, numeroEssai, 'archivez l\'échantillon, elle le suivra'); return }
     await setArchive(id, 1)
     res.json({ ok: true })
   } catch (err) {
@@ -1024,6 +1064,8 @@ referencesEcruRouter.post('/:id/unarchive', async (req: Request, res: Response) 
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const numeroEssai = await essaiDe(id)
+    if (numeroEssai !== null) { refusEssai(res, numeroEssai, 'rouvrez l\'échantillon, elle le suivra'); return }
     await setArchive(id, 0)
     res.json({ ok: true })
   } catch (err) {
@@ -1171,6 +1213,9 @@ referencesEcruRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+
+    const numeroEssai = await essaiDe(id)
+    if (numeroEssai !== null) { refusEssai(res, numeroEssai, 'archivez l\'échantillon plutôt que de la supprimer'); return }
 
     const refFini = await query<{ n: number }>(`SELECT COUNT(*) AS n FROM ref_fini WHERE IDref_ecru = ${id}`)
     if (Number(refFini[0]?.n ?? 0) > 0) {

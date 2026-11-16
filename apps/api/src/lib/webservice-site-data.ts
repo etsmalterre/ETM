@@ -212,12 +212,21 @@ export async function loadCatalog(): Promise<Catalog> {
       laize: num(r.laize_tbm),
       poidsM2: num(r.poids_m2_tbm),
       rendementVente: rendementVenteEcru(r),
-      archive: flag(pickVal(r, /^archiv/i)),
+      // A sample's industrial-trial reference (`essai`, LIVA #1370) is never
+      // published: the site reads it as archived, and its finis with it below.
+      archive: flag(pickVal(r, /^archiv/i)) || flag(r.essai),
       prix: num(r.prix),
       IDcontexture: num(r.IDcontexture),
       bio: flag(r.bio),
       recycle: flag(pickVal(r, /^recycl/i)),
     })
+  }
+
+  // The finis built on an industrial-trial écru (the dyer trials) follow it:
+  // no catalogue line, no public sample page.
+  const ecrusEssai = new Set(reRows.filter((r) => flag(r.essai)).map((r) => num(r.IDref_ecru)))
+  if (ecrusEssai.size > 0) {
+    for (const f of refFini.values()) if (ecrusEssai.has(f.IDref_ecru)) f.archive = true
   }
 
   let ctxRows = await query<Record<string, unknown>>(`SELECT IDcontexture, nom FROM contexture`)

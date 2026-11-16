@@ -814,15 +814,32 @@ commandesSousTraitantRouter.get('/lookups/refs-ecru', async (_req: Request, res:
   }
 })
 
+/** `?garder=12,34` — the references already on the order's lines: a line
+ *  picker never OFFERS an archived reference (an abandoned industrial trial is
+ *  one, LIVA #1370), but keeps the ones a line already carries so they still
+ *  show in the form. */
+function idsGardes(req: Request): Set<number> {
+  return new Set(String(req.query.garder ?? '').split(',').map((x) => parseInt(x, 10)).filter((x) => x > 0))
+}
+const estArchivee = (r: Record<string, unknown>) => Number(pickVal(r, /^archiv/i)) === 1
+
 // Flat ref_ecru list for the tricoteur line picker. Distinct from
 // `/lookups/refs-ecru` (which produces (ref_ecru, colori_ecru) pairs for
 // the ennoblisseur affectation drawer). Tricoteur lines pick a ref_ecru,
-// then a colori_ecru via /lookups/colori-ecru.
-commandesSousTraitantRouter.get('/lookups/refs-ecru-list', async (_req: Request, res: Response) => {
+// then a colori_ecru via /lookups/colori-ecru. Archived references are left
+// out (SELECT *: the archive column is accented on the legacy drivers).
+commandesSousTraitantRouter.get('/lookups/refs-ecru-list', async (req: Request, res: Response) => {
   try {
-    const rows = await query<{ IDref_ecru: number; reference: string | null; designation: string | null; prix: number | null }>(
-      `SELECT IDref_ecru, reference, designation, prix FROM ref_ecru ORDER BY reference`,
-    )
+    const garder = idsGardes(req)
+    const tous = await query<Record<string, unknown>>(`SELECT * FROM ref_ecru ORDER BY reference`)
+    const rows = tous
+      .filter((r) => !estArchivee(r) || garder.has(Number(r.IDref_ecru)))
+      .map((r) => ({
+        IDref_ecru: Number(r.IDref_ecru),
+        reference: (r.reference ?? null) as string | null,
+        designation: (r.designation ?? null) as string | null,
+        prix: (r.prix ?? null) as number | null,
+      }))
     const fixed = await fixEncoding(rows, 'ref_ecru', 'IDref_ecru', ['reference', 'designation'])
     res.json(
       fixed.map((r) => ({
@@ -866,12 +883,19 @@ commandesSousTraitantRouter.get('/lookups/colori-ecru', async (req: Request, res
   }
 })
 
-// ref_fini list for the line picker / reception form.
-commandesSousTraitantRouter.get('/lookups/refs-fini', async (_req: Request, res: Response) => {
+// ref_fini list for the line picker / reception form. Archived references are
+// left out, except those the order's lines already carry (`?garder=`).
+commandesSousTraitantRouter.get('/lookups/refs-fini', async (req: Request, res: Response) => {
   try {
-    const rows = await query<{ IDref_fini: number; reference: string | null; designation: string | null }>(
-      `SELECT IDref_fini, reference, designation FROM ref_fini ORDER BY reference`,
-    )
+    const garder = idsGardes(req)
+    const tous = await query<Record<string, unknown>>(`SELECT * FROM ref_fini ORDER BY reference`)
+    const rows = tous
+      .filter((r) => !estArchivee(r) || garder.has(Number(r.IDref_fini)))
+      .map((r) => ({
+        IDref_fini: Number(r.IDref_fini),
+        reference: (r.reference ?? null) as string | null,
+        designation: (r.designation ?? null) as string | null,
+      }))
     const fixed = await fixEncoding(rows, 'ref_fini', 'IDref_fini', ['reference', 'designation'])
     res.json(
       fixed.map((r) => ({

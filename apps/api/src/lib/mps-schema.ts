@@ -2096,6 +2096,19 @@ ALTER TABLE urgence_sst DROP CONSTRAINT IF EXISTS urgence_sst_type_check;
 ALTER TABLE urgence_sst ADD CONSTRAINT urgence_sst_type_check CHECK (type IN ('demande', 'relance', 'reponse', 'refus', 'levee', 'mail'));
 `,
   },
+  {
+    // A sample at its industrial trial IS a reference (LIVA #1370, Vincent
+    // 2026-11-16): it needs a knitting order, an OF, stock and a dyer order, so
+    // people typed twin references « ech 55 » by hand, linked to nothing. The
+    // sample now creates its provisional reference itself (named « E055 »,
+    // `essai = 1`, `ref_echantillon.idref_ecru` points at it); « Retenu »
+    // renames it and clears the flag — pieces, OFs and lots follow. An essai
+    // reference (and its finis) is never published on the site.
+    name: '0079_ref_ecru_essai',
+    sql: `
+ALTER TABLE ref_ecru ADD COLUMN essai smallint NOT NULL DEFAULT 0;
+`,
+  },
 ]
 
 export interface MigrationStatus {

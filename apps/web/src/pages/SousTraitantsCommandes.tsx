@@ -2014,14 +2014,20 @@ function LignesSection({
 
   // Line picker source — ref_fini for ennoblisseur, ref_ecru for tricoteur.
   // We keep two parallel React-Query hooks; only one fetches per commande.
+  // Archived references are not offered, except the ones this order's lines
+  // already carry (they must still show in the line form).
+  const refsDesLignes = useMemo(
+    () => Array.from(new Set(commande.lignes.map((l) => Number(l.IDreference) || 0).filter((x) => x > 0))).sort((a, b) => a - b).join(','),
+    [commande.lignes],
+  )
   const { data: refFiniLookup } = useQuery<RefFiniLookup[]>({
-    queryKey: ['commande-sst-refs-fini'],
-    queryFn: () => apiFetch('/commandes-sous-traitant/lookups/refs-fini'),
+    queryKey: ['commande-sst-refs-fini', refsDesLignes],
+    queryFn: () => apiFetch(`/commandes-sous-traitant/lookups/refs-fini?garder=${refsDesLignes}`),
     enabled: isEditing && isEnnoblisseur,
   })
   const { data: refEcruLookup } = useQuery<RefEcruLookup[]>({
-    queryKey: ['commande-sst-refs-ecru-list'],
-    queryFn: () => apiFetch('/commandes-sous-traitant/lookups/refs-ecru-list'),
+    queryKey: ['commande-sst-refs-ecru-list', refsDesLignes],
+    queryFn: () => apiFetch(`/commandes-sous-traitant/lookups/refs-ecru-list?garder=${refsDesLignes}`),
     enabled: isEditing && isTricoteur,
   })
   // Non-archived rectiligne references — the legacy combo's `archivé = 0`.

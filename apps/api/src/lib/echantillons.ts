@@ -2,19 +2,41 @@
 // the route so they can be tested without a database.
 //
 // A sample (`ref_echantillon`) is a trial écru fabric knitted before it is a
-// reference: its own tables, its own cycle (claude_doc/echantillons_plan.md —
-// separate tables on purpose, so no list of `ref_ecru` ever has to exclude
-// samples). The cycle ends in one of two ways: archived, or turned into a
-// `ref_ecru` (`idref_ecru` > 0, once — then it is closed for good).
+// reference: its own tables, its own cycle (claude_doc/echantillons_plan.md).
+// While it is a laboratory trial it lives apart from `ref_ecru`. The day it
+// goes to an INDUSTRIAL trial it needs what only a reference has — a knitting
+// order, an OF, stock, a dyer order — so it creates its provisional reference
+// (`ref_ecru.essai = 1`, named like the sample, `idref_ecru` pointing at it;
+// LIVA #1370). The cycle then ends in one of two ways: « retenu », the
+// provisional reference is renamed and loses its flag (pieces, OFs and lots
+// follow, nothing to convert), or archived together with its reference.
 
-export type StatutEchantillon = 'en_cours' | 'reference' | 'archive'
+export type StatutEchantillon = 'en_cours' | 'essai' | 'reference' | 'archive'
 
-/** « Devenu référence » wins over the archive flag: a passage archives the
- *  sample too, but what the user needs to know is which reference it became. */
-export function statutEchantillon(e: { archive: number | null; idref_ecru: number | null }): StatutEchantillon {
-  if ((Number(e.idref_ecru) || 0) > 0) return 'reference'
+/** `ref_essai` = the linked reference's `essai` flag (0 once retained).
+ *  « Devenu référence » wins over the archive flag: a passage archives the
+ *  sample too, but what the user needs to know is which reference it became.
+ *  An abandoned industrial trial keeps its link and its flag: archived. */
+export function statutEchantillon(e: { archive: number | null; idref_ecru: number | null; ref_essai?: number | null }): StatutEchantillon {
+  const lie = (Number(e.idref_ecru) || 0) > 0
+  const essai = lie && !!Number(e.ref_essai)
+  if (lie && !essai) return 'reference'
   if (Number(e.archive)) return 'archive'
+  if (essai) return 'essai'
   return 'en_cours'
+}
+
+/** Still followed (editable, relances): the laboratory trial and the industrial one. */
+export function estSuivi(statut: StatutEchantillon): boolean {
+  return statut === 'en_cours' || statut === 'essai'
+}
+
+/** The technical sheet (contexture, jauge, Ø, LFA, laize + poids TBM,
+ *  composition) lives on the linked reference while that one is an essai —
+ *  ONE recipe, the one the OF reads. The sample's own columns are then a
+ *  stale copy until « retenu » writes the retained sheet back as a snapshot. */
+export function ficheSurReference(e: { idref_ecru: number | null; ref_essai?: number | null }): boolean {
+  return (Number(e.idref_ecru) || 0) > 0 && !!Number(e.ref_essai)
 }
 
 /** The sample's display number: « E055 ». It has no name of its own — the
@@ -64,9 +86,12 @@ const DIAMETRE_LIBELLES: Record<number, string> = { 2: '26"', 3: '30"' }
 export const jaugeLibelle = (ord: number | null | undefined): string | null => JAUGE_LIBELLES[Number(ord)] ?? null
 export const diametreLibelle = (ord: number | null | undefined): string | null => DIAMETRE_LIBELLES[Number(ord)] ?? null
 
-/** Why a sample cannot become a reference, or null when it can. */
+/** Why a sample cannot become a reference, or null when it can — from the
+ *  laboratory (a new reference is created) or from its industrial trial (the
+ *  provisional reference is renamed). `pourcents` = the composition that will
+ *  be the reference's: the sample's, or the provisional reference's. */
 export function refusCreationReference(
-  e: { archive: number | null; idref_ecru: number | null },
+  e: { archive: number | null; idref_ecru: number | null; ref_essai?: number | null },
   pourcents: number[],
 ): 'deja_reference' | 'archive' | 'composition_incomplete' | null {
   const statut = statutEchantillon(e)
@@ -74,6 +99,70 @@ export function refusCreationReference(
   if (statut === 'archive') return 'archive'
   if (!compositionComplete(pourcents)) return 'composition_incomplete'
   return null
+}
+
+/** Why a sample cannot start its industrial trial, or null when it can. */
+export function refusEssaiIndustriel(
+  e: { archive: number | null; idref_ecru: number | null; ref_essai?: number | null },
+  pourcents: number[],
+): 'deja_reference' | 'deja_essai' | 'archive' | 'composition_incomplete' | null {
+  const statut = statutEchantillon(e)
+  if (statut === 'reference') return 'deja_reference'
+  if (statut === 'essai') return 'deja_essai'
+  if (statut === 'archive') return 'archive'
+  if (!compositionComplete(pourcents)) return 'composition_incomplete'
+  return null
+}
+
+/** `ref_ecru.lfa_tour_N` (text « 7.50 », sometimes « 7,5 ») back to a number. */
+export function lfaNombre(v: string | number | null | undefined): number {
+  const n = Number(String(v ?? '').trim().replace(',', '.'))
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/** The name a fini of the provisional reference takes when that one is
+ *  retained: « E055A » → « 104A », « E055 lavé » → « 104 lavé ». Null when the
+ *  fini is not named after the provisional reference — it is left alone. */
+export function nomFiniRetenu(ancienneRef: string, nouvelleRef: string, nomFini: string): string | null {
+  const ancien = ancienneRef.trim()
+  const nom = nomFini.trim()
+  if (!ancien || !nouvelleRef.trim()) return null
+  if (nom.toLowerCase().slice(0, ancien.length) !== ancien.toLowerCase()) return null
+  const reste = nom.slice(ancien.length)
+  // « E0551 » is another name, not « E055 » + a suffix.
+  if (/^\d/.test(reste)) return null
+  return `${nouvelleRef.trim()}${reste}`
+}
+
+// ── Real pieces of the industrial trial ──
+
+export interface PieceStockFaits {
+  /** stock_ecru.idsociete: 2 = still Tricotage Malterre's. */
+  idsociete: number
+  /** Where it physically is: 0 = the factory, else a sous-traitant. */
+  magasin_nom: string | null
+  expediee: boolean
+  donnee: boolean
+  /** Dyer order line it is affected to (not yet received back). */
+  ennoblisseur: { nom: string | null; commande: number } | null
+  /** Fini roll(s) it became. */
+  fini: { lot: string | null; reference: string | null } | null
+}
+
+/** Where a trial piece stands, in the words of the screens it is read on, and
+ *  whether it is still physically ours (what an abandon must warn about). */
+export function situationPiece(p: PieceStockFaits): { libelle: string; enStock: boolean } {
+  if (p.fini) {
+    const quoi = [p.fini.reference, p.fini.lot ? `lot ${p.fini.lot}` : null].filter(Boolean).join(' · ')
+    return { libelle: quoi ? `Ennoblie (${quoi})` : 'Ennoblie', enStock: false }
+  }
+  if (p.donnee) return { libelle: 'Donnée', enStock: false }
+  if (p.expediee) return { libelle: 'Expédiée', enStock: false }
+  if (p.ennoblisseur) {
+    return { libelle: `En ennoblissement chez ${p.ennoblisseur.nom ?? 'le sous-traitant'} (commande ${p.ennoblisseur.commande})`, enStock: true }
+  }
+  if (p.idsociete === 2) return { libelle: 'Chez Tricotage Malterre', enStock: true }
+  return { libelle: `En stock · ${p.magasin_nom ?? 'Malterre'}`, enStock: true }
 }
 
 // ── Relance (follow-up of the research, Vincent 2026-10-21) ──
@@ -92,14 +181,14 @@ export function joursAvant(date: string, aujourdhui: string): number {
 }
 
 /** Red from the relance date on, amber within the 7 days before, nothing
- *  otherwise — and only on an open sample: one kept or archived is no longer
- *  followed. No date on an open sample = nothing to say (the migration gave
+ *  otherwise — and only on a followed sample (laboratory or industrial
+ *  trial): one kept or archived is no longer followed. No date on an open sample = nothing to say (the migration gave
  *  every open sample one; a cleared date is a deliberate choice). */
 export function urgenceRelance(
   e: { statut: StatutEchantillon; date_relance: string | null },
   aujourdhui: string,
 ): { urgence: UrgenceRelance | null; jours: number | null } {
-  if (e.statut !== 'en_cours' || !e.date_relance) return { urgence: null, jours: null }
+  if (!estSuivi(e.statut) || !e.date_relance) return { urgence: null, jours: null }
   const jours = joursAvant(e.date_relance, aujourdhui)
   if (jours <= 0) return { urgence: 'retard', jours }
   if (jours <= AMBRE_JOURS) return { urgence: 'bientot', jours }

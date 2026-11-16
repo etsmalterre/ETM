@@ -45,6 +45,7 @@ import {
   CheckCircle2,
   Circle,
   Ruler,
+  Factory,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -79,6 +80,8 @@ interface RefEcruListRow {
   prix: number | null
   Jauge: number | null
   diametre: number | null
+  /** 1 = provisional reference of a sample's industrial trial (LIVA #1370). */
+  essai?: number
   coloris_count: number
 }
 
@@ -211,6 +214,9 @@ interface RefEcruDetail {
   bio: number
   recycle: number
   archive: number
+  /** 1 = provisional reference of a sample's industrial trial: its name and
+   *  its archiving are the sample's gestures (Échantillons), not this fiche's. */
+  essai?: number
   commentaire: string | null
   observations: string | null
   tombe_metier: string | null
@@ -627,6 +633,10 @@ function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: 
   const [selectedId, setSelectedId] = useState<number | null>(() => Number(searchParams.get('id')) || null)
   const [searchQuery, setSearchQuery] = useState('')
   const [archivedFilter, setArchivedFilter] = useState(false) // false = En cours, true = Archivé
+  // `?id=` does not know which list holds the reference (an abandoned
+  // industrial trial is archived): hold the auto-select until its detail says
+  // so and that list is loaded — it used to land on the first row.
+  const [deepLinkId, setDeepLinkId] = useState<number | null>(() => Number(searchParams.get('id')) || null)
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState<HeaderDraft>(emptyDraft())
   const originalDraftRef = useRef<HeaderDraft | null>(null)
@@ -653,7 +663,7 @@ function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: 
   const [emailOpen, setEmailOpen] = useState(false)
 
   const { data: refs, isLoading, isError, error } = useRefsEcru(archivedFilter)
-  const { data: detail, isLoading: detailLoading } = useRefEcruDetail(selectedId)
+  const { data: detail, isLoading: detailLoading, isError: detailError } = useRefEcruDetail(selectedId)
   const { data: contextures } = useContextures(isEditing)
   const { data: clients } = useClients(isEditing, clientsLookupPath)
   const { data: refsFil } = useRefsFilLookup(isEditing)
@@ -688,8 +698,17 @@ function CirculaireReferences({ obsOfEditor, clientsLookupPath, onKindChange }: 
     selectedId,
     getId: (r) => r.IDref_ecru,
     select: setSelectedId,
-    suspended: isEditing || autoEditForId !== null,
+    suspended: isEditing || autoEditForId !== null || deepLinkId !== null,
   })
+
+  useEffect(() => {
+    if (deepLinkId === null) return
+    if (detailError) { setDeepLinkId(null); return }
+    if (detail?.IDref_ecru !== deepLinkId) return
+    const archive = !!detail.archive
+    if (archivedFilter !== archive) { setArchivedFilter(archive); return }
+    if (refs !== undefined) setDeepLinkId(null)
+  }, [deepLinkId, detail, detailError, archivedFilter, refs])
 
   const startEdit = useCallback(() => {
     if (!detail) return
@@ -1153,6 +1172,14 @@ function RefEcruList({
                 <p className="font-medium text-sm truncate flex-1">{r.reference || '—'}</p>
                 {!!r.bio && <Leaf className="h-3.5 w-3.5 text-green-600 flex-shrink-0" aria-label="Bio" />}
                 {!!r.recycle && <Recycle className="h-3.5 w-3.5 text-teal-600 flex-shrink-0" aria-label="Recyclé" />}
+                {!!r.essai && (
+                  <span
+                    className="flex-shrink-0 inline-flex items-center gap-0.5 rounded-full border border-teal/30 bg-teal/10 px-1.5 py-0 text-[10px] font-medium text-teal"
+                    title="Référence provisoire : essai industriel d'un échantillon"
+                  >
+                    <Factory className="h-2.5 w-2.5" />Essai
+                  </span>
+                )}
               </div>
               {(r.designation || r.contexture_nom) && (
                 <p className="text-xs text-muted-foreground mt-0.5 truncate">
@@ -1223,6 +1250,8 @@ function DetailHeader({
 }) {
   if (!detail && !isLoading) return null
   const archived = !!detail?.archive
+  // An industrial-trial reference is archived (and reopened) with its sample.
+  const essai = !!detail?.essai
   return (
     <div className="flex-shrink-0 pt-0.5">
       <div className="flex items-center gap-3">
@@ -1291,9 +1320,11 @@ function DetailHeader({
                   variant="outline"
                   size="icon"
                   className="h-9 w-9"
-                  title={archived ? 'Désarchiver' : 'Archiver'}
+                  title={essai
+                    ? `Essai industriel : ${archived ? 'rouvrez' : 'archivez'} l'échantillon${detail?.echantillon_origine ? ` ${detail.echantillon_origine.numero}` : ''}, la référence le suit`
+                    : archived ? 'Désarchiver' : 'Archiver'}
                   onClick={onArchive}
-                  disabled={isArchiving}
+                  disabled={isArchiving || essai}
                 >
                   {isArchiving ? <Loader2 className="h-4 w-4 animate-spin" /> : archived ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
                 </Button>
@@ -3018,10 +3049,10 @@ function InformationsTab({ detail, isEditing, draft, onDraftChange }: {
         <KV label="Fiche technique MAJ" value={detail.date_maj_ft ? formatHfsqlDate(detail.date_maj_ft) : '—'} />
         {detail.echantillon_origine && (
           <KV
-            label="Issue de l'échantillon"
+            label={detail.essai ? "Essai industriel de l'échantillon" : "Issue de l'échantillon"}
             value={
               <Link
-                to={`/tombe-metier/echantillons?id=${detail.echantillon_origine.IDref_echantillon}&statut=reference`}
+                to={`/tombe-metier/echantillons?id=${detail.echantillon_origine.IDref_echantillon}`}
                 className="font-medium text-accent hover:underline"
               >
                 {detail.echantillon_origine.numero}
@@ -3029,8 +3060,17 @@ function InformationsTab({ detail, isEditing, draft, onDraftChange }: {
             }
           />
         )}
-        {(!!detail.archive || !!detail.has_rolls || !!detail.has_orders) && (
+        {(!!detail.archive || !!detail.has_rolls || !!detail.has_orders || !!detail.essai) && (
           <div className="flex flex-wrap gap-1.5 pt-1">
+            {!!detail.essai && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full border border-teal/30 bg-teal/10 px-1.5 py-0 text-[10px] font-medium text-teal"
+                title="Référence provisoire : elle prend son numéro définitif quand l'échantillon est retenu"
+              >
+                <Factory className="h-2.5 w-2.5" />
+                Essai industriel
+              </span>
+            )}
             {(!!detail.has_rolls || !!detail.has_orders) && (
               <Badge variant="secondary" className="text-[10px] py-0 gap-1" title="Contexture, jauge, diamètre, composition figés">
                 <Lock className="h-2.5 w-2.5" />
