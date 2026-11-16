@@ -2082,6 +2082,13 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
     ])
     const fermSst = (fermeturesSst.get(Number(header.IDsous_traitant) || 0) ?? []).map(({ du, au }) => ({ du, au }))
 
+    // Each menu has its own statuses: a knitting order is read by
+    // lib/sst-tricotage.ts, everything else by computePhase.
+    const famille = familleOfTypeSst(sousTraitantIDtypeSst)
+    const etatTric = famille === 'tricotage' ? (await etatsTricotage([id])).get(id) ?? null : null
+    const etatEnn = famille === 'ennoblissement' ? (await etatsEnnoblissement([id])).get(id) ?? null : null
+    const phase: SstPhase = etatTric?.phase ?? etatEnn?.etape ?? await computePhase(id, Number(header.est_soldee) || 0)
+
     const lignesEnriched = fixedLignes.map((l) => {
       const refId = Number(l.IDreference) || 0
       const colId = Number(l.IDColoris) || 0
@@ -2104,6 +2111,19 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
         ref_rendement: refRendement,
         colori_reference: resolveColoris(colId, typeKind, refId) || null,
         ...agg,
+        // A lot of the line is back at the dyer for a reprise (LIVA #1377): the line
+        // is no longer delivered, its délai alerts again until the lot returns.
+        ...(() => {
+          const rep = (etatEnn?.enReprise ?? []).filter((r) => r.idligne === Number(l.IDligne_commande_sous_traitant))
+          if (rep.length === 0) return {}
+          return {
+            livree_le: null,
+            reprise: {
+              lots: rep.map((r) => r.lot),
+              motif: rep.map((r) => r.motif).find((m) => !!m) ?? null,
+            },
+          }
+        })(),
         ...(() => {
           const reports = reportsDelai.get(Number(l.IDligne_commande_sous_traitant)) ?? []
           const total = retardDelai(l.date_delai, l.date_livraison, fermSst)
@@ -2126,12 +2146,6 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
     // keep manual prix entry. The flag is per-commande, not per-line,
     // because IDsous_traitant is set once at commande creation.
     const autoPricingEnabled = await hasTariffData(Number(header.IDsous_traitant) || 0)
-    // Each menu has its own statuses: a knitting order is read by
-    // lib/sst-tricotage.ts, everything else by computePhase.
-    const famille = familleOfTypeSst(sousTraitantIDtypeSst)
-    const etatTric = famille === 'tricotage' ? (await etatsTricotage([id])).get(id) ?? null : null
-    const etatEnn = famille === 'ennoblissement' ? (await etatsEnnoblissement([id])).get(id) ?? null : null
-    const phase: SstPhase = etatTric?.phase ?? etatEnn?.etape ?? await computePhase(id, Number(header.est_soldee) || 0)
 
     // Most recent bon de commande send date (envoi_email IDtype_doc=13) for
     // this commande. The frontend uses it to show "Attente depuis X jours"

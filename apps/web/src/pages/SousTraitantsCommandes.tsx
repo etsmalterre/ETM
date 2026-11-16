@@ -178,6 +178,10 @@ interface LotCycle {
   jours?: number | null
   delai?: number | null
 }
+/** « Reprise du lot MA109438 » / « Reprise des lots MA1 et MA2 ». */
+function libelleReprise(lots: string[]): string {
+  return lots.length > 1 ? `Reprise des lots ${lots.join(' et ')}` : `Reprise du lot ${lots[0] ?? ''}`
+}
 interface CycleCommande {
   urgence: 'late' | 'soon' | null
   main: MainCycle | null
@@ -264,6 +268,10 @@ interface LigneCommande {
   /** 'YYYYMMDD' once every écru handed to the dyer came back dyed: the line is
    *  delivered, its délai stops alerting (API lib/ligne-sst-livree.ts). */
   livree_le?: string | null
+  /** A lot of the line is back at the dyer for a reprise: the line is no longer
+   *  delivered (`livree_le` null) and its délai alerts again, like any délai
+   *  (LIVA #1377). `motif` starts the report that pushes it. */
+  reprise?: { lots: string[]; motif: string | null }
   /** Per-lot breakdown of the received fini rolls (empty lot groups under
    *  ''). Feeds the "Ml reçus" tooltip in the totals footer. */
   fini_lots?: Array<{ lot: string; nb: number; metrage: number }>
@@ -745,7 +753,8 @@ function raisonCarte(row: CommandeListRow, urgence: 'late' | 'soon' | null, tric
       // The client holds the hand (a coloris soumission): it is the one to chase.
       if (row.main === 'client') return tard ? 'Réponse coloris : relancer le client' : 'Réponse coloris : dernier jour demain'
       const d = quand(row.relance) || (row.earliest_delivery ? quand(row.earliest_delivery) : '')
-      if (tard) return d ? `Délai du ${d} dépassé : relancer` : 'Sans délai : le demander'
+      // No « : relancer » after it (Vincent 2026-11-16): a past délai says it by itself.
+      if (tard) return d ? `Délai du ${d} dépassé` : 'Sans délai : le demander'
       return d ? `Délai le ${d} : s’assurer du départ` : null
     }
   }
@@ -2131,6 +2140,10 @@ function LignesSection({
     const t = commande.cycle?.traitement
     if (t && t.resteClient > 0 && l.date_livraison === t.delai.replace(/-/g, '')) {
       setReportForm({ imputable: 'client', motif: `Réponse coloris du client : ${t.resteClient} j ouvré${t.resteClient > 1 ? 's' : ''} au-delà des ${REPONSE_CLIENT_J} prévus` })
+    } else if (l.reprise) {
+      // A lot of the line is in reprise: pushing the délai is the expected gesture, its
+      // motif starts as the reprise's. Who it is due to stays the person's call.
+      setReportForm({ imputable: null, motif: `${libelleReprise(l.reprise.lots)}${l.reprise.motif ? ` : ${l.reprise.motif}` : ''}` })
     }
   }
 
@@ -2553,6 +2566,9 @@ function LineCard({
     const overdue = urgency === 'late' ? deliveryOverdueDays(attendu) : 0
     const retardClient = Math.max(Number(line.retard_client_jours) || 0, suivi?.retardClient ?? 0)
     const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
+    // A lot of the line is back at the dyer (LIVA #1377): the délai alerts like any
+    // other; while it is not past, the line says why it is not « livrée ».
+    const reprise = !lineDone ? line.reprise ?? null : null
     return (
       <Tooltip side="top" content={
         <DelaiSstDetail delai={dateLivRaw} engagement={dateDelaiRaw} retard={retard} retardClient={retardClient} livreeLe={livreeLe}
@@ -2565,7 +2581,7 @@ function LineCard({
               {formatHfsqlDate(dateLivRaw)}
             </span>
           </p>
-          {(livreeLe || attente || overdue >= 1 || retard > 0 || retardClient > 0) && (
+          {(livreeLe || attente || overdue >= 1 || reprise || retard > 0 || retardClient > 0) && (
             <p className="mt-0.5 flex items-center justify-end gap-1.5 text-[11px] whitespace-nowrap">
               {livreeLe ? (
                 <span className="inline-flex items-center gap-1 text-green-700">
@@ -2577,16 +2593,18 @@ function LineCard({
                   : <span className="inline-flex items-center gap-1 text-violet-700"><Send className="h-3 w-3" />Coloris chez le client depuis le {jjmm(attente.depuis)}</span>
               ) : overdue >= 1 ? (
                 <span className="font-medium text-red-600">Dépassé de {overdue} jour{overdue > 1 ? 's' : ''} : relancer</span>
+              ) : reprise ? (
+                <span className="inline-flex items-center gap-1 text-muted-foreground"><RotateCcw className="h-3 w-3" />{libelleReprise(reprise.lots)}</span>
               ) : null}
               {retard > 0 && dateDelaiRaw && (
                 <span className="font-medium text-red-600" title={`Engagement initial : ${formatHfsqlDate(dateDelaiRaw)}`}>
-                  {(livreeLe || attente || overdue >= 1) && <span className="text-muted-foreground font-normal">· </span>}
-                  {livreeLe || attente || overdue >= 1 ? `retard ${retard} j` : `Retard ${retard} j sur l’engagement du ${formatHfsqlDate(dateDelaiRaw)}`}
+                  {(livreeLe || attente || overdue >= 1 || reprise) && <span className="text-muted-foreground font-normal">· </span>}
+                  {livreeLe || attente || overdue >= 1 || reprise ? `retard ${retard} j` : `Retard ${retard} j sur l’engagement du ${formatHfsqlDate(dateDelaiRaw)}`}
                 </span>
               )}
               {retardClient > 0 && (
                 <span className="font-medium text-violet-700" title="Jours ouvrés pris par le client au-delà de ses 5 pour répondre au coloris : son retard, pas celui du sous-traitant">
-                  {(livreeLe || attente || overdue >= 1 || retard > 0) && <span className="text-muted-foreground font-normal">· </span>}
+                  {(livreeLe || attente || overdue >= 1 || reprise || retard > 0) && <span className="text-muted-foreground font-normal">· </span>}
                   client +{retardClient} j
                 </span>
               )}

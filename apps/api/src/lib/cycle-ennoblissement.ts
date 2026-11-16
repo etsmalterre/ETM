@@ -121,6 +121,8 @@ export interface LotFait {
   repriseNature?: 'rame' | 'teinture' | null
   /** How many reprises the lot went through (« repris ×N »). */
   reprises?: number
+  /** The open reprise's motif. */
+  repriseMotif?: string | null
 }
 
 /** Working days the other side gets before we chase. Estimates (2026-10-11). */
@@ -294,7 +296,9 @@ export function etatLot(l: LotFait): EtatLot {
  *  « En contrôle »: the lot's detail (contrôle ennoblisseur / Malterre, soumissions…)
  *  lives on Qualité › Suivi lots. Once every lot is validated, the order goes back
  *  « En traitement » while écru is still at the dyer (Vincent 2026-11-02; « En
- *  réception » removed). */
+ *  réception » removed). A lot in reprise is back at the dyer too: it no longer
+ *  holds the order « En contrôle », the order is « En traitement » again on its
+ *  line's délai — no « En reprise » order step (Vincent 2026-11-16, LIVA #1377). */
 export type EtapeCommande = 'non_envoye' | 'attente_delai' | 'en_teinture' | 'en_controle' | 'a_cloturer' | 'terminee'
 
 /** The step as every screen prints it (Sous-traitants › Ennoblissement, a client line's Ennoblissement tab). */
@@ -324,6 +328,16 @@ export interface CommandeFait {
   ecruChezTeinturier: number
 }
 
+/** A lot back at the dyer for a reprise (LIVA #1377). */
+export interface RepriseEnCours {
+  lot: string
+  /** Its dye line; 0 = unknown. */
+  idligne: number
+  /** Why it went back (the motif typed at « Reprendre »): the report of the
+   *  line's délai starts from it. */
+  motif: string | null
+}
+
 export interface EtatCommande {
   etape: EtapeCommande
   main: Main | null
@@ -338,6 +352,8 @@ export interface EtatCommande {
    *  the dyer): from the bon de commande to the earliest open line's délai —
    *  the Journal's « Prochaines étapes » card (Vincent 2026-11-11). */
   traitement?: EtatTraitement
+  /** Lots back at the dyer for a reprise. */
+  enReprise?: RepriseEnCours[]
 }
 
 /** The client answers a coloris soumission while the dyed matter waits at the
@@ -466,10 +482,25 @@ export function etatCommande(c: CommandeFait): EtatCommande {
   // rolls received = delivered). A lot open before it (coloris soumis, validé,
   // en rame, reteinture) is still the dyer's work: the order stays « en
   // traitement » on its délai, the lot is followed on Suivi lots.
-  const recus = c.lots.map((l, i) => ({ l, e: tous[i] })).filter(({ l, e }) => e.etape !== 'valide' && !!l.reception)
+  // A lot in reprise is back at the dyer (LIVA #1377): not « received and open ».
+  const recus = c.lots.map((l, i) => ({ l, e: tous[i] })).filter(({ l, e }) => e.etape !== 'valide' && e.etape !== 'en_reprise' && !!l.reception)
   // A solde = écru still at the dyer once something came back.
   const solde = c.lots.some((l) => !!l.reception) && c.ecruChezTeinturier > 0
   if (c.est_soldee) return { etape: 'terminee', main: null, relance: null, lots: ouverts, solde: false }
+  const delaiLigne = new Map((c.lignesOuvertes ?? []).map((l) => [l.id, l.delai]))
+  const enReprise: RepriseEnCours[] = c.lots.filter((_, i) => tous[i].etape === 'en_reprise')
+    .map((l) => ({ lot: l.lot, idligne: l.idligne ?? 0, motif: l.repriseMotif ?? null }))
+  // The dyer's time while it holds matter of the order. Reprises alone (no
+  // solde): the délai followed is the one of the reworked lots' lines — the
+  // older délai of a delivered line says nothing of them. That délai is usually
+  // past the day the lot goes back: a reprise is a delay, the order is red at
+  // once until the line's délai is pushed (a report), like any late délai.
+  const chezTeinturier = () => {
+    const delaisReprise = enReprise.map((r) => delaiLigne.get(r.idligne)).filter((d): d is string => !!d).sort()
+    const vue = !solde && delaisReprise.length > 0 ? { ...c, delai: delaisReprise[0] } : c
+    const t = traitementDe(vue)
+    return { ...chasseTraitement(vue, t), traitement: t, ...(enReprise.length > 0 ? { enReprise } : {}) }
+  }
   if (c.lots.length === 0) {
     if (c.rangStatut === 0) return { etape: 'non_envoye', main: 'nous', relance: null, lots: [], solde: false }
     if (c.rangStatut === 1) {
@@ -490,16 +521,15 @@ export function etatCommande(c: CommandeFait): EtatCommande {
   // done; the dyer's measures are asked by the daily Point. Only écru still at
   // the dyer (a solde) keeps the order on the dyer's délai. Every lot validated:
   // back « en traitement » while écru is still at the dyer, else ours to close
-  // (Vincent 2026-11-02).
+  // (Vincent 2026-11-02). A lot in reprise beside a lot in control keeps the
+  // dyer's délai the same way: its rolls are at the dyer.
   if (recus.length > 0) {
-    if (!solde) return { etape: 'en_controle', main: null, relance: null, lots: ouverts, solde }
-    const t = traitementDe(c)
-    return { etape: 'en_controle', ...chasseTraitement(c, t), lots: ouverts, solde, traitement: t }
+    if (!solde && enReprise.length === 0) return { etape: 'en_controle', main: null, relance: null, lots: ouverts, solde }
+    return { etape: 'en_controle', ...chezTeinturier(), lots: ouverts, solde }
   }
-  if (solde || ouverts.length > 0) {
-    const t = traitementDe(c)
-    return { etape: 'en_teinture', ...chasseTraitement(c, t), lots: ouverts, solde, traitement: t }
-  }
+  // Nothing in control and matter at the dyer — a solde, a lot before its
+  // reception, a lot in reprise: « en traitement » on the délai.
+  if (solde || ouverts.length > 0) return { etape: 'en_teinture', ...chezTeinturier(), lots: ouverts, solde }
   // Every lot validated, nothing left at the dyer: ours to close (8565).
   return { etape: 'a_cloturer', main: 'nous', relance: null, lots: ouverts, solde }
 }
@@ -832,6 +862,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
           repriseOuverte: rep?.ouverte ?? false,
           repriseNature: rep?.natureOuverte ?? null,
           reprises: rep?.nombre ?? 0,
+          repriseMotif: rep?.motifOuverte ?? null,
         }
       })
     // A soumission sent before 2026-10-22 for a lot not received yet (9023 /

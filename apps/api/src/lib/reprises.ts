@@ -297,6 +297,8 @@ export interface FaitReprisesLot {
   dernierRetourTeinture: string | null
   /** The open reprise's nature (null: none open). The point says « reprise teinture ». */
   natureOuverte: 'rame' | 'teinture' | null
+  /** Why the open reprise was opened (the motif typed then; null: none open, or none typed). */
+  motifOuverte: string | null
 }
 
 /** Per `${ligne}:${lot}`: the reprise facts the Ennoblissement cycle reads. */
@@ -304,14 +306,15 @@ export async function faitsReprises(ligneIds: number[]): Promise<Map<string, Fai
   const out = new Map<string, FaitReprisesLot>()
   const uniques = [...new Set(ligneIds.filter((x) => x > 0))]
   if (uniques.length === 0) return out
-  const rows = await mpsPg()<{ ligne: number; lot: string; nombre: number; ouverte: boolean; retour: string | null; retour_teinture: string | null; nature_ouverte: 'rame' | 'teinture' | null }[]>`
+  const rows = await mpsPg()<{ ligne: number; lot: string; nombre: number; ouverte: boolean; retour: string | null; retour_teinture: string | null; nature_ouverte: 'rame' | 'teinture' | null; motif_ouverte: string | null }[]>`
     SELECT idligne_commande_sous_traitant AS ligne, lot, count(*)::int AS nombre, bool_or(statut = 'ouverte') AS ouverte,
            to_char(max(retour_le) AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS retour,
            to_char(max(retour_le) FILTER (WHERE nature = 'teinture') AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS retour_teinture,
-           max(nature) FILTER (WHERE statut = 'ouverte') AS nature_ouverte
+           max(nature) FILTER (WHERE statut = 'ouverte') AS nature_ouverte,
+           max(motif) FILTER (WHERE statut = 'ouverte') AS motif_ouverte
     FROM reprise WHERE idligne_commande_sous_traitant = ANY(${uniques}) GROUP BY 1, 2`
   for (const r of rows) {
-    out.set(`${Number(r.ligne)}:${r.lot}`, { nombre: Number(r.nombre), ouverte: !!r.ouverte, dernierRetour: r.retour, dernierRetourTeinture: r.retour_teinture, natureOuverte: r.nature_ouverte ?? null })
+    out.set(`${Number(r.ligne)}:${r.lot}`, { nombre: Number(r.nombre), ouverte: !!r.ouverte, dernierRetour: r.retour, dernierRetourTeinture: r.retour_teinture, natureOuverte: r.nature_ouverte ?? null, motifOuverte: (r.motif_ouverte ?? '').trim() || null })
   }
   return out
 }

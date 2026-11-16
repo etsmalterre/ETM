@@ -241,6 +241,19 @@ measures; only écru still at the dyer (a solde) keeps the order on the dyer's d
 The lot's own step — contrôle ennoblisseur / Malterre, soumissions, reprise — is
 detailed on Suivi lots only) · back to En traitement once every lot is validated while écru is still at the
 dyer (the « solde ») · À clôturer (every lot validated, nothing at the dyer) · Terminée.
+**A lot in reprise sends the order back « En traitement »** (Vincent 2026-11-16, LIVA #1377, order 9061: lot
+refused by the client, sent back, the order stayed « En contrôle » with nothing to do). The lot is at the dyer again,
+so it no longer counts as « received and open »; **no « En reprise » order step** (same hand, same date as En
+traitement; a coloris refused before the stenter already works this way). The order is chased on the délai of the
+reworked lot's LINE (never an older delivered line's), and the API nulls that line's `livree_le`. **A reprise is a
+delay, so the order turns red at once** on the délai of before, with the STANDARD wording (« Délai du 21/10
+dépassé » on the card, « Dépassé de N jours : relancer » on the line): no reprise-specific text, the lot's « En
+reprise » pill says why (Vincent 2026-11-16; a « repousser le délai » wording was built and dropped the same day).
+The user pushes the line's délai: the usual report (motif pre-filled from the reprise's, imputable to choose); the
+order then follows the new date. A line with a lot in reprise whose délai is not past prints a neutral « Reprise du
+lot … » in its corner. **The list card no longer ends on « : relancer »** (Vincent 2026-11-16: a past délai says it
+by itself) — « Délai du JJ/MM dépassé », Tricotage included. A lot in reprise beside a lot in control: « En contrôle », with the dyer's délai for the reprise.
+The Point is unchanged (§5 « reprise : quand revient-il ? » reads the LOT's step).
 **Journal › « Prochaines étapes » while « En traitement »** (Vincent 2026-11-11): a card « En traitement » with the dyer's
 time from the bon de commande to the earliest open line's délai (J-N, gauge in working days, later lines named
 « + 1 autre ligne au 26/11 »), also on a solde still at the dyer; `EtatCommande.traitement`. Its colour is the order's

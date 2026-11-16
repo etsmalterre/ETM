@@ -288,8 +288,46 @@ describe('etatCommande', () => {
     const partiel = etatCommande(commande({ lots: [lot({ etat: 5, mesuresTeinturier: true, stabilites: soum({ le: '2026-10-20' }) })], ecruChezTeinturier: 4 }))
     // Écru still at the dyer: the order keeps the dyer's délai for that solde.
     expect(partiel).toMatchObject({ etape: 'en_controle', solde: true, main: 'teinturier', relance: '2026-10-20' })
-    const repris = etatCommande(commande({ lots: [lot({ etat: 2 })], ecruChezTeinturier: 0 }))
-    expect(repris).toMatchObject({ etape: 'en_controle', main: null, relance: null })
+  })
+  it('a lot in reprise is back at the dyer: the order is « en traitement » again on its line’s délai (9061, LIVA #1377)', () => {
+    // Line délai 21/10, lot received 21/10, refused by the client, sent back 16/11.
+    const repris = lot({ lot: 'MA109438', idligne: 9034, etat: 2, reception: '2026-10-21', repriseOuverte: true, repriseMotif: 'Refus client : retraits non conformes (7 %)' })
+    const c = commande({ delai: '2026-10-21', lignesOuvertes: [{ id: 9034, delai: '2026-10-21' }], lots: [repris] })
+    const e = etatCommande(c)
+    expect(e).toMatchObject({ etape: 'en_teinture', main: 'teinturier', relance: '2026-10-21', solde: false })
+    expect(e.enReprise).toEqual([{ lot: 'MA109438', idligne: 9034, motif: 'Refus client : retraits non conformes (7 %)' }])
+    expect(e.lots.map((l) => l.etape)).toEqual(['en_reprise'])
+    // A reprise is a delay: red at once, on the délai of before.
+    expect(urgenceCommande(e, '2026-11-16')).toBe('late')
+    // The délai pushed after the dyer's answer: the order follows the new date, chased like any délai.
+    const pousse = etatCommande({ ...c, delai: '2026-11-25', lignesOuvertes: [{ id: 9034, delai: '2026-11-25' }] })
+    expect(pousse).toMatchObject({ etape: 'en_teinture', main: 'teinturier', relance: '2026-11-25' })
+    expect(urgenceCommande(pousse, '2026-11-16')).toBeNull()
+    expect(urgenceCommande(pousse, '2026-11-25')).toBe('late')
+    // A lot « en reprise » from before 2026-10-12 (état 2, no reprise row): the same.
+    const ancien = etatCommande(commande({ lots: [lot({ etat: 2 })] }))
+    expect(ancien).toMatchObject({ etape: 'en_teinture', main: 'teinturier', relance: '2026-10-20' })
+  })
+  it('reprises alone: the délai followed is the reworked lot’s line, not an older delivered line', () => {
+    const e = etatCommande(commande({
+      delai: '2026-10-01',
+      delaisLignes: ['2026-10-01', '2026-11-25'],
+      lignesOuvertes: [{ id: 1, delai: '2026-10-01' }, { id: 2, delai: '2026-11-25' }],
+      lots: [lot({ lot: 'MA1', idligne: 1, etat: 3 }), lot({ lot: 'MA2', idligne: 2, etat: 2, repriseOuverte: true })],
+    }))
+    expect(e).toMatchObject({ etape: 'en_teinture', relance: '2026-11-25' })
+    expect(e.traitement?.delai).toBe('2026-11-25')
+  })
+  it('a lot in reprise beside a lot in control: « en contrôle », and the dyer’s délai for the reprise', () => {
+    const e = etatCommande(commande({
+      lignesOuvertes: [{ id: 7, delai: '2026-10-20' }],
+      lots: [
+        lot({ lot: 'MA1', idligne: 7, reception: '2026-10-19' }),
+        lot({ lot: 'MA2', idligne: 7, etat: 2, reception: '2026-10-19', repriseOuverte: true }),
+      ],
+    }))
+    expect(e).toMatchObject({ etape: 'en_controle', main: 'teinturier', relance: '2026-10-20' })
+    expect(e.lots.map((l) => l.etape)).toEqual(['attente_mesures', 'en_reprise'])
   })
   it('a lot open before any reception (coloris validé, en rame): still « en traitement » on the délai (9096, 2026-11-03)', () => {
     const enRame = lot({ reception: null, coloris: soum({ requise: true, le: '2026-10-09', accepte: true }), okRamerLe: '2026-10-12' })
