@@ -5,7 +5,9 @@
 //   fini rolls not validated yet   → the rest of the quality control, counted from their reception
 //   écru pieces reserved           → dyer, then quality control (none on a reference shipped dès la réception)
 //   écru still to knit (orders)    → knitter, then dyer, then quality control
-//   yarn reserved                  → from the supplier's date (or today if in stock), knitter, dyer, control
+//   yarn reserved                  → from the supplier's date (or today if in stock), knitter, dyer, control;
+//                                    a supplier past its date ends today at best, and the step carries the
+//                                    delay on its engagement (lib/report-delai-fil.ts, Vincent 2026-11-16)
 //   nothing reserved               → a yarn estimate, knitter, then dyer, then quality control
 // A line whose matter covers SEUIL_EXPEDIE (90 %) of it is served by that matter: the uncovered rest is
 // ignored, as shipping counts the line done at the same threshold (AGAPE 3892: 1,1 Ml short of 214 Ml
@@ -99,6 +101,10 @@ export interface EntreeDelai {
   fil: number
   /** YYYYMMDD the reserved yarn arrives (supplier order), null = in stock */
   filAttenduLe: string | null
+  /** the supplier order that yarn waits on (the latest one): its current date and its engagement
+   *  (lib/report-delai-fil.ts). Given, the « Fil » step reads like a partner's: it ends on that date, or
+   *  today when it is past, and carries the supplier's delay. Absent = filAttenduLe alone. */
+  filCommande?: { partenaire: string | null; delai: string | null; engagement?: string | null } | null
   /** kg of écru per unit of the line (1 on a Kg line, 1 / rendement on Ml), null = unknown */
   kgParUnite: number | null
   aujourdhui: string
@@ -211,11 +217,17 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
     portions.push(suite(e.aujourdhui, true, lance))
   }
   if (fil > 0) {
-    const arrivee = e.filAttenduLe && e.filAttenduLe > e.aujourdhui ? e.filAttenduLe : null
-    portions.push([
-      ...(arrivee ? [{ libelle: 'Fil', du: e.aujourdhui, au: arrivee, jours: joursOuvresEntre(e.aujourdhui, arrivee) }] : []),
-      ...suite(arrivee ?? e.aujourdhui, true),
-    ])
+    if (e.filCommande) {
+      // Yarn on a supplier order: its date, « if it delivers today » once past, and its delay on its engagement.
+      const etape = chezPartenaire('Fil', e.filCommande, FIL_ESTIME_JOURS, [])
+      portions.push([etape, ...suite(etape.au, true)])
+    } else {
+      const arrivee = e.filAttenduLe && e.filAttenduLe > e.aujourdhui ? e.filAttenduLe : null
+      portions.push([
+        ...(arrivee ? [{ libelle: 'Fil', du: e.aujourdhui, au: arrivee, jours: joursOuvresEntre(e.aujourdhui, arrivee) }] : []),
+        ...suite(arrivee ?? e.aujourdhui, true),
+      ])
+    }
   }
   if (rien > 0) {
     const au = ajouterJoursOuvres(e.aujourdhui, FIL_ESTIME_JOURS)

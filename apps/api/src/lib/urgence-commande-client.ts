@@ -35,7 +35,9 @@
 // A line waiting for yarn reserved on a supplier order (lib/reservation-fil.ts, 2026-10-23) is
 // neutral while the supplier is in time: Malterre did its part when it ordered. Once the supplier's
 // date has passed, chasing it is ours to do: red. A supplier order line without a date: red too,
-// asking for one is ours.
+// asking for one is ours. And a supplier date pushed back (a report, lib/report-delai-fil.ts) from which
+// the line can no longer be ready by D: red now, « date client intenable » (Vincent 2026-11-16), as for a
+// knitter's or a dyer's délai.
 //
 // A line « à lancer » carrying a launch date (lib/lancement-ligne.ts, doctrine des délais §5, 2026-10-28)
 // waits on purpose: neutral before the date, red from it (« lancement prévu le JJ/MM »). The date is the
@@ -207,7 +209,11 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     const due = ymd(l.filAttenduLe)
     if (!due) return { niveau: 'rouge', action: 'fil_sans_date', jours: null, date: null }
     const jf = joursAvant(due, today)
-    return jf < 0 ? { niveau: 'rouge', action: 'relancer_fournisseur', jours: jf, date: due } : null
+    if (jf < 0) return { niveau: 'rouge', action: 'relancer_fournisseur', jours: jf, date: due }
+    // The supplier is in time on its current date, but that date (its reports, lib/report-delai-fil.ts)
+    // leaves no room for the knitting and the dyeing: the client's date cannot be held, ours to say now.
+    const prete = ymd(l.preteAuPlusTot)
+    return prete && prete > date ? { niveau: 'rouge', action: 'intenable', jours: j, date } : null
   }
   if (l.etat === 'a_lancer') {
     // Held on purpose until its launch date: nothing to do before it.

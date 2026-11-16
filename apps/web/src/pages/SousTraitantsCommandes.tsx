@@ -104,6 +104,7 @@ import {
 } from '@/components/shared/MlNonFactures'
 import { cn } from '@/lib/utils'
 import { LineStat, SOULIGNE_INFO } from '@/components/commandes/LineStat'
+import { DelaiField } from '@/components/commandes/DelaiField'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { mergedNumero, splitMergedNumero } from '@/lib/roll-merge'
 import { childNumero, cutBase, nextCutIndex } from '@/lib/roll-cut'
@@ -6862,60 +6863,6 @@ function EngagementDelai({ delaiDonne, nouveau, engagement, report, setReport }:
       <input value={report.motif} onChange={(e) => setReport({ ...report, motif: e.target.value })}
         placeholder="Motif du report (ex. : retard teinture, fil arrivé en retard, réponse coloris du client…)"
         className="w-full h-8 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
-    </div>
-  )
-}
-
-const PICKER_DATE = typeof HTMLInputElement !== 'undefined' && 'showPicker' in HTMLInputElement.prototype
-
-/** The line's délai, framed like a client line's « Prête le » (Vincent 2026-11-10): the date is
- *  read, « Changer » opens the calendar straight away, the engagement sits under it (amber once the
- *  délai slipped past it). Without showPicker (old browser) a plain date field. */
-function DelaiField({ value, engagement, onChange }: {
-  /** YYYY-MM-DD, '' = none */
-  value: string
-  engagement?: string | null
-  onChange: (v: string) => void
-}) {
-  const ref = useRef<HTMLInputElement>(null)
-  const date = inputDateToHfsql(value)
-  const saisie = /^\d{8}$/.test(date) ? date : ''
-  const eng = engagement && /^\d{8}$/.test(engagement) ? engagement : null
-  const glisse = !!eng && !!saisie && saisie > eng
-  const ligneEngagement = eng && (
-    <div className={cn('text-xs truncate', glisse ? 'text-amber-700' : 'text-muted-foreground')}>
-      Engagement {formatHfsqlDate(eng)}
-    </div>
-  )
-  return (
-    <div className="space-y-1">
-      <label className="text-xs font-medium text-muted-foreground cursor-help" title="Le délai donné par le sous-traitant : le premier est son engagement">Délai</label>
-      {PICKER_DATE ? (
-        <div className={cn('px-3 flex items-center gap-2 rounded-md border border-dashed border-input bg-muted/40 text-sm', eng ? 'py-1.5' : 'h-9')}>
-          <div className="min-w-0 leading-tight">
-            {saisie
-              ? <div>Le <span className="font-semibold tabular-nums">{formatHfsqlDate(saisie)}</span></div>
-              : <div className="text-muted-foreground italic">Pas encore de délai</div>}
-            {ligneEngagement}
-          </div>
-          <span className="ml-auto relative flex items-center flex-shrink-0">
-            <input ref={ref} type="date" tabIndex={-1} aria-hidden value={value}
-              className="absolute inset-0 w-full h-full opacity-0 pointer-events-none"
-              onChange={(e) => { if (e.target.value) onChange(e.target.value) }} />
-            <button type="button"
-              onClick={() => { try { ref.current?.showPicker() } catch { /* no picker */ } }}
-              className="relative text-xs font-medium text-accent-blue hover:underline">
-              {saisie ? 'Changer' : 'Choisir la date'}
-            </button>
-          </span>
-        </div>
-      ) : (
-        <>
-          <input type="date" value={value} onChange={(e) => onChange(e.target.value)} autoComplete="off"
-            className="w-full h-9 px-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
-          {ligneEngagement}
-        </>
-      )}
     </div>
   )
 }

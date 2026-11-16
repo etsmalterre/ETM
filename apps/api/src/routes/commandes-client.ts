@@ -5180,6 +5180,15 @@ function arriveeFil(f: FaitsLigneClient | undefined, today: string): string | nu
   return f.filAttendu.map((a) => String(a.date)).sort().at(-1) ?? null
 }
 
+/** The supplier order that yarn waits on, for the « Fil » step: an undated one (the estimate), else the
+ *  latest date, with the supplier's engagement (lib/report-delai-fil.ts). */
+function commandeFilAttendue(f: FaitsLigneClient | undefined): { partenaire: string | null; delai: string | null; engagement: string | null } | null {
+  if (!f || f.filAttendu.length === 0) return null
+  const a = f.filAttendu.find((x) => !x.date)
+    ?? [...f.filAttendu].sort((x, y) => String(y.date).localeCompare(String(x.date)))[0]
+  return { partenaire: a.fournisseur ?? null, delai: a.date, engagement: a.engagement ?? null }
+}
+
 /** Matter of a client line already at a partner on a launched order (lib/delai-au-plus-tot.ts): the écru
  *  at a dyer (per dyer line, with its délai) and the knitting launched (its latest délai). Flat queries. */
 interface OrdresLigne {
@@ -5245,6 +5254,7 @@ function auPlusTotDe(l: LigneAuPlusTot, agg: AgregatLigne, fil: number, f: Faits
     tricotage: m ? agg.trico_metrage : agg.trico_poids,
     fil,
     filAttenduLe: arriveeFil(f, today),
+    filCommande: commandeFilAttendue(f),
     kgParUnite: !m ? 1 : rouleaux && rouleaux.rendement > 0 ? 1 / rouleaux.rendement : null,
     aujourdhui: today,
     dateRetenue,

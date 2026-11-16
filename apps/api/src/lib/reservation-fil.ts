@@ -122,9 +122,12 @@ export interface LigneCommandeFil {
   quantite: number
   /** YYYYMMDD or null */
   date_livraison: string | null
+  /** YYYYMMDD the first date the supplier gave, its engagement (lib/report-delai-fil.ts), or null */
+  date_delai: string | null
   etat: number
   etat_commande: number
   idfournisseur: number
+  fournisseur: string | null
   /** Σ stock_initial of the lots linked to the line */
   recu: number
 }
@@ -159,9 +162,10 @@ export async function lignesCommandeFil(filtre: { ids?: readonly number[]; paire
   if (filtre.ouvertes) conds.push('l.etat = 0 AND c.etat = 0')
   const rows = await sql.unsafe<any[]>(
     `SELECT l.idref_fil_commande AS id, l.idcommande_fil, l.idref_fil, l.idcolori_fil, l.quantite::float8 AS quantite,
-            l.date_livraison, l.etat, c.etat AS etat_commande, c.idfournisseur,
+            l.date_livraison, l.date_delai, l.etat, c.etat AS etat_commande, c.idfournisseur, f.nom AS fournisseur,
             COALESCE((SELECT SUM(s.stock_initial) FROM stock_fil s WHERE s.idref_fil_commande = l.idref_fil_commande), 0)::float8 AS recu
        FROM ref_fil_commande l JOIN commande_fil c ON c.idcommande_fil = l.idcommande_fil
+       LEFT JOIN fournisseur f ON f.idfournisseur = c.idfournisseur
       WHERE ${conds.length ? conds.join(' AND ') : 'true'}
       ORDER BY l.date_livraison NULLS LAST, l.idref_fil_commande`, params as any[])
   return rows.map((r) => ({
@@ -171,17 +175,29 @@ export async function lignesCommandeFil(filtre: { ids?: readonly number[]; paire
     idcolori_fil: Number(r.idcolori_fil) || 0,
     quantite: Number(r.quantite) || 0,
     date_livraison: ymd(r.date_livraison),
+    date_delai: ymd(r.date_delai),
     etat: Number(r.etat) || 0,
     etat_commande: Number(r.etat_commande) || 0,
     idfournisseur: Number(r.idfournisseur) || 0,
+    fournisseur: String(r.fournisseur ?? '').trim() || null,
     recu: Number(r.recu) || 0,
   }))
 }
 
 /** What a client line waits for: its reservations still on an open order line, with the
  *  supplier's date (statut « attente fil », and red once the date has passed). */
-export async function filAttenduParLigne(ligneIds: readonly number[]): Promise<Map<number, { kg: number; date: string | null; commande: number }[]>> {
-  const out = new Map<number, { kg: number; date: string | null; commande: number }[]>()
+export interface FilAttendu {
+  kg: number
+  /** YYYYMMDD the supplier's current date, null = none given */
+  date: string | null
+  commande: number
+  /** YYYYMMDD the supplier's first date, its engagement (lib/report-delai-fil.ts) */
+  engagement?: string | null
+  fournisseur?: string | null
+}
+
+export async function filAttenduParLigne(ligneIds: readonly number[]): Promise<Map<number, FilAttendu[]>> {
+  const out = new Map<number, FilAttendu[]>()
   const res = (await reservationsDesLignes(ligneIds)).filter((r) => attendLeFil(etatReservation(r)) && r.idref_fil_commande > 0)
   if (res.length === 0) return out
   const lignes = new Map((await lignesCommandeFil({ ids: res.map((r) => r.idref_fil_commande) })).map((l) => [l.id, l]))
@@ -190,7 +206,7 @@ export async function filAttenduParLigne(ligneIds: readonly number[]): Promise<M
     // A closed order line no longer brings anything: the reservation is (or will be) released.
     if (!l || l.etat !== 0 || l.etat_commande !== 0) continue
     const arr = out.get(r.idligne_commande_client) ?? []
-    arr.push({ kg: r.quantite, date: l.date_livraison, commande: l.idcommande_fil })
+    arr.push({ kg: r.quantite, date: l.date_livraison, commande: l.idcommande_fil, engagement: l.date_delai, fournisseur: l.fournisseur })
     out.set(r.idligne_commande_client, arr)
   }
   return out

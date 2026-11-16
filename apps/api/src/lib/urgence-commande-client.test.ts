@@ -61,6 +61,13 @@ describe('urgenceLigne', () => {
     expect(urgenceCommande([{ ...l('attente_fil', 49), filAttenduLe: dans(-3) }], today)?.raison)
       .toBe(`1 ligne en attente de fil : relancer le fournisseur`)
   })
+  it('a supplier date pushed back that leaves no room before the client date is red now', () => {
+    const attente = (prete: number): LigneUrgence => ({ ...l('attente_fil', 49), filAttenduLe: dans(20), preteAuPlusTot: dans(prete) })
+    expect(urgenceLigne(attente(45), today)).toBe(null)
+    expect(urgenceLigne(attente(52), today)).toMatchObject({ niveau: 'rouge', action: 'intenable' })
+    // a supplier past its date is chased first
+    expect(urgenceLigne({ ...attente(52), filAttenduLe: dans(-2) }, today)?.action).toBe('relancer_fournisseur')
+  })
   it('a line « à lancer » held by a launch date is neutral before it, red from it', () => {
     const held = (lancement: number, delai: number | null = 60, etat: LigneUrgence['etat'] = 'a_lancer'): LigneUrgence =>
       ({ ...l(etat, delai), lancementLe: dans(lancement) })

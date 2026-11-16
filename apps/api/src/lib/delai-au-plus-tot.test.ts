@@ -66,6 +66,22 @@ describe('délai au plus tôt (doctrine des délais §5 ter)', () => {
     expect(d.etapes[0]).toMatchObject({ libelle: 'Fil', au: '20261116' })
     expect(d.etapes.map((x) => x.libelle)).toEqual(['Fil', 'Tricotage', 'Ennoblissement', 'Contrôle qualité', 'Réserve Malterre'])
   })
+  it('yarn on a supplier order: its date, its delay on its engagement, « if it delivers today » once past', () => {
+    // Mundifios promised 13/11, pushed to 27/11: 10 working days late, the line reads from the 27th.
+    const d = delaiAuPlusTot(base({ fil: 1000, filAttenduLe: '20261127', filCommande: { partenaire: 'Mundifios', delai: '20261127', engagement: '20261113' } }))!
+    expect(d.etapes[0]).toMatchObject({ libelle: 'Fil', au: '20261127', partenaire: 'Mundifios', engagement: '20261113', retard: 10 })
+    expect(d.etapes[1]).toMatchObject({ libelle: 'Tricotage', du: '20261127' })
+    // Same end date as the plain reading of filAttenduLe.
+    expect(d.date).toBe(delaiAuPlusTot(base({ fil: 1000, filAttenduLe: '20261127' }))!.date)
+    // On time: no delay printed.
+    expect(delaiAuPlusTot(base({ fil: 1000, filCommande: { partenaire: 'Mundifios', delai: '20261127', engagement: '20261127' } }))!.etapes[0].retard).toBeUndefined()
+    // Past its date: the yarn arrives today at best, the step is flagged.
+    const tard = delaiAuPlusTot(base({ fil: 1000, filAttenduLe: '20261030', filCommande: { partenaire: 'Mundifios', delai: '20261030', engagement: '20261030' } }))!
+    expect(tard.etapes[0]).toMatchObject({ libelle: 'Fil', au: '20261102', depasse: true, jours: 0 })
+    expect(tard.date).toBe(delaiAuPlusTot(base({ fil: 1000, filAttenduLe: '20261030' }))!.date)
+    // No date given: the yarn estimate.
+    expect(delaiAuPlusTot(base({ fil: 1000, filCommande: { partenaire: 'Mundifios', delai: null } }))!.etapes[0]).toMatchObject({ libelle: 'Fil', estime: true, jours: 20 })
+  })
   it('an écru line has no dyer step', () => {
     const d = delaiAuPlusTot(base({ kind: 'ecru', kgParUnite: 1, tricotage: 1000 }))!
     expect(d.etapes.map((x) => x.libelle)).toEqual(['Tricotage', 'Réserve Malterre'])

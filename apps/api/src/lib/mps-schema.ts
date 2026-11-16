@@ -2007,6 +2007,34 @@ ALTER TABLE delai_sst_evenement ADD CONSTRAINT delai_sst_evenement_imputable_che
   CHECK (imputable IN ('sous_traitant', 'malterre', 'client'));
 `,
   },
+  {
+    // A yarn supplier's delivery date is an engagement too (Vincent 2026-11-16,
+    // lib/report-delai-fil.ts): the first date a yarn order line gets is frozen
+    // in ref_fil_commande.date_delai (delai_donne_le = when, a typo is still
+    // corrected the same day), and pushing it later is a report with its motif
+    // and who it is due to, append-only. No history before today: every line
+    // already dated takes its current date as the engagement.
+    name: '0075_report_delai_fil',
+    sql: `
+ALTER TABLE ref_fil_commande ADD COLUMN date_delai date, ADD COLUMN delai_donne_le timestamptz;
+UPDATE ref_fil_commande SET date_delai = date_livraison WHERE date_livraison IS NOT NULL;
+CREATE TABLE report_delai_fil (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idref_fil_commande bigint NOT NULL,
+  idcommande_fil bigint NOT NULL,
+  ancien_delai date NOT NULL,
+  nouveau_delai date NOT NULL,
+  motif text NOT NULL,
+  imputable text NOT NULL CHECK (imputable IN ('fournisseur', 'malterre')),
+  par_id bigint NOT NULL DEFAULT 0,
+  par text,
+  le timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX report_delai_fil_ligne ON report_delai_fil (idref_fil_commande, le);
+${grantApi('SELECT, INSERT', 'report_delai_fil')}
+${grantApi('USAGE, SELECT', 'SEQUENCE report_delai_fil_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

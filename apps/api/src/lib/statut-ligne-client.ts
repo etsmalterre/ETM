@@ -28,7 +28,7 @@
 
 import { query } from './hfsql-auto.js'
 import { consumedEcruIds } from './fini-sources.js'
-import { filAttenduParLigne } from './reservation-fil.js'
+import { filAttenduParLigne, type FilAttendu } from './reservation-fil.js'
 import { kgATricoterParLigne } from './tricotage-restant.js'
 
 /** A line counts as shipped from 90 % of its quantity: what people do when they type « soldé » (39 of 44
@@ -56,8 +56,9 @@ export interface FaitsLigneClient {
   soumisClient: boolean
   /** écru kg still to knit (kgATricoterParLigne) */
   kgTricotage: number
-  /** yarn reserved for the line on supplier orders still to receive: kg, supplier date (YYYYMMDD), order */
-  filAttendu: { kg: number; date: string | null; commande: number }[]
+  /** yarn reserved for the line on supplier orders still to receive: kg, supplier date (YYYYMMDD), order,
+   *  and the supplier's engagement (its first date) */
+  filAttendu: FilAttendu[]
 }
 
 export interface StatutLigneClient {

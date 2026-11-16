@@ -293,7 +293,7 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
                 {/* The partner pushed its délai back after its engagement (LIVA #1364). */}
                 {!!e.retard && e.retard > 0 && (
                   <p className="pl-[18px] text-[11px] font-medium text-red-600">
-                    Retard {e.libelle === 'Tricotage' ? 'tricoteur' : 'ennoblisseur'}{e.partenaire ? ` ${e.partenaire}` : ''} : {fmtJours(e.retard)}
+                    Retard {e.libelle === 'Fil' ? 'fournisseur' : e.libelle === 'Tricotage' ? 'tricoteur' : 'ennoblisseur'}{e.partenaire ? ` ${e.partenaire}` : ''} : {fmtJours(e.retard)}
                     {e.engagement && <span className="font-normal text-muted-foreground"> (engagement {formatHfsqlDate(e.engagement).slice(0, 5)})</span>}
                   </p>
                 )}

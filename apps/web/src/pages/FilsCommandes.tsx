@@ -46,6 +46,9 @@ import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { BobineIcon } from '@/components/icons/BobineIcon'
+import { Tooltip } from '@/components/ui/tooltip'
+import { SOULIGNE_INFO } from '@/components/commandes/LineStat'
+import { DelaiField } from '@/components/commandes/DelaiField'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
@@ -132,7 +135,32 @@ interface LigneCommande {
   total_kg_lie?: number
   /** received short of its client reservations (API lib/arbitrage-fil.ts): the split to check */
   arbitrage?: ArbitrageLigne | null
+  /** YYYYMMDD the first delivery date given: the supplier's engagement (API lib/report-delai-fil.ts) */
+  date_delai?: string | null
+  /** working days the current date is behind that engagement */
+  retard_delai?: number
+  /** no engagement yet, or given today: the date is still set without a report */
+  delai_corrigeable?: boolean
+  reports_delai?: ReportDelaiFil[]
 }
+
+type ImputableFil = 'fournisseur' | 'malterre'
+
+/** One push of a line's delivery date after the supplier's engagement. */
+interface ReportDelaiFil {
+  le: string
+  /** YYYYMMDD */
+  ancien: string
+  nouveau: string
+  motif: string
+  imputable: ImputableFil
+  par: string | null
+}
+
+const IMPUTABLES_FIL: { id: ImputableFil; label: string }[] = [
+  { id: 'fournisseur', label: 'Fournisseur' },
+  { id: 'malterre', label: 'Malterre' },
+]
 
 interface StockLotLite {
   IDstock_fil: number
@@ -345,6 +373,16 @@ function deliveryUrgency(earliestHfsql: string | null, etat: number | null): 'la
   if (diffDays <= 0) return 'late'
   if (diffDays <= 3) return 'soon'
   return null
+}
+
+/** Calendar days a YYYYMMDD date is past, 0 when not past. */
+function joursDepasses(hfsql: string): number {
+  if (!/^\d{8}$/.test(hfsql)) return 0
+  const cible = new Date(Number(hfsql.slice(0, 4)), Number(hfsql.slice(4, 6)) - 1, Number(hfsql.slice(6, 8)))
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const diff = Math.round((today.getTime() - cible.getTime()) / 86_400_000)
+  return diff > 0 ? diff : 0
 }
 
 function etatColors(etat: number | null) {
@@ -1175,18 +1213,12 @@ function LignesSection({
   stockDrawerLineId: number | null
   onOpenStockDrawer: (lineId: number | null) => void
 }) {
-  const [editingLineId, setEditingLineId] = useState<number | null>(null)
-  const [showLineForm, setShowLineForm] = useState(false)
+  // A line is added and edited in a dialog, like a client order line (Vincent 2026-11-16).
+  const [lineDialogOpen, setLineDialogOpen] = useState(false)
+  const [editingLine, setEditingLine] = useState<LigneCommande | null>(null)
   const [deleteLineConfirmId, setDeleteLineConfirmId] = useState<number | null>(null)
   // « Marquer livrée » on a line client lines still wait for yarn on: the same pause as the order's close.
   const [closeLineId, setCloseLineId] = useState<number | null>(null)
-  const [lineForm, setLineForm] = useState({
-    IDref_fil: 0,
-    IDcolori_fil: 0,
-    quantite: '',
-    prix_unitaire: '',
-    date_livraison: '',
-  })
 
   // Lines are locked when the commande is terminée. Header edits remain
   // allowed; to modify lines the user must reopen the commande via the
@@ -1199,16 +1231,16 @@ function LignesSection({
   // to terminé and the server flipped commande.etat).
   useEffect(() => {
     if (!isEditing || linesLocked) {
-      setEditingLineId(null)
-      setShowLineForm(false)
+      setLineDialogOpen(false)
+      setEditingLine(null)
     }
   }, [isEditing, linesLocked])
 
   // Surface sub-form dirty state to the page so the unsaved-changes guard
   // can catch navigation while a line form is open.
   useEffect(() => {
-    onLinesDirtyChange(showLineForm || editingLineId !== null)
-  }, [showLineForm, editingLineId, onLinesDirtyChange])
+    onLinesDirtyChange(lineDialogOpen)
+  }, [lineDialogOpen, onLinesDirtyChange])
 
   const { data: refLookup } = useQuery<RefFilLookup[]>({
     queryKey: ['commande-fil-refs', commande.IDfournisseur],
@@ -1237,34 +1269,6 @@ function LignesSection({
     return Array.from(map.values())
   }, [refLookup])
 
-  const createLineMut = useMutation({
-    mutationFn: () => apiFetch(`/commandes-fil/${commande.IDcommande_fil}/lignes`, {
-      method: 'POST',
-      body: JSON.stringify({
-        IDref_fil: lineForm.IDref_fil,
-        IDcolori_fil: lineForm.IDcolori_fil,
-        quantite: Number(lineForm.quantite) || 0,
-        prix_unitaire: Number(lineForm.prix_unitaire) || 0,
-        date_livraison: inputDateToHfsql(lineForm.date_livraison),
-      }),
-    }),
-    onSuccess: () => { onMutationSuccess(); resetLineForm() },
-  })
-
-  const updateLineMut = useMutation({
-    mutationFn: (lineId: number) => apiFetch(`/commandes-fil/lignes/${lineId}`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        IDref_fil: lineForm.IDref_fil,
-        IDcolori_fil: lineForm.IDcolori_fil,
-        quantite: Number(lineForm.quantite) || 0,
-        prix_unitaire: Number(lineForm.prix_unitaire) || 0,
-        date_livraison: inputDateToHfsql(lineForm.date_livraison),
-      }),
-    }),
-    onSuccess: () => { onMutationSuccess(); setEditingLineId(null); resetLineForm() },
-  })
-
   const deleteLineMut = useMutation({
     mutationFn: (lineId: number) => apiFetch(`/commandes-fil/lignes/${lineId}`, { method: 'DELETE' }),
     onSuccess: onMutationSuccess,
@@ -1279,28 +1283,9 @@ function LignesSection({
     onSuccess: onMutationSuccess,
   })
 
-  const resetLineForm = () => {
-    setLineForm({ IDref_fil: 0, IDcolori_fil: 0, quantite: '', prix_unitaire: '', date_livraison: '' })
-    setShowLineForm(false)
-  }
-
-  const startEditLine = (l: LigneCommande) => {
-    setShowLineForm(false)
-    setEditingLineId(l.IDref_fil_commande)
-    setLineForm({
-      IDref_fil: l.IDref_fil,
-      IDcolori_fil: l.IDcolori_fil,
-      quantite: l.quantite != null ? String(l.quantite) : '',
-      prix_unitaire: l.prix_unitaire != null ? String(l.prix_unitaire) : '',
-      date_livraison: hfsqlDateToInput(l.date_livraison),
-    })
-  }
-
-  const startAddLine = () => {
-    setEditingLineId(null)
-    setLineForm({ IDref_fil: 0, IDcolori_fil: 0, quantite: '', prix_unitaire: '', date_livraison: '' })
-    setShowLineForm(true)
-  }
+  const startAddLine = () => { setEditingLine(null); setLineDialogOpen(true) }
+  const startEditLine = (l: LigneCommande) => { setEditingLine(l); setLineDialogOpen(true) }
+  const closeLineDialog = () => { setLineDialogOpen(false); setEditingLine(null) }
 
   const drawerOpen = stockDrawerLineId !== null && !isEditing
   const drawerLigne = drawerOpen
@@ -1316,7 +1301,7 @@ function LignesSection({
           drawerOpen ? 'flex-shrink-0 max-h-[40%]' : 'flex-1 min-h-0'
         )}
       >
-        {commande.lignes.length === 0 && !showLineForm ? (
+        {commande.lignes.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
             <BobineIcon className="h-12 w-12 mb-3 opacity-40" />
             <p className="text-sm">Aucune ligne</p>
@@ -1328,19 +1313,6 @@ function LignesSection({
           </div>
         ) : (
           commande.lignes.map((l) => {
-            if (isEditing && editingLineId === l.IDref_fil_commande) {
-              return (
-                <InlineForm
-                  key={l.IDref_fil_commande}
-                  title="Modifier la ligne"
-                  onSave={() => updateLineMut.mutate(l.IDref_fil_commande)}
-                  onCancel={() => { setEditingLineId(null); resetLineForm() }}
-                  isSaving={updateLineMut.isPending}
-                >
-                  <LineFormFields form={lineForm} setForm={setLineForm} refsGrouped={refsGrouped} />
-                </InlineForm>
-              )
-            }
             return (
               <LineCard
                 key={l.IDref_fil_commande}
@@ -1361,18 +1333,7 @@ function LignesSection({
           })
         )}
 
-        {isEditing && !linesLocked && showLineForm && (
-          <InlineForm
-            title="Nouvelle ligne"
-            onSave={() => createLineMut.mutate()}
-            onCancel={resetLineForm}
-            isSaving={createLineMut.isPending}
-          >
-            <LineFormFields form={lineForm} setForm={setLineForm} refsGrouped={refsGrouped} />
-          </InlineForm>
-        )}
-
-        {isEditing && !linesLocked && commande.lignes.length > 0 && !showLineForm && editingLineId === null && (
+        {isEditing && !linesLocked && commande.lignes.length > 0 && (
           <Button
             variant="ghost"
             size="sm"
@@ -1411,6 +1372,14 @@ function LignesSection({
       )}
     </div>
 
+    <LineFormDialog
+      open={lineDialogOpen}
+      commande={commande}
+      line={editingLine}
+      refsGrouped={refsGrouped}
+      onClose={closeLineDialog}
+      onSuccess={() => { closeLineDialog(); onMutationSuccess() }}
+    />
     <ClotureReceptionDialog
       open={closeLineId !== null}
       titre="Marquer la ligne livrée"
@@ -1479,7 +1448,7 @@ function LineCard({
           <div className="min-w-0">
             <p className="text-sm font-medium truncate">
               {line.ref_fil || '—'}
-              {line.colori_reference ? <span className="text-muted-foreground"> / {line.colori_reference}</span> : null}
+              {line.colori_reference ? <span className="text-muted-foreground"> - {line.colori_reference}</span> : null}
             </p>
           </div>
         </div>
@@ -1538,17 +1507,32 @@ function LineCard({
         {lineTotal > 0 && (
           <span className="font-medium text-foreground">→ {fmtNum(lineTotal, 2)} €</span>
         )}
+        {/* The delivery date: the supplier's engagement, its delay once pushed back, every report in the hover. */}
         {line.date_livraison && (() => {
           const lineUrgency = deliveryUrgency(line.date_livraison, line.etat)
+          const retard = line.etat === 1 ? 0 : (line.retard_delai ?? 0)
+          const depasse = lineUrgency === 'late' ? joursDepasses(line.date_livraison) : 0
           return (
-            <span
-              className={cn(
-                'ml-auto',
-                lineUrgency === 'late' && 'font-bold text-red-600',
-                lineUrgency === 'soon' && 'font-bold text-amber-600'
+            <span className="ml-auto flex items-baseline gap-2">
+              {retard > 0 && line.date_delai && (
+                <span className="font-medium text-red-600">
+                  Retard fournisseur {retard} j sur l’engagement du {formatHfsqlDate(line.date_delai)}
+                </span>
               )}
-            >
-              Livraison {formatHfsqlDate(line.date_livraison)}
+              <Tooltip side="top" content={
+                <DelaiFilDetail date={line.date_livraison} engagement={line.date_delai ?? ''} retard={retard}
+                  depasse={depasse} livree={line.etat === 1} reports={line.reports_delai ?? []} />
+              }>
+                <span
+                  className={cn(
+                    SOULIGNE_INFO,
+                    lineUrgency === 'late' && 'font-bold text-red-600',
+                    lineUrgency === 'soon' && 'font-bold text-amber-600'
+                  )}
+                >
+                  Livraison {formatHfsqlDate(line.date_livraison)}
+                </span>
+              </Tooltip>
             </span>
           )
         })()}
@@ -1783,45 +1767,231 @@ function StockLotRow({
   )
 }
 
-function LineFormFields({
-  form, setForm, refsGrouped,
+const emptyLineForm = { IDref_fil: 0, IDcolori_fil: 0, quantite: '', prix_unitaire: '', date_livraison: '' }
+
+/** Add / edit one yarn order line, in a dialog shaped like a client order line's (Clients › Commandes,
+ *  Vincent 2026-11-16). The delivery date is the supplier's engagement (API lib/report-delai-fil.ts):
+ *  the first one is frozen, pushing it later asks why and who it is due to; an earlier date is free. */
+function LineFormDialog({
+  open, commande, line, refsGrouped, onClose, onSuccess,
 }: {
-  form: { IDref_fil: number; IDcolori_fil: number; quantite: string; prix_unitaire: string; date_livraison: string }
-  setForm: (f: typeof form) => void
+  open: boolean
+  commande: CommandeDetail
+  /** null = a new line */
+  line: LigneCommande | null
   refsGrouped: { IDref_fil: number; reference: string; bio: boolean; coloris: { IDcolori_fil: number; reference: string }[] }[]
+  onClose: () => void
+  onSuccess: () => void
 }) {
+  const isNew = line === null
+  const [form, setForm] = useState(emptyLineForm)
+  const [report, setReport] = useState<{ motif: string; imputable: ImputableFil | null }>({ motif: '', imputable: null })
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    setForm(line ? {
+      IDref_fil: line.IDref_fil,
+      IDcolori_fil: line.IDcolori_fil,
+      quantite: line.quantite != null ? String(line.quantite) : '',
+      prix_unitaire: line.prix_unitaire != null ? String(line.prix_unitaire) : '',
+      date_livraison: hfsqlDateToInput(line.date_livraison),
+    } : emptyLineForm)
+    setReport({ motif: '', imputable: null })
+    setError(null)
+  }, [open, line])
+
+  const ymd = (v: string | null | undefined) => (v && /^\d{8}$/.test(v) ? v : '')
+  const dateSaisie = ymd(inputDateToHfsql(form.date_livraison))
+  const dateLigne = ymd(line?.date_livraison)
+  const engagement = ymd(line?.date_delai)
+  // What a new date is compared with: the line's date, else its engagement (a date cleared since).
+  const reference = dateLigne || engagement
+  // No engagement yet, or given today (a typo is still corrected): the date typed IS the engagement.
+  const libre = isNew || !engagement || !!line?.delai_corrigeable
+  const estReport = !libre && !!dateSaisie && !!reference && dateSaisie > reference
+  const donneEngagement = libre && !!dateSaisie && dateSaisie !== dateLigne
+
+  const saveMut = useMutation({
+    mutationFn: () => {
+      const body = JSON.stringify({
+        IDref_fil: form.IDref_fil,
+        IDcolori_fil: form.IDcolori_fil,
+        quantite: Number(form.quantite) || 0,
+        prix_unitaire: Number(form.prix_unitaire) || 0,
+        date_livraison: inputDateToHfsql(form.date_livraison),
+        ...(estReport ? { report: { motif: report.motif.trim(), imputable: report.imputable } } : {}),
+      })
+      return isNew
+        ? apiFetch(`/commandes-fil/${commande.IDcommande_fil}/lignes`, { method: 'POST', body })
+        : apiFetch(`/commandes-fil/lignes/${line!.IDref_fil_commande}`, { method: 'PUT', body })
+    },
+    onSuccess,
+    onError: (e: unknown) => {
+      setError((e as { body?: { message?: string } } | null)?.body?.message ?? (e instanceof Error ? e.message : 'Erreur'))
+    },
+  })
+
   const selectedRef = refsGrouped.find((r) => r.IDref_fil === form.IDref_fil)
   const coloris = selectedRef?.coloris ?? []
+  const manque = form.IDref_fil === 0 ? 'Choisissez une référence'
+    : form.IDcolori_fil === 0 ? 'Choisissez un coloris'
+    : !(Number(form.quantite) > 0) ? 'Indiquez la quantité'
+    : estReport && (!report.imputable || !report.motif.trim()) ? 'Indiquez pourquoi la livraison est repoussée et à qui c’est dû'
+    : null
+
+  if (!open) return null
 
   return (
-    <>
-      <div className="space-y-1">
-        <label className="text-xs font-medium text-muted-foreground">Référence</label>
-        <SearchableCombobox<{ IDref_fil: number; reference: string; bio: boolean }>
-          options={refsGrouped}
-          value={form.IDref_fil}
-          onChange={(id) => setForm({ ...form, IDref_fil: id, IDcolori_fil: 0 })}
-          getId={(r) => r.IDref_fil}
-          getPrimary={(r) => `${r.reference}${r.bio ? ' (Bio)' : ''}`}
-          placeholder="Choisir une référence"
-        />
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-md" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <BobineIcon className="h-5 w-5 text-accent" />
+            {isNew ? 'Nouvelle ligne' : 'Modifier la ligne'}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Référence</label>
+            <SearchableCombobox<{ IDref_fil: number; reference: string; bio: boolean }>
+              options={refsGrouped}
+              value={form.IDref_fil}
+              onChange={(id) => setForm({ ...form, IDref_fil: id, IDcolori_fil: 0 })}
+              getId={(r) => r.IDref_fil}
+              getPrimary={(r) => `${r.reference}${r.bio ? ' (Bio)' : ''}`}
+              placeholder="Choisir une référence"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Coloris</label>
+            <PopoverSelect
+              options={coloris.map((c) => ({ id: c.IDcolori_fil, primary: c.reference }))}
+              value={form.IDcolori_fil}
+              onChange={(id) => setForm({ ...form, IDcolori_fil: id })}
+              disabled={!form.IDref_fil}
+              emptyLabel="— Choisir —"
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <LabeledInput label="Quantité (kg)" type="number" value={form.quantite} onChange={(v) => setForm({ ...form, quantite: v })} />
+            <LabeledInput label="Prix (€/kg)" type="number" value={form.prix_unitaire} onChange={(v) => setForm({ ...form, prix_unitaire: v })} />
+          </div>
+          <DelaiField
+            label="Livraison"
+            aide="La date de livraison donnée par le fournisseur : la première est son engagement"
+            vide="Pas encore de date"
+            value={form.date_livraison}
+            engagement={libre ? null : engagement}
+            onChange={(v) => setForm({ ...form, date_livraison: v })}
+          />
+          {/* The first date given is the engagement: said when it is being given. */}
+          {donneEngagement && (
+            <p className="flex items-start gap-1.5 text-xs font-medium text-amber-700">
+              <Info className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
+              Cette date est l’engagement du fournisseur : la repousser ensuite demandera un motif et comptera comme un retard.
+            </p>
+          )}
+          {estReport && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-3 space-y-2">
+              <p className="text-xs text-amber-800">
+                La livraison du {formatHfsqlDate(reference)} était donnée : pourquoi est-elle repoussée, et à qui le report est-il dû ?
+              </p>
+              <div className="flex gap-1">
+                {IMPUTABLES_FIL.map((i) => (
+                  <button key={i.id} type="button" onClick={() => setReport({ ...report, imputable: i.id })}
+                    className={cn('px-3 py-1 rounded-md text-xs font-medium border transition-colors',
+                      report.imputable === i.id ? 'bg-accent text-accent-foreground border-accent' : 'bg-white border-input text-muted-foreground hover:text-foreground')}>
+                    {i.label}
+                  </button>
+                ))}
+              </div>
+              <input value={report.motif} onChange={(e) => setReport({ ...report, motif: e.target.value })}
+                placeholder="Motif du report (ex. : retard de filature, transport, commande modifiée…)"
+                autoComplete="off"
+                className="w-full h-8 px-2.5 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring" />
+            </div>
+          )}
+          {error && (
+            <div className="flex items-start gap-1.5 text-xs text-destructive mt-3">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span>{error}</span>
+            </div>
+          )}
+        </div>
+        <DialogFooter className="mt-4">
+          <Button variant="outline" onClick={onClose}>Annuler</Button>
+          <Button onClick={() => saveMut.mutate()} disabled={!!manque || saveMut.isPending} title={manque ?? undefined}>
+            {saveMut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
+            Enregistrer
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** The hover of a line's delivery date: where it stands against the supplier's engagement and every
+ *  report with its motif and who it is due to — the card of a sous-traitant line's délai
+ *  (Sous-traitants › Commandes, DelaiSstDetail). */
+function DelaiFilDetail({ date, engagement, retard, depasse, livree, reports }: {
+  /** YYYYMMDD the current delivery date */
+  date: string
+  /** YYYYMMDD the first date given, '' when unknown */
+  engagement: string
+  /** working days the date is behind the engagement */
+  retard: number
+  /** calendar days past the date, 0 when not past */
+  depasse: number
+  livree: boolean
+  reports: ReportDelaiFil[]
+}) {
+  const leJour = (iso: string) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('fr-FR') }
+  return (
+    <div className="w-max min-w-[260px] max-w-[360px] py-1 font-normal">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">Livraison</p>
+      <p className="text-sm font-semibold tabular-nums">{formatHfsqlDate(date)}</p>
+      {livree ? (
+        <p className="text-xs text-green-700">Ligne livrée</p>
+      ) : depasse >= 1 ? (
+        <p className="text-xs font-medium text-red-600">Dépassée de {depasse} jour{depasse > 1 ? 's' : ''} : relancer le fournisseur</p>
+      ) : null}
+
+      <div className="mt-2 pt-2 border-t border-border/60 space-y-1 text-xs tabular-nums">
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-muted-foreground">Engagement initial</span>
+          <span className="font-semibold">{engagement ? formatHfsqlDate(engagement) : '—'}</span>
+        </div>
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-muted-foreground">Retard sur l’engagement</span>
+          <span className={cn('font-semibold', retard > 0 ? 'text-red-600' : 'text-green-700')}>
+            {retard > 0 ? `${retard} j ouvré${retard > 1 ? 's' : ''}` : 'Aucun'}
+          </span>
+        </div>
       </div>
-      <div className="space-y-1">
-        <label className="text-xs font-medium text-muted-foreground">Coloris</label>
-        <PopoverSelect
-          options={coloris.map((c) => ({ id: c.IDcolori_fil, primary: c.reference }))}
-          value={form.IDcolori_fil}
-          onChange={(id) => setForm({ ...form, IDcolori_fil: id })}
-          disabled={!form.IDref_fil}
-          emptyLabel="— Choisir —"
-        />
+
+      <div className="mt-2 pt-2 border-t border-border/60">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">
+          {reports.length === 0 ? 'Aucun report' : `Report${reports.length > 1 ? 's' : ''} (${reports.length})`}
+        </p>
+        {reports.length > 0 && (
+          <div className="mt-1.5 space-y-2">
+            {reports.map((r, i) => (
+              <div key={`${r.le}-${i}`} className="text-xs">
+                <div className="flex items-center gap-2 tabular-nums">
+                  <span className="font-semibold">{formatHfsqlDate(r.ancien).slice(0, 5)} → {formatHfsqlDate(r.nouveau).slice(0, 5)}</span>
+                  <span className={cn('rounded-full border px-1.5 py-0 text-[10px] font-medium',
+                    r.imputable === 'malterre' ? 'border-amber-500/30 bg-amber-500/10 text-amber-800' : 'border-sky-500/25 bg-sky-500/10 text-sky-700')}>
+                    {r.imputable === 'malterre' ? 'Dû à Malterre' : 'Dû au fournisseur'}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-foreground/90 whitespace-pre-wrap">{r.motif}</p>
+                <p className="text-[11px] text-muted-foreground">{[r.par, leJour(r.le)].filter(Boolean).join(' · ')}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
-      <div className="grid grid-cols-2 gap-2">
-        <LabeledInput label="Quantité (kg)" type="number" value={form.quantite} onChange={(v) => setForm({ ...form, quantite: v })} />
-        <LabeledInput label="Prix (€/kg)" type="number" value={form.prix_unitaire} onChange={(v) => setForm({ ...form, prix_unitaire: v })} />
-      </div>
-      <LabeledInput label="Date livraison" type="date" value={form.date_livraison} onChange={(v) => setForm({ ...form, date_livraison: v })} />
-    </>
+    </div>
   )
 }
 
@@ -3758,29 +3928,6 @@ function LabeledInput({
         data-lpignore="true"
         className={inputClass}
       />
-    </div>
-  )
-}
-
-function InlineForm({
-  title, children, onSave, onCancel, isSaving,
-}: {
-  title: string
-  children: React.ReactNode
-  onSave: () => void
-  onCancel: () => void
-  isSaving: boolean
-}) {
-  return (
-    <div className="rounded-lg border border-accent/25 bg-accent/[0.03] p-4 space-y-3">
-      <p className="text-xs font-semibold text-accent uppercase tracking-wide">{title}</p>
-      {children}
-      <div className="flex justify-end gap-2 pt-1">
-        <Button variant="outline" size="sm" onClick={onCancel}>Annuler</Button>
-        <Button size="sm" onClick={onSave} disabled={isSaving}>
-          {isSaving ? 'Enregistrement...' : 'Enregistrer'}
-        </Button>
-      </div>
     </div>
   )
 }

@@ -128,6 +128,11 @@ import { IS_WINDOWS } from '../lib/sst-shared.js'
 import { basculerSurLot, libererReliquat, reservationsDeCommandeFil, retirerDuLot } from '../lib/reservation-fil.js'
 import { resolveColorisLabel, resolveLineLabels, resolveRefLabel } from './commandes-client.js'
 import { confirmerArbitrage, etatsArbitrage, repartirLigne, RefusArbitrage } from '../lib/arbitrage-fil.js'
+import {
+  delaisFil, ecritureDelaiFil, enregistrerReportFil, fixerEngagementFil, lireReportFil, MESSAGE_REPORT_REQUIS,
+  reportsFilParLigne, retardFil, type EcritureDelaiFil, type ReportFil,
+} from '../lib/report-delai-fil.js'
+import { mpsPg } from '../lib/mps-pg.js'
 
 const STOCK_LOT_SELECT = IS_WINDOWS
   ? `sf.IDstock_fil, sf.IDfournisseur, sf.IDref_fil, sf.IDcolori_fil, sf.IDref_fil_commande, sf.stock, sf.stock_initial, sf.lot, sf.lot_frs, sf.emplacement, sf.date_entree, sf.niveau, sf.terminé AS termine, sf.controlé AS controle, rf.reference AS ref_fil, rf.bio, cf.reference AS colori_reference, f.nom AS fournisseur_nom`
@@ -423,9 +428,23 @@ commandesFilRouter.get('/:id', async (req: Request, res: Response) => {
     }
     // A line received short of its client reservations: the split to check (lib/arbitrage-fil.ts).
     const arbitrages = await etatsArbitrage(lineIds)
+    // The supplier's engagement on each line and its reports (lib/report-delai-fil.ts).
+    const [delais, reports] = await Promise.all([delaisFil(lineIds), reportsFilParLigne(lineIds)])
+    const today = aujourdhuiParis().replace(/-/g, '')
     const lignesWithLinked = (fixedLignes as any[]).map((l) => {
-      const agg = linkedMap.get(Number(l.IDref_fil_commande)) ?? { nb_lots_lies: 0, total_kg_lie: 0 }
-      return { ...l, ...agg, arbitrage: arbitrages.get(Number(l.IDref_fil_commande)) ?? null }
+      const lid = Number(l.IDref_fil_commande)
+      const agg = linkedMap.get(lid) ?? { nb_lots_lies: 0, total_kg_lie: 0 }
+      const delai = delais.get(lid)
+      return {
+        ...l, ...agg, arbitrage: arbitrages.get(lid) ?? null,
+        /** YYYYMMDD the first date given, the supplier's engagement; null while none */
+        date_delai: delai?.date_delai ?? null,
+        /** working days the current date is behind that engagement */
+        retard_delai: retardFil(delai?.date_delai, delai?.date_livraison),
+        /** no engagement yet, or given today: the date is still set without a report */
+        delai_corrigeable: !delai?.date_delai || delai.donne_le === today,
+        reports_delai: reports.get(lid) ?? [],
+      }
     })
 
     res.json({
@@ -982,6 +1001,13 @@ commandesFilRouter.post('/:id/lignes', async (req: Request, res: Response) => {
     await query(
       `INSERT INTO ref_fil_commande (IDcommande_fil, IDref_fil, IDcolori_fil, quantite, unite, prix_unitaire, date_livraison, etat, date_notif) VALUES (${id}, ${d.IDref_fil}, ${d.IDcolori_fil}, ${n(d.quantite)}, ${d.unite ?? 1}, ${n(d.prix_unitaire)}, '${dateLiv}', ${d.etat ?? 0}, '')`
     )
+    // A date typed at the creation is the supplier's engagement (lib/report-delai-fil.ts).
+    if (dateLiv) {
+      await mpsPg()`
+        UPDATE ref_fil_commande SET date_delai = date_livraison, delai_donne_le = now()
+         WHERE idref_fil_commande = (SELECT max(idref_fil_commande) FROM ref_fil_commande WHERE idcommande_fil = ${id})
+           AND date_delai IS NULL`
+    }
     res.status(201).json({ ok: true })
   } catch (err) {
     console.error('Error creating ref_fil_commande:', err)
@@ -1048,6 +1074,19 @@ commandesFilRouter.put('/lignes/:lineId', async (req: Request, res: Response) =>
     if (commandeId == null) { res.status(404).json({ error: 'Line not found' }); return }
     if (refuseIfTerminee(res, await loadCommandeEtat(commandeId))) return
 
+    // The delivery date is the supplier's engagement: the first one is frozen, a later one is a
+    // report with its motif and who it is due to, or refused (lib/report-delai-fil.ts).
+    let ecriture: EcritureDelaiFil = { type: 'inchange' }
+    let report: ReportFil | null = null
+    if (d.date_livraison !== undefined) {
+      const cur = (await delaisFil([lineId])).get(lineId)
+      if (cur) ecriture = ecritureDelaiFil(cur, d.date_livraison, aujourdhuiParis().replace(/-/g, ''))
+      if (ecriture.type === 'report') {
+        report = lireReportFil((req.body as Record<string, unknown>)?.report)
+        if (!report) { res.status(400).json({ error: 'report_requis', message: MESSAGE_REPORT_REQUIS(ecriture.ancien) }); return }
+      }
+    }
+
     const sets: string[] = []
     if (d.IDref_fil !== undefined) sets.push(`IDref_fil = ${d.IDref_fil}`)
     if (d.IDcolori_fil !== undefined) sets.push(`IDcolori_fil = ${d.IDcolori_fil}`)
@@ -1060,6 +1099,13 @@ commandesFilRouter.put('/lignes/:lineId', async (req: Request, res: Response) =>
     if (sets.length === 0) { res.status(400).json({ error: 'No fields to update' }); return }
 
     await query(`UPDATE ref_fil_commande SET ${sets.join(', ')} WHERE IDref_fil_commande = ${lineId}`)
+    if (ecriture.type === 'engagement') await fixerEngagementFil(lineId, ecriture.date)
+    if (ecriture.type === 'report' && report) {
+      await enregistrerReportFil({
+        idligne: lineId, idcommande: commandeId, ancien: ecriture.ancien, nouveau: ecriture.date,
+        motif: report.motif, imputable: report.imputable, par: await auteur(req),
+      })
+    }
 
     if (d.etat === 1) {
       // The line brings nothing more: yarn still reserved on it for client lines is released.
