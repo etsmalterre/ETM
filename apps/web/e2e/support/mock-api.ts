@@ -63,6 +63,14 @@ export async function installMockApi(page: Page): Promise<MockApi> {
     if (detail && stockDetails[detail[1]]) return json(stockDetails[detail[1]])
     if (url.pathname === '/api/fournisseurs') return json(fournisseurs)
 
+    // The header's notification bell and the « Rappel » button of the drawers (2026-11-18): nothing
+    // to do, no reminder, so the screens under test keep their own content.
+    if (url.pathname === '/api/abonnements') return json({ catalog: [], subscribed: [] })
+    if (url.pathname === '/api/abonnements/notifications') {
+      return json({ rows: [], rouges: 0, hidden_count: 0, unimplemented: [], subscribed_count: 0 })
+    }
+    if (url.pathname === '/api/rappels') return json({ rappels: [] })
+
     if (url.pathname === '/api/stock/fini') {
       if (url.searchParams.get('expedie') === 'only') {
         const inStock = new Set(stockFini.map((r) => r.IDstock_fini))

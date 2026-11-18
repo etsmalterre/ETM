@@ -260,12 +260,9 @@ function resumeCycle(c: CycleCommandeFil) {
   return { ...rest, lots_bio: lots_bio.length }
 }
 
-commandesFilRouter.get('/', async (req: Request, res: Response) => {
-  try {
-    const q = String(req.query.q ?? '').trim()
-    const fournisseurFilter = parseInt(String(req.query.fournisseur ?? ''), 10)
-    const etatFilter = String(req.query.etat ?? 'all')
-
+/** Every yarn order with its stage and what there is to do (`urgence`): ONE reader for the list and for
+ *  the red tasks of the notification centre (commandesFilRouges). `fournisseur` narrows to one supplier. */
+async function commandesFilAvecUrgence(fournisseurFilter: number = NaN) {
     const whereParts: string[] = []
     if (!isNaN(fournisseurFilter)) whereParts.push(`cf.IDfournisseur = ${fournisseurFilter}`)
     // The stage (en cours / en attente / terminée) is computed from the
@@ -324,9 +321,7 @@ commandesFilRouter.get('/', async (req: Request, res: Response) => {
     const cycles = await cyclesCommandesFil(ids.map(Number))
     const today = aujourdhuiParis()
 
-    // Filter by search query (supplier name, id, or commentaire)
-    const qLower = q.toLowerCase()
-    const result = fixedWithFournisseurNom
+    return fixedWithFournisseurNom
       .map((c: any) => {
         const totals = totalsMap.get(Number(c.IDcommande_fil)) ?? { total_kg: 0, total_eur: 0, nb_lignes: 0, earliest_delivery: null }
         const cycle = cycles.get(Number(c.IDcommande_fil))
@@ -338,6 +333,27 @@ commandesFilRouter.get('/', async (req: Request, res: Response) => {
           urgence: cycle ? urgenceCommandeFil(cycle, totals.earliest_delivery, today) : null,
         }
       })
+}
+
+export interface CommandeFilRouge { id: number; fournisseur: string; raison: string }
+
+/** Every yarn order whose list card is RED now, with the action the card prints (the relevé of the family
+ *  « Commandes de fil à traiter », lib/taches/sources.ts). Same rows, same rule as the list. */
+export async function commandesFilRouges(): Promise<CommandeFilRouge[]> {
+  return (await commandesFilAvecUrgence())
+    .filter((c: any) => c.urgence?.niveau === 'rouge')
+    .map((c: any) => ({ id: Number(c.IDcommande_fil), fournisseur: (c.fournisseur_nom ?? '').toString().trim(), raison: c.urgence.raison as string }))
+}
+
+commandesFilRouter.get('/', async (req: Request, res: Response) => {
+  try {
+    const q = String(req.query.q ?? '').trim()
+    const fournisseurFilter = parseInt(String(req.query.fournisseur ?? ''), 10)
+    const etatFilter = String(req.query.etat ?? 'all')
+
+    // Filter by search query (supplier name, id, or commentaire)
+    const qLower = q.toLowerCase()
+    const result = (await commandesFilAvecUrgence(fournisseurFilter))
       // en_cours = not terminée yet (yarn awaited OR waiting for a document);
       // attente = received, something missing; terminee = nothing missing.
       .filter((c: any) => {

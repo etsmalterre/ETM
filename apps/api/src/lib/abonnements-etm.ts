@@ -24,6 +24,19 @@ const FILE_PATH = path.resolve(__dirname, '../../data/abonnements-etm.json')
 export const ABONNEMENT_SUPERVISEUR = 100001
 /** Agent Factures Ennoblisseur — the dyers' invoices with a gap, to handle (LIVA #1255). */
 export const ABONNEMENT_FACTURES_SST = 100002
+// The red families (Vincent 2026-11-18): a task = something red on a list, someone at Malterre must
+// act now. A person subscribes to the families that are theirs (the sales administrator: client
+// orders) and gets one task per red item: the list's own rule, read by lib/taches/sources.ts.
+export const ABONNEMENT_COMMANDES_CLIENT = 100003
+export const ABONNEMENT_ENNOBLISSEMENT = 100004
+export const ABONNEMENT_TRICOTAGE = 100005
+export const ABONNEMENT_SUIVI_LOTS = 100006
+export const ABONNEMENT_COMMANDES_FIL = 100007
+/** Every task left red more than 2 working days, whoever it belongs to (lib/taches/registre.ts). */
+export const ABONNEMENT_RETARD = 100008
+/** Not a subscription: the id the reminders of lib/rappels.ts wear in the feed (keys, icon, filter).
+ *  A reminder reaches the person it is for, with nothing to tick. */
+export const ID_RAPPELS = 100009
 
 export interface AbonnementEtm {
   id: number
@@ -53,6 +66,48 @@ export const ABONNEMENTS_ETM: readonly AbonnementEtm[] = [
     icone: 'facture_sst',
     permission: 'dashboard_notif_factures_sst',
   },
+  {
+    id: ABONNEMENT_COMMANDES_CLIENT,
+    nom: 'Commandes clients à traiter',
+    description: 'Une tâche par commande client rouge dans Clients › Commandes : à préparer, à lancer, à expédier, délai à donner, sous-traitant ou fournisseur à relancer.',
+    icone: 'commande_client',
+    permission: 'dashboard_notif_commandes_client',
+  },
+  {
+    id: ABONNEMENT_ENNOBLISSEMENT,
+    nom: 'Ennoblissement à traiter',
+    description: 'Une tâche par commande rouge dans Sous-traitants › Ennoblissement : bon à envoyer, délai à relancer, délai dépassé, réponse coloris à relancer, Tricobot en attente.',
+    icone: 'commande_sst',
+    permission: 'dashboard_notif_ennoblissement',
+  },
+  {
+    id: ABONNEMENT_TRICOTAGE,
+    nom: 'Tricotage à traiter',
+    description: 'Une tâche par commande rouge dans Sous-traitants › Tricotage : fil à affecter, à lancer, délai à relancer, délai dépassé, urgence à relancer.',
+    icone: 'commande_sst',
+    permission: 'dashboard_notif_tricotage',
+  },
+  {
+    id: ABONNEMENT_SUIVI_LOTS,
+    nom: 'Suivi lots à traiter',
+    description: 'Une tâche par lot rouge dans Qualité › Suivi lots : contrôle à faire, ennoblisseur ou client à relancer, contrôles de Tricobot à valider.',
+    icone: 'lot',
+    permission: 'dashboard_notif_suivi_lots',
+  },
+  {
+    id: ABONNEMENT_COMMANDES_FIL,
+    nom: 'Commandes de fil à traiter',
+    description: 'Une tâche par commande rouge dans Fils › Commandes : fournisseur à relancer, certificat ou facture manquant, répartition à valider.',
+    icone: 'commande_fil',
+    permission: 'dashboard_notif_commandes_fil_rouges',
+  },
+  {
+    id: ABONNEMENT_RETARD,
+    nom: 'Tâches en retard (plus de 2 jours ouvrés)',
+    description: 'Toute tâche restée rouge plus de 2 jours ouvrés, quelle que soit sa famille et à qui elle revient, rappels compris. Elle reste aussi chez la personne abonnée.',
+    icone: 'retard',
+    permission: 'dashboard_notif_retard',
+  },
 ]
 
 export const estAbonnementEtm = (id: number) => ABONNEMENTS_ETM.some((a) => a.id === id)
@@ -73,6 +128,15 @@ function exclusive<T>(fn: () => Promise<T>): Promise<T> {
   const next = queue.then(fn, fn)
   queue = next.catch(() => undefined)
   return next
+}
+
+/** Who is subscribed to what: abonnement id → user ids (the names printed on a late task). */
+export async function abonnesEtm(): Promise<Map<number, number[]>> {
+  const out = new Map<number, number[]>()
+  for (const [user, ids] of Object.entries(await lire())) {
+    for (const id of ids.filter(estAbonnementEtm)) out.set(id, [...(out.get(id) ?? []), Number(user)])
+  }
+  return out
 }
 
 /** The ETM-only subscriptions of one user. */

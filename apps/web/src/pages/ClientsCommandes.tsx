@@ -92,6 +92,7 @@ import { EcruLigneZone, PieceEcruLigne, PiecesEcruCarte, lieuxAEnnoblir, matiere
 import { BoutonsCommande, ZoneLigne } from '@/components/commandes/ZonesLigne'
 import { LancementLabel, PlanifierBouton, type EtapeLancement } from '@/components/commandes/LancementLigne'
 import { LotsFilPicker, couvertureFils, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
+import { RappelButton } from '@/components/rappels/RappelButton'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -1487,6 +1488,7 @@ function DetailHeader({
               </>
             ) : (
               <>
+                <RappelButton type="commande_client" id={commande.IDcommande_client} titre={`Commande client N° ${commande.numero ?? commande.IDcommande_client}`} />
                 {hasDiversLines && (
                   <Button variant="outline" size="icon" className="h-9 w-9" title="Expédition groupée" onClick={onOpenExpeditionGroupee}>
                     <Boxes className="h-4 w-4" />

@@ -79,6 +79,7 @@ import { sstDeleteBlocker } from '../lib/sst-delete.js'
 import { isRectiligneType, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
 import { etapeTricotage, etatsTricotage, familleOfTypeSst, parseFamille, tricoteurIds, type EtatTricotage, type SstFamille, type TricotagePhase } from '../lib/sst-tricotage.js'
 import { calendrierTraitement, cleLot, etatCommande, joursOuvresDepuis, lireCommandesEnnoblissement, urgenceCommande, urgenceDemandeeDe, type EtapeCommande, type EtapeLot, type EtatCommande } from '../lib/cycle-ennoblissement.js'
+import { raisonCommandeSst, tricobotAttend, type CompteurTricobotSst, type FaitsRaisonSst } from '../lib/raison-commande-sst.js'
 import {
   loadRectiligneRefLabels,
   loadRectiligneColorisLabels,
@@ -1104,6 +1105,88 @@ async function famillePredicate(famille: SstFamille | null, alias: string): Prom
 //
 // Returns the set of IDs for each bucket so callers can either count them
 // (pill endpoint) or use them as an IN-list filter (list endpoint).
+/** One open order's colour and the facts its card reason reads (lib/raison-commande-sst.ts). */
+interface UrgenceFamille {
+  /** The card's colour: 'late' red, 'soon' amber. Tricobot's wait on a dyer's order is red. */
+  urgence: 'late' | 'soon' | null
+  faits: Omit<FaitsRaisonSst, 'earliestDelivery'>
+  tricobot: CompteurTricobotSst | null
+}
+
+/** The colour of these open orders of a menu: Tricotage has its own rule (lib/sst-tricotage.ts),
+ *  Ennoblissement its cycle (lib/cycle-ennoblissement.ts) plus Tricobot waiting for a person: a
+ *  Malterre action now, red (claude_doc/agents_autonomie.md §6). ONE reader for the counter pills,
+ *  their filter and the red tasks of the notification centre (commandesSstRouges). */
+async function urgencesFamille(famille: SstFamille, ids: number[]): Promise<Map<number, UrgenceFamille>> {
+  const out = new Map<number, UrgenceFamille>()
+  if (famille === 'tricotage') {
+    for (const [id, e] of await etatsTricotage(ids)) {
+      out.set(id, { urgence: e.urgence, faits: { phase: e.phase, urgenceDemandee: e.urgenceDemandee, tricoteur: true }, tricobot: null })
+    }
+    return out
+  }
+  const today = todayIso()
+  // Never fails the colours: without the counts, the cycle's own rule still stands.
+  const compteurs = await compteursParCommande().catch((err) => {
+    console.error('[sst] Tricobot counts not added to the urgencies:', err)
+    return {} as Awaited<ReturnType<typeof compteursParCommande>>
+  })
+  for (const [id, e] of await etatsEnnoblissement(ids)) {
+    const tricobot = compteurs[id] ?? null
+    out.set(id, {
+      urgence: tricobotAttend(tricobot) ? 'late' : urgenceCommande(e, today),
+      faits: { phase: e.etape, main: e.main, relance: e.relance, urgenceDemandee: urgenceDemandeeDe(e, today), tricoteur: false },
+      tricobot,
+    })
+  }
+  return out
+}
+
+export interface CommandeSstRouge { id: number; sousTraitant: string; raison: string }
+
+/** Every open order of a menu whose list card is RED now, with the action the card prints (the relevé of
+ *  the families « Ennoblissement à traiter » / « Tricotage à traiter », lib/taches/sources.ts). Same
+ *  colour as the counter pill (urgencesFamille), same text as the card (raisonCommandeSst). */
+export async function commandesSstRouges(famille: SstFamille): Promise<CommandeSstRouge[]> {
+  const familleSql = await famillePredicate(famille, 'commande_sous_traitant')
+  const open = await query<{ IDcommande_sous_traitant: number; IDsous_traitant: number }>(
+    `SELECT IDcommande_sous_traitant, IDsous_traitant FROM commande_sous_traitant
+     WHERE est_soldee = 0${familleSql ? ` AND ${familleSql}` : ''}`,
+  )
+  const urgences = await urgencesFamille(famille, open.map((r) => Number(r.IDcommande_sous_traitant)))
+  const rouges = open.filter((r) => urgences.get(Number(r.IDcommande_sous_traitant))?.urgence === 'late')
+  if (rouges.length === 0) return []
+  const ids = rouges.map((r) => Number(r.IDcommande_sous_traitant))
+  // Earliest délai of the lines still to deliver, as the list computes it.
+  const lignes = await query<{ IDcommande_sous_traitant: number; date_livraison: string | null; sstatut: string | null }>(
+    `SELECT IDcommande_sous_traitant, date_livraison, sstatut FROM ligne_commande_sous_traitant
+     WHERE IDcommande_sous_traitant IN (${ids.join(',')})`,
+  )
+  const earliest = new Map<number, string>()
+  for (const l of lignes) {
+    if (isLineDone(typeof l.sstatut === 'string' ? l.sstatut : null)) continue
+    const dl = typeof l.date_livraison === 'string' ? l.date_livraison : ''
+    const id = Number(l.IDcommande_sous_traitant)
+    if (/^\d{8}$/.test(dl) && (!earliest.has(id) || dl < earliest.get(id)!)) earliest.set(id, dl)
+  }
+  const stIds = [...new Set(rouges.map((r) => Number(r.IDsous_traitant)).filter((x) => x > 0))]
+  const noms = new Map<number, string>()
+  if (stIds.length > 0) {
+    const st = await mpsPg()<{ id: number; nom: string | null }[]>`
+      SELECT idsous_traitant AS id, nom::text AS nom FROM sous_traitant WHERE idsous_traitant = ANY(${stIds})`
+    for (const r of st) noms.set(Number(r.id), (r.nom ?? '').trim())
+  }
+  return rouges.map((r) => {
+    const id = Number(r.IDcommande_sous_traitant)
+    const u = urgences.get(id)!
+    return {
+      id,
+      sousTraitant: noms.get(Number(r.IDsous_traitant)) ?? '',
+      raison: raisonCommandeSst({ ...u.faits, earliestDelivery: earliest.get(id) ?? null }, 'late', u.tricobot) ?? 'À traiter',
+    }
+  })
+}
+
 async function computeUrgencyBuckets(famille: SstFamille | null = null): Promise<{
   late: Set<number>
   soon: Set<number>
@@ -1114,26 +1197,14 @@ async function computeUrgencyBuckets(famille: SstFamille | null = null): Promise
     `SELECT IDcommande_sous_traitant, date_notif FROM commande_sous_traitant
      WHERE est_soldee = 0${familleSql ? ` AND ${familleSql}` : ''}`,
   )
-  // Tricotage has its own rule (lib/sst-tricotage.ts), computed with its status.
-  if (famille === 'tricotage') {
-    const etats = await etatsTricotage(openRowsAll.map((r) => Number(r.IDcommande_sous_traitant)))
+  // Each menu has its own rule, computed with its status (urgencesFamille).
+  if (famille) {
     const out = { late: new Set<number>(), soon: new Set<number>() }
-    for (const [id, e] of etats) {
-      if (e.urgence === 'late') out.late.add(id)
-      else if (e.urgence === 'soon') out.soon.add(id)
+    for (const [id, u] of await urgencesFamille(famille, openRowsAll.map((r) => Number(r.IDcommande_sous_traitant)))) {
+      if (u.urgence === 'late') out.late.add(id)
+      else if (u.urgence === 'soon') out.soon.add(id)
     }
     return out
-  }
-  if (famille === 'ennoblissement') {
-    const etats = await etatsEnnoblissement(openRowsAll.map((r) => Number(r.IDcommande_sous_traitant)))
-    const out = { late: new Set<number>(), soon: new Set<number>() }
-    const today = todayIso()
-    for (const [id, e] of etats) {
-      const u = urgenceCommande(e, today)
-      if (u === 'late') out.late.add(id)
-      else if (u === 'soon') out.soon.add(id)
-    }
-    return avecTricobot(out, openRowsAll.map((r) => Number(r.IDcommande_sous_traitant)))
   }
   const openRows = openRowsAll
   const openIds = openRows.map((r) => Number(r.IDcommande_sous_traitant)).filter((n) => n > 0)
@@ -1739,6 +1810,11 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
       }
     }
 
+    // What Tricobot wrote or asked per order: the card's reason names his wait first.
+    const compteursTricobot = famille
+      ? await compteursParCommande().catch((err) => { console.error('[sst] Tricobot counts for the list reasons:', err); return {} as Awaited<ReturnType<typeof compteursParCommande>> })
+      : {} as Awaited<ReturnType<typeof compteursParCommande>>
+
     const result = commandes.map((c: any) => {
       const totals = totalsMap.get(Number(c.IDcommande_sous_traitant)) ?? {
         total_eur: 0,
@@ -1748,16 +1824,29 @@ commandesSousTraitantRouter.get('/', async (req: Request, res: Response) => {
       }
       const sst = stInfo.get(Number(c.IDsous_traitant))
       const cid = Number(c.IDcommande_sous_traitant)
+      const phase = phaseMap.get(cid) ?? 'en_cours'
+      // No kg gauge on the card since 2026-11-16 (same card as an ennoblissement order).
+      const tric = etatsTric.get(cid)
+      const enn = etatsEnn.get(cid)
+      const champsTric = tric ? { urgence: tric.urgence, urgence_demandee: tric.urgenceDemandee, urgente: tric.urgente } : null
+      const champsEnn = enn ? cycleFields(enn) : null
+      const couleur = champsTric ?? champsEnn
+      const tricobot = compteursTricobot[cid] ?? null
       return {
         ...c,
         sous_traitant_nom: sst?.nom ?? '',
         sous_traitant_type: sst?.type ?? null,
-        phase: phaseMap.get(cid) ?? 'en_cours',
+        phase,
         bon_envoye_at: bonEnvoyeMap.get(cid) ?? null,
         ...totals,
-        // No kg gauge on the card since 2026-11-16 (same card as an ennoblissement order).
-        ...(etatsTric.has(cid) ? { urgence: etatsTric.get(cid)!.urgence, urgence_demandee: etatsTric.get(cid)!.urgenceDemandee, urgente: etatsTric.get(cid)!.urgente } : {}),
-        ...(etatsEnn.has(cid) ? cycleFields(etatsEnn.get(cid)!) : {}),
+        ...(champsTric ?? {}),
+        ...(champsEnn ?? {}),
+        // What to do on a red / amber card, the ONE copy of the rule (lib/raison-commande-sst.ts).
+        ...(couleur ? {
+          raison: raisonCommandeSst(
+            { phase, main: champsEnn?.main, relance: champsEnn?.relance, earliestDelivery: totals.earliest_delivery, urgenceDemandee: couleur.urgence_demandee, tricoteur: famille === 'tricotage' },
+            tricobotAttend(tricobot) ? 'late' : couleur.urgence, tricobot),
+        } : {}),
       }
     })
 

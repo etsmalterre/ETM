@@ -1201,7 +1201,7 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
         client_nom: clientNames.get(Number(c.IDclient)) ?? '',
         // where it stands (line pills' scale) + what there is to do and when; soldée = neutral
         avancement: Number(c.est_soldee) === 1 ? 'soldee' : (etatMap.get(cid)?.avancement ?? null),
-        urgence: enPreparation.has(cid) ? { niveau: 'rouge', raison: 'Commande à préparer puis valider' } : (etatMap.get(cid)?.urgence ?? null),
+        urgence: urgenceAffichee(cid, enPreparation, etatMap),
         en_preparation: enPreparation.has(cid),
         // How it leaves and when (« ensemble »: latest D of the lines still to ship; date demandée: the client's).
         expedition_groupee: (etatMap.get(cid)?.expedition ?? EXPEDITION_DEFAUT).groupee,
@@ -1217,6 +1217,54 @@ commandesClientRouter.get('/', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Internal server error' })
   }
 })
+
+/** What the list card of an order says there is to do: ONE rule for the list and for the red tasks of
+ *  the notification centre (commandesRouges). « En préparation » is red from its creation. */
+function urgenceAffichee(cid: number, enPreparation: Set<number>, etatMap: Map<number, EtatCommande>): UrgenceCommande | null {
+  return enPreparation.has(cid) ? { niveau: 'rouge', raison: 'Commande à préparer puis valider' } : (etatMap.get(cid)?.urgence ?? null)
+}
+
+export interface CommandeRouge { id: number; numero: number | null; client: string; raison: string }
+
+/** Every open ETM order whose list card is RED now, with the action the card prints (the relevé of the
+ *  family « Commandes clients à traiter », lib/taches/sources.ts). Same population as the list (société 1,
+ *  no TRM mirror), same rule (urgenceAffichee): never a second way to say an order is red. */
+export async function commandesRouges(): Promise<CommandeRouge[]> {
+  const commandes = await query<any>(
+    `SELECT cc.IDcommande_client, cc.IDclient, cc.numero
+     FROM commande_client cc
+     WHERE cc.IDsociete = 1 AND cc.IDcommande_ETM = 0 AND cc.est_soldee = 0
+     ORDER BY cc.IDcommande_client DESC`,
+  )
+  const ids = commandes.map((c: any) => Number(c.IDcommande_client)).filter(Boolean)
+  if (ids.length === 0) return []
+  const clientIds = commandes.map((c: any) => Number(c.IDclient)).filter(Boolean)
+  const [clientNames, enPreparation, relanceParClient] = await Promise.all([
+    resolveClientNames(clientIds),
+    commandesEnPreparation(ids),
+    relanceAppelParClient(clientIds),
+  ])
+  const lignes: any[] = []
+  // Chunked like every IN list on ids: 76 open orders today, a backlog must not build one huge list.
+  for (let i = 0; i < ids.length; i += 200) {
+    lignes.push(...await query<any>(
+      `SELECT IDligne_commande_client, IDcommande_client, TYPE AS type_kind, IDreference, IDcolori, IDVariation1, IDVariation2,
+              unite, quantite, prix, date_livraison, mode_livraison, IDetude_col
+       FROM ligne_commande_client WHERE IDcommande_client IN (${ids.slice(i, i + 200).join(',')})`,
+    ))
+  }
+  const relanceParCommande = new Map<number, number>(commandes.map((c: any) =>
+    [Number(c.IDcommande_client), relanceAppelDe(relanceParClient.get(Number(c.IDclient)))]))
+  const etatMap = await etatCommandesOuvertes(lignes, relanceParCommande)
+  const out: CommandeRouge[] = []
+  for (const c of commandes) {
+    const cid = Number(c.IDcommande_client)
+    const u = urgenceAffichee(cid, enPreparation, etatMap)
+    if (u?.niveau !== 'rouge') continue
+    out.push({ id: cid, numero: c.numero != null ? Number(c.numero) : null, client: clientNames.get(Number(c.IDclient)) ?? '', raison: u.raison })
+  }
+  return out
+}
 
 // ════════════════════════════════════════════════════════
 //  LINE REF / COLORIS RESOLUTION (shared by detail + PDF)

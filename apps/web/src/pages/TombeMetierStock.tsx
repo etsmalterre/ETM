@@ -52,6 +52,8 @@ import {
   filterRowsByChips,
   type SearchChip,
 } from '@/components/stock/SmartSearchInput'
+import { RappelButton } from '@/components/rappels/RappelButton'
+import { ProvenanceRow, lienCommandeFil, lienCommandeSst, lienLotFil } from '@/components/stock/ProvenanceRow'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -102,6 +104,8 @@ interface ProvenanceFil {
   ref_fil: string | null
   fournisseur: string | null
   IDcommande_fil: number | null
+  /** The yarn lots behind the entry (API resolveProvenanceFils). */
+  lots?: Array<{ IDstock_fil: number; lot: string }>
 }
 interface SstOrigin {
   sst_nom: string | null
@@ -297,7 +301,11 @@ export function TombeMetierStock() {
   const [statut, setStatut] = useState<StatutCode>(linkedRef ? 3 : 1)
   const [secondChoix, setSecondChoix] = useState(false)
   const [sort, setSort] = useState<SortState>({ key: 'date_saisie', dir: 'desc' })
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  // `?piece=<IDstock_ecru>` opens the screen on that piece's drawer (a reminder of the notification centre).
+  const [selectedId, setSelectedId] = useState<number | null>(() => {
+    const n = parseInt(initialParams.get('piece') ?? '', 10)
+    return Number.isInteger(n) && n > 0 ? n : null
+  })
 
   // Permission gates — admins always pass; the API enforces the same keys.
   const canCut = useHasPermission('cut_stock_ecru')
@@ -1627,6 +1635,9 @@ function StockEcruDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
       if (drawerRef.current?.contains(target)) return
       // Table rows or mobile cards both carry data-stock-row — they switch selection themselves
       if ((target as Element).closest?.('[data-stock-row]')) return
+      // A dialog opened from the drawer (the reminders) and its dropdowns are portalled to <body>:
+      // a click in them is still a click « in » the drawer.
+      if ((target as Element).closest?.('[data-dialog-root], [data-popover-portal]')) return
       onClose()
     }
     document.addEventListener('mousedown', handleMouseDown)
@@ -1771,12 +1782,15 @@ function StockEcruDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
                   </Button>
                 </>
               ) : (
-                canEdit && (
-                  <Button variant="gold" size="sm" onClick={startEdit} title="Modifier">
-                    <Pencil className="h-3.5 w-3.5 sm:mr-1.5" />
-                    <span className="hidden sm:inline">Modifier</span>
-                  </Button>
-                )
+                <>
+                  <RappelButton surface="bande" type="piece_ecru" id={detail.IDstock_ecru} titre={`Pièce tombé de métier ${detail.numero ?? ''}`} />
+                  {canEdit && (
+                    <Button variant="gold" size="sm" onClick={startEdit} title="Modifier">
+                      <Pencil className="h-3.5 w-3.5 sm:mr-1.5" />
+                      <span className="hidden sm:inline">Modifier</span>
+                    </Button>
+                  )}
+                </>
               ))}
             {/* Mobile-only close — at full drawer width there is no "outside" left to tap */}
             <Button
@@ -1885,7 +1899,7 @@ function StockEcruDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
               <DrawerCard icon={<Factory className="h-4 w-4 text-accent" />} title="Provenance">
                 <div className="space-y-2.5">
                   <HorsRefNote fils={detail.hors_ref} />
-                  {/* Fils — yarns knit into this écru roll, with supplier + fil order N° */}
+                  {/* Fils: each yarn knit into this écru roll, its supplier, its order and its lots as links */}
                   {!!provenance && provenance.fils.length > 0 && (
                     <div className="space-y-1.5">
                       {provenance.fils.map((f, i) => (
@@ -1893,28 +1907,20 @@ function StockEcruDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
                           key={i}
                           icon={<BobineIcon className="h-3.5 w-3.5 text-accent" />}
                           title={f.ref_fil || 'Fil'}
-                          detail={[
-                            f.fournisseur,
-                            f.IDcommande_fil ? `Commande N° ${f.IDcommande_fil}` : null,
-                          ]
-                            .filter(Boolean)
-                            .join(' · ')}
+                          qui={f.fournisseur}
+                          liens={[lienCommandeFil(f.IDcommande_fil), ...(f.lots ?? []).map(lienLotFil)]}
                         />
                       ))}
                     </div>
                   )}
 
-                  {/* Tricotage — the knitting (tricoteur) sst order that produced this écru */}
+                  {/* Tricotage: the knitting (tricoteur) sst order that produced this écru */}
                   {!!provenance?.tricotage && (
                     <ProvenanceRow
                       icon={<KnitIcon className="h-3.5 w-3.5 text-accent" />}
                       title="Tricotage"
-                      detail={[
-                        provenance.tricotage.sst_nom,
-                        `Commande N° ${provenance.tricotage.IDcommande}`,
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
+                      qui={provenance.tricotage.sst_nom}
+                      liens={[lienCommandeSst(provenance.tricotage.IDcommande)]}
                     />
                   )}
 
@@ -2016,25 +2022,3 @@ function KV({ label, value, mono }: { label: string; value: React.ReactNode; mon
   )
 }
 
-// One provenance origin: a leading icon, a primary label (yarn ref / step name)
-// and a muted detail line (supplier · order N°). Used in the drawer's Provenance
-// card. Mirrors the same component in FinisStock.tsx.
-function ProvenanceRow({
-  icon,
-  title,
-  detail,
-}: {
-  icon: React.ReactNode
-  title: string
-  detail: string
-}) {
-  return (
-    <div className="flex items-start gap-2">
-      <span className="flex-shrink-0 mt-0.5">{icon}</span>
-      <div className="min-w-0">
-        <p className="text-sm font-medium truncate">{title}</p>
-        {!!detail && <p className="text-[11px] text-muted-foreground truncate">{detail}</p>}
-      </div>
-    </div>
-  )
-}

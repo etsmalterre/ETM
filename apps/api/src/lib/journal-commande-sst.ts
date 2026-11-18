@@ -16,6 +16,7 @@ import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 import { lireJournalLot, type AuteurType, type EntreeJournal } from './journal-lot.js'
 import { libelleImputable } from './report-delai-sst.js'
+import { journalRappels } from './rappels.js'
 
 export type EvenementCommandeSst = 'creation' | 'bon_commande' | 'etat'
 
@@ -227,6 +228,11 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
       detail: demandes.length > 1 ? `Aussi : ${demandes.slice(1).map((d) => d.charAt(0).toLowerCase() + d.slice(1)).join(', ')}` : null,
       par: p.par, auteur: qui(p.par),
     }))
+  }
+
+  // Reminders put on the order itself (lib/rappels.ts); those of its lots come with each lot's journal.
+  for (const r of await journalRappels('commande_sst', idcommande, sql).catch(() => [])) {
+    out.push(commande({ le: r.le, type: 'rappel', titre: r.titre, detail: r.detail, par: r.par, auteur: qui(r.par) }))
   }
 
   return out.sort((a, b) => b.le.localeCompare(a.le))

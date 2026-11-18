@@ -29,6 +29,7 @@ function esc(value: string): string {
 
 import { IS_WINDOWS } from '../lib/sst-shared.js'
 import { normaliserLot, refusLotSuffixe, reprisesParRouleau } from '../lib/reprises.js'
+import { mpsPg } from '../lib/mps-pg.js'
 
 /** ref_fini.archivé is accented — on Linux SELECT * returns a mangled key. */
 function isArchive(row: Record<string, unknown>): boolean {
@@ -537,12 +538,29 @@ stockFiniRouter.get('/fini/:id', async (req: Request, res: Response) => {
     // sheet (lib/hors-ref-trm.ts) — internal, never on the BL.
     const horsRef = (await horsRefParFini([id])).get(id) ?? []
     const reprises = (await reprisesParRouleau([id])).get(id)?.nombre ?? 0
-    res.json({ ...fixed[0], sources, hors_ref: horsRef, reprises })
+    res.json({ ...fixed[0], sources, hors_ref: horsRef, reprises, IDsuivilot: await ficheLotDuRouleau(id) })
   } catch (err) {
     console.error('Error fetching stock_fini detail:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
+
+/** The lot fiche (Qualité › Suivi lots) of a roll, or null: the drawer links to it and a reminder can
+ *  be put on the LOT from the roll. A lot is the dyer's number on ONE dye line, so the fiche is the
+ *  one of the roll's own line; a roll whose line moved (a surteinture) falls back on the lot number
+ *  only when a single fiche carries it. Many old rolls have a lot number and no fiche: null. */
+async function ficheLotDuRouleau(idstockFini: number): Promise<number | null> {
+  const rows = await mpsPg()<{ id: number; meme_ligne: boolean }[]>`
+    SELECT s.idsuivilot AS id, (s.idligne_commande_sous_traitant = sf.idref_commande_source) AS meme_ligne
+      FROM stock_fini sf
+      JOIN suivilot s ON trim(s.lot::text) = trim(sf.lot::text)
+     WHERE sf.idstock_fini = ${idstockFini} AND trim(COALESCE(sf.lot::text, '')) <> ''
+     ORDER BY 2 DESC, s.idsuivilot DESC
+     LIMIT 3`
+  if (rows.length === 0) return null
+  if (rows[0].meme_ligne) return Number(rows[0].id)
+  return rows.length === 1 ? Number(rows[0].id) : null
+}
 
 /** The component écru pieces of a grouped roll (`stock_fini_source`), with
  *  their numeros — empty for a plain roll. */
@@ -597,9 +615,17 @@ export async function resolveSstLine(
 // order number (commande_fil id, via ref_fil_commande). Deduped per
 // (ref_fil, fournisseur, commande). All accented name columns repaired with
 // fixEncoding; every WHERE uses integer id lists only.
+export interface ProvenanceFil {
+  ref_fil: string | null
+  fournisseur: string | null
+  IDcommande_fil: number | null
+  /** The yarn lots behind this entry, in id order: each opens in Fils › Stock. */
+  lots: Array<{ IDstock_fil: number; lot: string }>
+}
+
 export async function resolveProvenanceFils(
   tricoteurLineId: number,
-): Promise<Array<{ ref_fil: string | null; fournisseur: string | null; IDcommande_fil: number | null }>> {
+): Promise<ProvenanceFil[]> {
   if (!(tricoteurLineId > 0)) return []
   const asso = await query<{ IDstock_fil: number }>(
     `SELECT IDstock_fil FROM asso_fil_lignecmdsst WHERE IDligne_commande_sous_traitant = ${tricoteurLineId}`,
@@ -612,8 +638,9 @@ export async function resolveProvenanceFils(
     IDref_fil: number
     IDfournisseur: number
     IDref_fil_commande: number
+    lot: string | null
   }>(
-    `SELECT IDstock_fil, IDref_fil, IDfournisseur, IDref_fil_commande FROM stock_fil WHERE IDstock_fil IN (${stockFilIds.join(',')})`,
+    `SELECT IDstock_fil, IDref_fil, IDfournisseur, IDref_fil_commande, lot FROM stock_fil WHERE IDstock_fil IN (${stockFilIds.join(',')})`,
   )
   // Yarn lots in id order on both databases: HFSQL hands the asso rows back in
   // its index's internal order, which PostgreSQL cannot reproduce.
@@ -653,16 +680,22 @@ export async function resolveProvenanceFils(
     for (const r of rfc) cmdMap.set(Number(r.IDref_fil_commande), Number(r.IDcommande_fil) || 0)
   }
 
-  const seen = new Set<string>()
-  const out: Array<{ ref_fil: string | null; fournisseur: string | null; IDcommande_fil: number | null }> = []
+  // One entry per (yarn, supplier, order); its lots are listed on it.
+  const parCle = new Map<string, ProvenanceFil>()
+  const out: ProvenanceFil[] = []
   for (const lot of lots) {
     const ref = refFilMap.get(Number(lot.IDref_fil)) || null
     const frs = frsMap.get(Number(lot.IDfournisseur)) || null
     const cmd = cmdMap.get(Number(lot.IDref_fil_commande)) || 0
     const key = `${Number(lot.IDref_fil)}:${Number(lot.IDfournisseur)}:${cmd}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push({ ref_fil: ref, fournisseur: frs, IDcommande_fil: cmd || null })
+    let entree = parCle.get(key)
+    if (!entree) {
+      entree = { ref_fil: ref, fournisseur: frs, IDcommande_fil: cmd || null, lots: [] }
+      parCle.set(key, entree)
+      out.push(entree)
+    }
+    const numero = (lot.lot ?? '').toString().trim()
+    if (numero) entree.lots.push({ IDstock_fil: Number(lot.IDstock_fil), lot: numero })
   }
   return out
 }

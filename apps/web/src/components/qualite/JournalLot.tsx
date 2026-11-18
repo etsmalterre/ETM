@@ -5,6 +5,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import {
+  AlarmClock,
   AlertCircle,
   AtSign,
   BellRing,
@@ -71,6 +72,8 @@ const LOOK: Record<string, { icon: LucideIcon; color: string }> = {
   delai_recu: { icon: CalendarCheck, color: 'text-green-700 bg-green-500/10' },
   point: { icon: MessageSquareText, color: 'text-sky-600 bg-sky-500/10' },
   cloture: { icon: Lock, color: 'text-zinc-600 bg-zinc-500/10' },
+  // A reminder put on the lot or the order, and the day it was done (API lib/rappels.ts).
+  rappel: { icon: AlarmClock, color: 'text-amber-700 bg-amber-500/10' },
 }
 
 const JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi']

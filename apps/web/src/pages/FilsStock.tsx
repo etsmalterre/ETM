@@ -44,6 +44,7 @@ import {
   filterRowsByChips,
   type SearchChip,
 } from '@/components/stock/SmartSearchInput'
+import { RappelButton } from '@/components/rappels/RappelButton'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -240,7 +241,12 @@ export function FilsStock() {
   const isMdUp = useMediaQuery(MD_UP)
   const [hideFinished, setHideFinished] = useState(true)
   const [sort, setSort] = useState<SortState>({ key: 'date_entree', dir: 'desc' })
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  // `?lot=<IDstock_fil>` opens the screen on that lot's drawer (a reminder of the notification centre).
+  const [lienParams] = useSearchParams()
+  const [selectedId, setSelectedId] = useState<number | null>(() => {
+    const n = parseInt(lienParams.get('lot') ?? '', 10)
+    return Number.isInteger(n) && n > 0 ? n : null
+  })
   const [createOpen, setCreateOpen] = useState(false)
   // Permission gate — admins always pass; non-admins need create_stock_fil
   const canCreate = useHasPermission('create_stock_fil')
@@ -609,6 +615,9 @@ function StockDetailDrawer({ id, onClose, onMutationSuccess, onDirtyChange, save
       if (drawerRef.current?.contains(target)) return
       // Ignore clicks on stock rows (table rows or mobile cards) — they handle selection themselves
       if ((target as Element).closest?.('[data-stock-row]')) return
+      // A dialog opened from the drawer (the reminders) and its dropdowns are portalled to <body>:
+      // a click in them is still a click « in » the drawer.
+      if ((target as Element).closest?.('[data-dialog-root], [data-popover-portal]')) return
       onClose()
     }
     document.addEventListener('mousedown', handleMouseDown)
@@ -762,10 +771,13 @@ function StockDetailDrawer({ id, onClose, onMutationSuccess, onDirtyChange, save
                 </Button>
               </>
             ) : (
-              <Button variant="gold" size="sm" onClick={startEdit} title="Modifier">
-                <Pencil className="h-3.5 w-3.5 sm:mr-1.5" />
-                <span className="hidden sm:inline">Modifier</span>
-              </Button>
+              <>
+                <RappelButton surface="bande" type="lot_fil" id={detail.IDstock_fil} titre={`Lot de fil ${detail.lot ?? ''}`} />
+                <Button variant="gold" size="sm" onClick={startEdit} title="Modifier">
+                  <Pencil className="h-3.5 w-3.5 sm:mr-1.5" />
+                  <span className="hidden sm:inline">Modifier</span>
+                </Button>
+              </>
             ))}
           {/* Mobile-only close — at full drawer width there is no "outside" left to tap */}
           <Button

@@ -14,6 +14,7 @@
 // form a save sends (not what changed), and it is a monitoring device whose
 // purpose is the activity report, not a screen everyone reads.
 
+import { journalRappels } from './rappels.js'
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 import { cleLot } from './cycle-ennoblissement.js'
@@ -264,6 +265,11 @@ export async function lireJournalLot(idsuivilot: number, sql: Sql = mpsPg()): Pr
   if (l?.jete_le && !aLigne('tirelle_jete')) out.push({ le: iso(l.jete_le), type: 'tirelle_jete', titre: 'Tirelle jetée', detail: null, par: null, auteur: 'inconnu' })
   for (const t of tricobot) {
     out.push({ le: iso(t.le), type: 'mesures_ennoblisseur', titre: 'Contrôle ennoblisseur enregistré', detail: t.proposition, par: 'Tricobot', auteur: 'tricobot' })
+  }
+
+  // Reminders put on the lot (lib/rappels.ts): the day one was put, the day it was done.
+  for (const r of await journalRappels('lot_fini', idsuivilot, sql).catch(() => [])) {
+    out.push({ le: r.le, type: 'rappel', titre: r.titre, detail: r.detail, par: r.par, auteur: r.par ? 'personne' : 'inconnu' })
   }
 
   return out.sort((a, b) => b.le.localeCompare(a.le))

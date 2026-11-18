@@ -196,6 +196,8 @@ export function PopoverSelect({
       {open && !disabled && pos && createPortal(
         <div
           ref={popoverRef}
+          // Portalled to <body>: a drawer's outside-click handler knows it by this mark.
+          data-popover-portal
           style={{
             position: 'fixed',
             left: pos.left,
@@ -379,6 +381,8 @@ export function SearchableCombobox<T>({
       {open && !disabled && pos && createPortal(
         <div
           ref={popoverRef}
+          // Portalled to <body>: a drawer's outside-click handler knows it by this mark.
+          data-popover-portal
           style={{
             position: 'fixed',
             left: pos.left,

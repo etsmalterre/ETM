@@ -108,6 +108,7 @@ import { SchemaControle, type SchemaKind } from '@/components/qualite/SchemaCont
 import { cn } from '@/lib/utils'
 import { ouvertes, tricobotAttend, TricobotAvatar, useSaisiesLotTricobot, type CompteurTricobot } from '@/components/tricobot/SaisiesTricobot'
 import { TricobotPriseEnMain } from '@/components/tricobot/TricobotPriseEnMain'
+import { RappelButton } from '@/components/rappels/RappelButton'
 
 // ── Types ────────────────────────────────────────────────
 
@@ -1247,6 +1248,7 @@ function LotDetailHeader({
             </>
           ) : (
             <>
+              <RappelButton type="lot_fini" id={detail.IDsuivilot} titre={`Lot ${detail.lot ?? ''}`} />
               {detail.etiquettes_sp && (
                 <Button
                   variant="outline"

@@ -79,6 +79,7 @@ import { createAutomatesRouter } from './routes/automates.js'
 import { AGENTS_IA_ETM, AGENTS_IA_TRM } from './lib/agents/app-scope.js'
 import { tachesAutomates } from './lib/automates/execution.js'
 import { abonnementsRouter } from './routes/abonnements.js'
+import { rappelsRouter } from './routes/rappels.js'
 import { userEmailsRouter } from './routes/user-emails.js'
 import { userProfilesRouter } from './routes/user-profiles.js'
 import { query, dbBackend, dbName } from './lib/hfsql-auto.js'
@@ -159,6 +160,8 @@ app.use('/api/permissions-trm', permissionsTrmRouter)
 app.use('/api/notifications', notificationsRouter)
 // TRM's own subscriptions (Paramètres › Utilisateurs › Notifications of the TRM app)
 app.use('/api/abonnements', abonnementsRouter)
+// Reminders on an object (a lot, a piece, an order): due, they are red tasks of the feed above.
+app.use('/api/rappels', rappelsRouter)
 app.use('/api/user-emails', userEmailsRouter)
 app.use('/api/user-profiles', userProfilesRouter)
 app.use('/api/entreprises', entreprisesRouter)

@@ -118,6 +118,7 @@ import { sstTypeTagClasses } from '@/lib/sst-type'
 import { pruneSelection } from '@/lib/transfert-picker'
 import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { LotsFilPicker, couvertureFils, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
+import { RappelButton } from '@/components/rappels/RappelButton'
 
 // ── Constants ──────────────────────────────────────────
 
@@ -157,6 +158,8 @@ interface CommandeListRow {
   /** Tricotage only: the late frame computed by the API (lib/sst-tricotage.ts).
    *  No kg gauge on the card (Vincent 2026-11-16): the ennoblissement card. */
   urgence?: 'late' | 'soon' | null
+  /** What to do on a red / amber card, in a few words (API lib/raison-commande-sst.ts). */
+  raison?: string | null
   /** An urgency asked of the sous-traitant on a line (API lib/urgence-sst.ts): its answer is awaited,
    *  or it is ours to chase (the card is then red). */
   urgence_demandee?: 'attente' | 'a_relancer' | null
@@ -739,52 +742,6 @@ function rowUrgency(row: CommandeListRow): 'late' | 'soon' | null {
   return row.phase === 'attente_delai'
     ? attenteDelaiUrgency(row.date_notif, row.bon_envoye_at)
     : deliveryUrgency(row.earliest_delivery, row.est_soldee)
-}
-
-/** What to do on a red / amber card, in a few words, printed under the
- *  sous-traitant in the card's colour (mps_designer §41: a coloured card
- *  always says the Malterre action, like Clients › Commandes). Read from the
- *  same facts as the colour: Tricobot waiting, the order's step and its chase
- *  date (API lib/cycle-ennoblissement.ts, lib/sst-tricotage.ts). */
-function raisonCarte(row: CommandeListRow, urgence: 'late' | 'soon' | null, tricobot: CompteurTricobot | undefined): string | null {
-  if (tricobotAttend(tricobot)) {
-    if (tricobot!.aide > 0 && tricobot!.aValider === 0) return 'Tricobot demande ton avis'
-    // Delivery notes only: a réception to validate, not a délai.
-    if ((tricobot!.bl ?? 0) >= tricobot!.aValider + tricobot!.aide) return 'Tricobot : réception à valider'
-    return `Tricobot : ${tricobot!.aValider + tricobot!.aide > 1 ? 'délais à valider' : 'délai à valider'}`
-  }
-  // An urgency asked of the sous-traitant whose answer did not come (API lib/urgence-sst.ts).
-  if (row.urgence_demandee === 'a_relancer') {
-    return `Urgence demandée : relancer ${(row.sous_traitant_type ?? '').trim().toLowerCase() === TYPE_TRICOTEUR.toLowerCase() ? 'le tricoteur' : 'l’ennoblisseur'}`
-  }
-  if (!urgence) return null
-  const quand = (iso: string | null | undefined) => {
-    if (!iso) return ''
-    const d = iso.replace(/-/g, '')
-    return /^\d{8}$/.test(d) ? `${d.slice(6, 8)}/${d.slice(4, 6)}` : ''
-  }
-  const tard = urgence === 'late'
-  switch (row.phase) {
-    case 'attente_delai':
-      return tard ? 'Délai à relancer' : 'Délai à relancer demain'
-    case 'non_envoye':
-      return 'Bon de commande à envoyer'
-    case 'a_cloturer':
-      return 'Commande à clôturer'
-    case 'fil_a_affecter':
-      return 'Fil à affecter'
-    case 'a_lancer':
-      return tard ? 'À lancer' : 'À lancer bientôt'
-    default: {
-      // En traitement / en tricotage / solde en contrôle: the délai of the line.
-      // The client holds the hand (a coloris soumission): it is the one to chase.
-      if (row.main === 'client') return tard ? 'Réponse coloris : relancer le client' : 'Réponse coloris : dernier jour demain'
-      const d = quand(row.relance) || (row.earliest_delivery ? quand(row.earliest_delivery) : '')
-      // No « : relancer » after it (Vincent 2026-11-16): a past délai says it by itself.
-      if (tard) return d ? `Délai du ${d} dépassé` : 'Sans délai : le demander'
-      return d ? `Délai le ${d} : s’assurer du départ` : null
-    }
-  }
 }
 
 function deliveryUrgency(earliestHfsql: string | null, est_soldee: number | null): 'late' | 'soon' | null {
@@ -1637,7 +1594,9 @@ function CommandeList({
           // All other open phases keep using the earliest-delivery deadline.
           // Tricobot waiting on the order is a Malterre action now: red, like any red card.
           const urgency = tricobotAttend(compteursTricobot?.[row.IDcommande_sous_traitant]) ? 'late' : rowUrgency(row)
-          const raison = raisonCarte(row, urgency, compteursTricobot?.[row.IDcommande_sous_traitant])
+          // What to do on a red / amber card: the API's own text (lib/raison-commande-sst.ts), the ONE
+          // copy of the rule, also read by the notification centre.
+          const raison = urgency ? (row.raison ?? null) : null
           const raisonEl = raison && (
             <p className={cn('text-xs font-medium mt-0.5 truncate', urgency === 'late' ? 'text-red-600' : 'text-amber-700')}>{raison}</p>
           )
@@ -1826,6 +1785,7 @@ function DetailHeader({
               </>
             ) : (
               <>
+                <RappelButton type="commande_sst" id={commande.IDcommande_sous_traitant} titre={`Commande N° ${commande.IDcommande_sous_traitant}`} />
                 <Button variant="outline" size="icon" className="h-9 w-9" title="Imprimer" onClick={onPrintClick}>
                   <Printer className="h-4 w-4" />
                 </Button>

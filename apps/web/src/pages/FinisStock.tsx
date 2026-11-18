@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef, useTransition, useDeferredValue, memo } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
@@ -76,6 +76,8 @@ import {
   type SearchChip,
   type SearchTagDef,
 } from '@/components/stock/SmartSearchInput'
+import { RappelButton } from '@/components/rappels/RappelButton'
+import { ProvenanceRow, lienCommandeFil, lienCommandeSst, lienLot, lienLotFil } from '@/components/stock/ProvenanceRow'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -113,6 +115,8 @@ interface StockFiniRow {
   etat_libelle: string | null
   /** Reprises at the dyer this roll went through (lib/reprises.ts on the API). */
   reprises?: number
+  /** The roll's lot fiche in Qualité › Suivi lots (null: a lot number without a fiche). */
+  IDsuivilot?: number | null
   magasin_nom: string | null
   contexture_nom: string | null
   grammage: number | null
@@ -237,6 +241,8 @@ interface ProvenanceFil {
   ref_fil: string | null
   fournisseur: string | null
   IDcommande_fil: number | null
+  /** The yarn lots behind the entry (API resolveProvenanceFils). */
+  lots?: Array<{ IDstock_fil: number; lot: string }>
 }
 
 interface SstOrigin {
@@ -517,7 +523,11 @@ export function FinisStock() {
   const [activeTags, setActiveTags] = useState<string[]>([])
   const showExpedies = activeTags.includes(TAG_EXPEDIES)
   const [sort, setSort] = useState<SortState>({ key: 'date_saisie', dir: 'desc' })
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  // `?piece=<IDstock_fini>` opens the screen on that roll's drawer (a reminder of the notification centre).
+  const [selectedId, setSelectedId] = useState<number | null>(() => {
+    const n = parseInt(searchParams.get('piece') ?? '', 10)
+    return Number.isInteger(n) && n > 0 ? n : null
+  })
 
   // Permission gates — admins always pass; non-admins need the matching key.
   // The API enforces the same keys independently.
@@ -2291,6 +2301,9 @@ interface DrawerProps {
 function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRef, discardRef }: DrawerProps) {
   const { data: detail, isLoading } = useStockFiniDetail(id)
   const { data: provenance } = useStockFiniProvenance(id)
+  // The dyeing step is a row of its own unless it is the knitting order itself; the dyer's lot sits on it.
+  const ennoblissementAffiche = !!provenance?.ennoblissement
+    && provenance.ennoblissement.IDcommande !== provenance?.tricotage?.IDcommande
   // Per-section sub-permissions of edit_stock_fini — each drawer card is only
   // editable when the parent AND its own sub-key are granted. The API enforces
   // the same pairs on PATCH /stock/fini/:id.
@@ -2362,6 +2375,9 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
       if (drawerRef.current?.contains(target)) return
       // Table rows or mobile cards both carry data-stock-row — they switch selection themselves
       if ((target as Element).closest?.('[data-stock-row]')) return
+      // A dialog opened from the drawer (the reminders) and its dropdowns are portalled to <body>:
+      // a click in them is still a click « in » the drawer.
+      if ((target as Element).closest?.('[data-dialog-root], [data-popover-portal]')) return
       onClose()
     }
     document.addEventListener('mousedown', handleMouseDown)
@@ -2624,6 +2640,10 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
                     >
                       <Printer className="h-4 w-4" />
                     </Button>
+                    <RappelButton
+                      surface="bande" type="piece_fini" id={detail.IDstock_fini} titre={`Pièce ${detail.numero ?? ''}`}
+                      lot={detail.IDsuivilot ? { id: detail.IDsuivilot, titre: `Lot ${detail.lot ?? ''}` } : null}
+                    />
                     {canEditAny && (
                       <Button variant="gold" size="sm" onClick={startEdit} title="Modifier">
                         <Pencil className="h-3.5 w-3.5 sm:mr-1.5" />
@@ -2788,7 +2808,7 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
               <DrawerCard icon={<Factory className="h-4 w-4 text-accent" />} title="Provenance">
                 <div className="space-y-2.5">
                   <HorsRefNote fils={detail.hors_ref} />
-                  {/* Fils — yarns knit into this roll, with supplier + fil order N° */}
+                  {/* Fils: each yarn knit into this roll, its supplier, its order and its lots as links */}
                   {!!provenance && provenance.fils.length > 0 && (
                     <div className="space-y-1.5">
                       {provenance.fils.map((f, i) => (
@@ -2796,56 +2816,57 @@ function StockFiniDrawer({ id, onClose, onMutationSuccess, onDirtyChange, saveRe
                           key={i}
                           icon={<BobineIcon className="h-3.5 w-3.5 text-accent" />}
                           title={f.ref_fil || 'Fil'}
-                          detail={[
-                            f.fournisseur,
-                            f.IDcommande_fil ? `Commande N° ${f.IDcommande_fil}` : null,
-                          ]
-                            .filter(Boolean)
-                            .join(' · ')}
+                          qui={f.fournisseur}
+                          liens={[lienCommandeFil(f.IDcommande_fil), ...(f.lots ?? []).map(lienLotFil)]}
                         />
                       ))}
                     </div>
                   )}
 
-                  {/* Pièces fusionnées — a roll the dyer made out of several écru pieces */}
+                  {/* Pièces fusionnées: a roll the dyer made out of several écru pieces */}
                   {(provenance?.composants?.length ?? 0) > 1 && (
                     <ProvenanceRow
                       icon={<Merge className="h-3.5 w-3.5 text-accent" />}
                       title={`${provenance!.composants!.length} pièces fusionnées`}
-                      detail={provenance!.composants!.map((c) => c.numero).join(' · ')}
+                      liens={provenance!.composants!.map((c) => ({ libelle: c.numero, to: `/tombe-metier/stock?piece=${c.IDstock_ecru}`, title: 'Ouvrir la pièce tombé de métier' }))}
                     />
                   )}
 
-                  {/* Tricotage — the knitting order that produced the écru base */}
+                  {/* Tricotage: the knitting order that produced the écru base */}
                   {!!provenance?.tricotage && (
                     <ProvenanceRow
                       icon={<KnitIcon className="h-3.5 w-3.5 text-accent" />}
                       title="Tricotage"
-                      detail={[
-                        provenance.tricotage.sst_nom,
-                        `Commande N° ${provenance.tricotage.IDcommande}`,
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
+                      qui={provenance.tricotage.sst_nom}
+                      liens={[lienCommandeSst(provenance.tricotage.IDcommande)]}
                     />
                   )}
 
-                  {/* Ennoblissement — the dyeing order (hidden if same as tricotage) */}
-                  {!!provenance?.ennoblissement &&
-                    provenance.ennoblissement.IDcommande !== provenance?.tricotage?.IDcommande && (
-                      <ProvenanceRow
-                        icon={<Paintbrush className="h-3.5 w-3.5 text-accent" />}
-                        title="Ennoblissement"
-                        detail={[
-                          provenance.ennoblissement.sst_nom,
-                          `Commande N° ${provenance.ennoblissement.IDcommande}`,
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      />
-                    )}
+                  {/* Ennoblissement: the dyeing order (hidden if same as tricotage) and the dyer's lot */}
+                  {ennoblissementAffiche && (
+                    <ProvenanceRow
+                      icon={<Paintbrush className="h-3.5 w-3.5 text-accent" />}
+                      title="Ennoblissement"
+                      qui={provenance!.ennoblissement!.sst_nom}
+                      liens={[lienCommandeSst(provenance!.ennoblissement!.IDcommande), lienLot(detail.lot, detail.IDsuivilot)]}
+                    />
+                  )}
 
                   <div className="space-y-1.5 pt-1.5 border-t border-border/40">
+                    {detail.lot && !ennoblissementAffiche && (
+                      <KV
+                        label="Lot"
+                        value={detail.IDsuivilot ? (
+                          <Link
+                            to={`/qualite/suivi-lots?lot=${detail.IDsuivilot}&statut=tous`}
+                            title="Ouvrir la fiche du lot dans Qualité › Suivi lots"
+                            className="text-accent-blue hover:underline"
+                          >
+                            {detail.lot}
+                          </Link>
+                        ) : detail.lot}
+                      />
+                    )}
                     <KV
                       label="Date réception"
                       value={detail.date_saisie ? formatHfsqlDate(detail.date_saisie) : '—'}
@@ -3063,25 +3084,3 @@ function KV({ label, value, mono }: { label: string; value: React.ReactNode; mon
   )
 }
 
-// One provenance origin: a leading icon, a primary label (yarn ref / step name)
-// and a muted detail line (supplier · order N°). Used in the drawer's
-// Provenance card.
-function ProvenanceRow({
-  icon,
-  title,
-  detail,
-}: {
-  icon: React.ReactNode
-  title: string
-  detail: string
-}) {
-  return (
-    <div className="flex items-start gap-2">
-      <span className="flex-shrink-0 mt-0.5">{icon}</span>
-      <div className="min-w-0">
-        <p className="text-sm font-medium truncate">{title}</p>
-        {!!detail && <p className="text-[11px] text-muted-foreground truncate">{detail}</p>}
-      </div>
-    </div>
-  )
-}

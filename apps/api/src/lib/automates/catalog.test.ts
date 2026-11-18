@@ -4,9 +4,9 @@ import { agentsDe } from '../agents/catalog.js'
 
 // Each app's « Agents IA » menu lists only its own jobs (lib/agents/app-scope.ts).
 describe('automates per app', () => {
-  it('the pointage report emails are TRM’s, Vidéosurveillance and the point sous-traitant are ETM’s', () => {
+  it('the pointage report emails are TRM’s, Vidéosurveillance, the point sous-traitant and the red tasks are ETM’s', () => {
     expect(automatesDe('trm').map((a) => a.slug).sort()).toEqual(['bilan-heures', 'rapport-pointage'])
-    expect(automatesDe('etm').map((a) => a.slug)).toEqual(['videosurveillance', 'point-sst'])
+    expect(automatesDe('etm').map((a) => a.slug)).toEqual(['videosurveillance', 'point-sst', 'taches-rouges'])
   })
 
   it('a slug of the other app is unknown to a mount, known to the engine', () => {

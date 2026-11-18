@@ -179,7 +179,8 @@ className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b border-gold/3
 - **Height**: 56px (`h-14`)
 - **Background**: Gold gradient left-to-right (darker left → transparent right)
 - **Border bottom**: `border-gold/30`
-- **Content** (left to right): Mobile menu button | Submenu tabs | Spacer | **Screen-actions slot** | Ticket | Fullscreen toggle | User avatar
+- **Content** (left to right): Mobile menu button | Submenu tabs | Spacer | **Screen-actions slot** | Notification bell (ETM) | Ticket | Fullscreen toggle | User avatar
+- **Notification bell** (`components/layout/NotificationBell.tsx`, 2026-11-18): ghost icon button with the ticket button's red bubble (`bg-destructive`, `99+` max). The bubble counts TASKS only, i.e. §41 red items addressed to the person; a plain notification is never counted. It opens a §43 navy panel portalled to `<body>` (440px, under the header, a transparent `z-40` layer closes it on any outside click) holding the shared `NotificationsFeed`. A task card = white card, `border-l-4 border-l-destructive/60`, the ACTION in `text-red-600`, « depuis N j ouvrés », an « En retard » chip after 2 working days.
 
 #### Screen-actions slot (`HeaderActionsContext`)
 
@@ -515,6 +516,8 @@ Every detail screen should surface the same canonical set of view-mode action bu
   </Button>
 </>
 ```
+
+**« Rappel » comes first in that row** (2026-11-18): `<RappelButton type=… id=… />` (`components/rappels/RappelButton.tsx`) before Imprimer, view mode only; on a side drawer's navy band pass `surface="bande"`. One component for every object, never a fork; a gold dot counts the reminders still open on the object. On a piece that belongs to a lot, pass `lot={{ id, titre }}`: the dialog then opens on a §5 segmented choice « Pièce … / Lot … » (the object clicked first). **Its icon is the alarm clock** (`AlarmClockPlus`, `AlarmClock` once a reminder is open), as on the reminder's card in the notification centre and in the Journal: **the bell belongs to the notification centre alone**, never put one on an object (the first version put a bell on each object: two bells with two meanings, changed the same day at Vincent's request).
 
 **Icon choice is canonical**: use `AtSign` for the email *trigger* button (it's the recognisable "@" symbol and reads as an action, not a field label). `Mail` is reserved for the Dialog's large central icon and for contact-card sub-rows showing an email address inline. Do NOT swap them.
 
@@ -4250,6 +4253,8 @@ The standard color-coding model for master-detail **left-list cards**:
 | Qualité → Suivi lots | amber | that relance is the next working day |
 | Tombé Métier → Échantillons | red | the sample's **relance date** is today or past (open samples only; `date_relance`, set to +30 days at creation, by « Relancé » and on reopening — API `urgenceRelance()` in `lib/echantillons.ts`) |
 | Tombé Métier → Échantillons | amber | relance within the next 7 days. The card prints « Relance en retard de N j » / « Relance dans N j (date) » |
+
+**The notification centre reads these reds, it never redefines them** (2026-11-18): a red family of the bell (`apps/api/src/lib/taches/sources.ts`) calls the list's own rule and prints the list's own text. A screen whose red reason is still computed in the browser must move it to the API before it can become a family (Sous-traitants did: `lib/raison-commande-sst.ts`). Amber never becomes a task.
 
 Note the two families of meaning: SST colors are **deadline-derived** (§30 `deliveryUrgency`), Clients colors are **workflow-state-derived** (phase). Both render through the same visual system. When adding a new state: pick the colour by the rule in point 5 (red = Malterre must act now, amber = Malterre could act now and get ahead, neutral otherwise), add the liseré + pill wiring, and add a row to this table. Clients → Commandes colours by **line status × délai** (2026-10-08): a délai alone never colours a card while someone else works in time — neutral-by-default won over "every card is red or amber" noise, and a coloured card always prints its reason.
 

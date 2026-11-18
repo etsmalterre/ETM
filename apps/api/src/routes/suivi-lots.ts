@@ -217,11 +217,9 @@ interface SuiviLotListRow {
 // ── List ─────────────────────────────────────────────────
 //
 // GET /suivi-lots?status=en_cours|termine|tous&q=
-suiviLotsRouter.get('/', async (req: Request, res: Response) => {
-  try {
-    const status = (req.query.status as string) || 'en_cours'
-    const q = ((req.query.q as string) || '').trim()
-
+/** The lots of a status with their step and what there is to do (`urgence`): ONE reader for the list and
+ *  for the red tasks of the notification centre (lotsRouges). */
+async function lotsAvecUrgence(status: string, q: string) {
     let where = 'WHERE 1=1'
     // "Terminé" ⟺ lot validated (IDetatLot = 3 = "Validé"), matching legacy.
     // Everything else (En Contrôle / En Reprise / Attente de décision …) is en cours,
@@ -263,7 +261,7 @@ suiviLotsRouter.get('/', async (req: Request, res: Response) => {
     const today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
     // What Tricobot wrote or asked on each lot's dyer measures (Flux Ennoblisseur › Contrôles).
     const tricobot = await compteursParLot().catch((err) => { console.error('[suivi-lots] Tricobot counts:', err); return {} as Awaited<ReturnType<typeof compteursParLot>> })
-    res.json(
+    return (
       fixed.map((r) => {
         const etat = r.IDetatLot != null ? Number(r.IDetatLot) : null
         const e = etapes.get(Number(r.IDsuivilot))
@@ -284,8 +282,25 @@ suiviLotsRouter.get('/', async (req: Request, res: Response) => {
           tricobot: tricobot[Number(r.IDsuivilot)] ?? null,
           date: r.DATE ?? null,
         }
-      }),
+      })
     )
+}
+
+export interface LotRouge { id: number; lot: string; sousTraitant: string; raison: string }
+
+/** Every open lot whose card is RED now, with the action the card prints (the relevé of the family
+ *  « Suivi lots à traiter », lib/taches/sources.ts). Same rows, same rule as the « En cours » list. */
+export async function lotsRouges(): Promise<LotRouge[]> {
+  return (await lotsAvecUrgence('en_cours', ''))
+    .filter((l) => l.urgence?.niveau === 'rouge')
+    .map((l) => ({ id: l.IDsuivilot, lot: l.lot.toString().trim(), sousTraitant: l.sous_traitant_nom.toString().trim(), raison: l.urgence!.raison }))
+}
+
+suiviLotsRouter.get('/', async (req: Request, res: Response) => {
+  try {
+    const status = (req.query.status as string) || 'en_cours'
+    const q = ((req.query.q as string) || '').trim()
+    res.json(await lotsAvecUrgence(status, q))
   } catch (err) {
     console.error('Error listing suivi-lots:', err)
     res.status(500).json({ error: 'Internal server error' })

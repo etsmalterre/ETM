@@ -14,6 +14,7 @@ import { useHeaderActionsSlot } from '@/contexts/HeaderActionsContext'
 import { ProfileModal, userPhotoUrl, type UserProfileMe } from '@/components/profile/ProfileModal'
 import { TicketModal } from '@/components/tickets/TicketModal'
 import { useTicketNotifications } from '@/components/tickets/useTicketNotifications'
+import { NotificationBell } from './NotificationBell'
 import { useSubmenuFilter } from '@/hooks/useSubmenuFilter'
 import { useDashboardTabs } from '@/components/dashboard/useDashboardLayout'
 import { dashboardHref } from '@/components/dashboard/types'
@@ -216,6 +217,8 @@ export function Header({ onMenuClick }: HeaderProps) {
           ref={headerActionsSlot}
           className="flex items-center gap-2 min-w-0 [&:not(:empty)]:mr-1 [&:not(:empty)]:border-r [&:not(:empty)]:border-gold/30 [&:not(:empty)]:pr-3"
         />
+        {/* Notification centre: red count = the person's tasks (NotificationBell.tsx) */}
+        <NotificationBell />
         {/* Ticket report — red count badge when tickets have news */}
         <div className="relative">
           <Button

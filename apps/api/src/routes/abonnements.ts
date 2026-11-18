@@ -6,8 +6,17 @@
 // subscriptions are a personal preference, not a permission):
 //   GET  /api/abonnements                  — catalog + this user's subscriptions
 //   PUT  /api/abonnements/me               — replace this user's subscriptions
-//   GET  /api/abonnements/notifications    — the live alert feed (?all=1 keeps hidden ones)
+//   GET  /api/abonnements/notifications    : the live alert feed (?all=1 keeps hidden ones,
+//                                            ?rouge=1 the red tasks only: the header bell's poll)
 //   PUT  /api/abonnements/hidden           — hide / re-show one alert
+//
+// Since 2026-11-18 the feed is the notification CENTRE (the bell of the header,
+// Vincent): a row is either a TASK (`niveau: 'rouge'`: someone at Malterre must
+// act now: a red item of a list the user subscribed to, a Superviseur point, an
+// invoice to check, a reminder due) or a plain notification of the legacy
+// detectors (`niveau: null`, a state: never counted). The bell counts the tasks.
+// A task left red more than 2 working days is `retard: true`, and also reaches
+// whoever subscribed to « Tâches en retard » (lib/taches/registre.ts).
 //
 // Everything is gated on `dashboard_notifications` on the API too, not just by
 // hiding the widget: the feed names client orders, quality dossiers and stock
@@ -41,11 +50,19 @@ import {
   ABONNEMENTS_ETM,
   ABONNEMENT_SUPERVISEUR,
   ABONNEMENT_FACTURES_SST,
+  ABONNEMENT_RETARD,
+  ID_RAPPELS,
+  abonnesEtm,
   estAbonnementEtm,
   getUserAbonnementsEtm,
   setUserAbonnementsEtm,
   type AbonnementEtm,
 } from '../lib/abonnements-etm.js'
+import { mpsPg } from '../lib/mps-pg.js'
+import { SOURCES_ROUGES, sourceParCle } from '../lib/taches/sources.js'
+import { assurerFrais, oublierReleves } from '../lib/taches/releve.js'
+import { aujourdhuiParis, enRetard, joursRouges, lireTaches, type TacheRouge } from '../lib/taches/registre.js'
+import { aujourdhuiIso, nombreRappelsOuvertsDe, rappelsEchusPour, rappelsEnRetard, type Rappel } from '../lib/rappels.js'
 import { pointsATraiter } from '../lib/agents/superviseur/points.js'
 import { DOMAINE_LIBELLE } from '../lib/agents/superviseur/types.js'
 import { facturesATraiter } from './factures-sst.js'
@@ -161,9 +178,18 @@ abonnementsRouter.get('/notifications', async (req: Request, res: Response) => {
   const userId = await requireWidgetUser(req, res)
   if (userId === null) return
   const includeHidden = req.query.all === '1' || req.query.all === 'true'
+  // The bell's poll: the tasks only, the legacy detectors (four-figure volumes) are not run.
+  const rougeSeul = req.query.rouge === '1' || req.query.rouge === 'true'
   try {
     const catalog = await getAbonnementCatalog()
     const subscribed = await abonnementsDe(userId, await offreDe(req, userId, catalog))
+    const taches = await tachesDe(userId, subscribed)
+    // The person's open reminders, due or to come: the count on the centre's « Mes rappels » button.
+    const rappelsOuverts = await nombreRappelsOuvertsDe(userId).catch(() => 0)
+    if (rougeSeul) {
+      res.json({ rows: taches, rouges: taches.length, rappels_ouverts: rappelsOuverts, hidden_count: 0, unimplemented: [], subscribed_count: subscribed.length })
+      return
+    }
     const detected = await detectForUser(subscribed, catalog)
 
     // Prune entries whose alert no longer exists. Legacy deletes the
@@ -184,18 +210,20 @@ abonnementsRouter.get('/notifications', async (req: Request, res: Response) => {
     if (kept.length !== stored.length) await setUserHidden(userId, kept)
 
     const hiddenSet = new Set(kept)
-    const all = detected.map((d) => ({ ...d, hidden: hiddenSet.has(d.key) }))
+    // A legacy alert is a state (a stock at its minimum, a piece without an order), not a task.
+    const all = detected.map((d) => ({ ...d, hidden: hiddenSet.has(d.key), niveau: null }))
     const rows = [
-      // Superviseur points first: a handful of things to act on, never hidden
-      // (handling one takes it off the list — the eye would mean nothing).
-      ...(subscribed.includes(ABONNEMENT_SUPERVISEUR) ? await pointsSuperviseur() : []),
-      // Same for the invoices with a gap: handled on Sous-traitants › Factures.
-      ...(subscribed.includes(ABONNEMENT_FACTURES_SST) ? await cartesFacturesSst() : []),
+      // The tasks first: a handful of things to act on, never hidden (handling
+      // one takes it off the list: the eye would mean nothing).
+      ...taches,
       ...(includeHidden ? all : all.filter((d) => !d.hidden)),
     ]
 
     res.json({
       rows,
+      /** How many rows are tasks (red): what the header bell counts. */
+      rouges: taches.length,
+      rappels_ouverts: rappelsOuverts,
       /** Always the TOTAL hidden count, whatever `?all` is — so the widget's
        *  counter pill doesn't change value when the user toggles it. */
       hidden_count: all.filter((d) => d.hidden).length,
@@ -247,8 +275,120 @@ abonnementsRouter.put('/hidden', async (req: Request, res: Response) => {
 abonnementsRouter.post('/refresh', async (req: Request, res: Response) => {
   if ((await requireWidgetUser(req, res)) === null) return
   invalidateDetectionCache()
+  oublierReleves()
   res.json({ ok: true })
 })
+
+// ── The tasks (red rows) ─────────────────────────────────
+
+const ICONE_ETM = new Map<number, string>(ABONNEMENTS_ETM.map((a) => [a.id, a.icone]))
+
+/** Since when a task is red, for its card: the day (YYYYMMDD), the working days since, and whether
+ *  it is late (more than 2, lib/taches/registre.ts). */
+function anciennete(depuis: string, aujourdhui: string) {
+  return { depuis, jours: joursRouges(depuis, aujourdhui), retard: enRetard(depuis, aujourdhui) }
+}
+
+function carteTache(t: TacheRouge, sourceId: number, aujourdhui: string) {
+  return {
+    key: `${sourceId}:${t.cle}`,
+    abonnementId: sourceId,
+    titre: t.titre,
+    description: t.raison,
+    icone: ICONE_ETM.get(sourceId) ?? 'retard',
+    hidden: false,
+    niveau: 'rouge' as const,
+    lien: t.lien,
+    ...anciennete(t.depuis, aujourdhui),
+  }
+}
+
+function carteRappel(r: Rappel, aujourdhui: string) {
+  return {
+    key: `${ID_RAPPELS}:${r.id}`,
+    abonnementId: ID_RAPPELS,
+    titre: r.objet_libelle,
+    description: r.observation,
+    icone: 'rappel',
+    hidden: false,
+    niveau: 'rouge' as const,
+    lien: r.lien,
+    ...anciennete(r.echeance.replace(/-/g, ''), aujourdhui),
+    rappel: { id: r.id, echeance: r.echeance, pour_id: r.pour_id, pour: r.pour, par: r.par, cree_le: r.cree_le },
+  }
+}
+
+/** « Prénom Nom » of these accounts (the people a late task is with). */
+async function nomsDe(ids: readonly number[]): Promise<Map<number, string>> {
+  const u = [...new Set(ids.filter((x) => x > 0))]
+  if (u.length === 0) return new Map()
+  const rows = await mpsPg()<{ id: number; prenom: string | null; nom: string | null }[]>`
+    SELECT idutilisateur AS id, prenom, nom FROM utilisateur WHERE idutilisateur = ANY(${u})`
+  return new Map(rows.map((r) => [Number(r.id), `${r.prenom ?? ''} ${r.nom ?? ''}`.trim()]))
+}
+
+/** Every task of this user, most pressing family first: their reminders due, the Superviseur points and
+ *  the invoices they follow, the red items of the lists they subscribed to, then (« Tâches en retard »)
+ *  whatever has been red more than 2 working days at anyone's. One row per item, whatever brought it. */
+async function tachesDe(userId: number, subscribed: readonly number[]) {
+  const aujourdhui = aujourdhuiParis()
+  const enRetardAussi = subscribed.includes(ABONNEMENT_RETARD)
+  const suivies = SOURCES_ROUGES.filter((s) => subscribed.includes(s.id))
+  // The register dates the families shown here; « Tâches en retard » reads them all.
+  await assurerFrais(enRetardAussi ? SOURCES_ROUGES : suivies)
+  const registre = await lireTaches((enRetardAussi ? SOURCES_ROUGES : suivies).map((s) => s.cle)).catch((err) => {
+    // No register (migration not applied yet): the feed keeps its own cards, without dates.
+    console.error('Red-task register unreadable:', err)
+    return [] as TacheRouge[]
+  })
+  const depuisDe = new Map(registre.map((t) => [`${sourceParCle(t.source)?.id}:${t.cle}`, t.depuis]))
+  const dater = <T extends { key: string }>(c: T) => {
+    const d = depuisDe.get(c.key)
+    return { ...c, niveau: 'rouge' as const, ...(d ? anciennete(d, aujourdhui) : { depuis: null, jours: 0, retard: false }) }
+  }
+
+  const rappels = await rappelsEchusPour(userId, aujourdhuiIso()).catch((err) => {
+    console.error('Reminders for the notification feed failed:', err)
+    return [] as Rappel[]
+  })
+  const rows: Array<{ key: string; retard: boolean; chez?: string[] } & Record<string, unknown>> = [
+    ...rappels.map((r) => carteRappel(r, aujourdhui)),
+    ...(subscribed.includes(ABONNEMENT_SUPERVISEUR) ? (await pointsSuperviseur()).map(dater) : []),
+    ...(subscribed.includes(ABONNEMENT_FACTURES_SST) ? (await cartesFacturesSst()).map(dater) : []),
+    ...registre
+      .filter((t) => { const s = sourceParCle(t.source); return !!s && s.cartes && subscribed.includes(s.id) })
+      .map((t) => carteTache(t, sourceParCle(t.source)!.id, aujourdhui)),
+  ]
+  if (!enRetardAussi) return rows
+
+  // « Tâches en retard »: what has been red more than 2 working days at anyone's, once.
+  const vues = new Set(rows.map((r) => r.key))
+  const [abonnes, rappelsTard] = await Promise.all([
+    abonnesEtm(),
+    rappelsEnRetard(aujourdhuiIso()).catch(() => [] as Rappel[]),
+  ])
+  const tardives = registre.filter((t) => enRetard(t.depuis, aujourdhui))
+  const noms = await nomsDe([
+    ...tardives.flatMap((t) => abonnes.get(sourceParCle(t.source)?.id ?? 0) ?? []),
+  ])
+  for (const t of tardives) {
+    const s = sourceParCle(t.source)
+    if (!s) continue
+    const carte = carteTache(t, s.id, aujourdhui)
+    if (vues.has(carte.key)) continue
+    vues.add(carte.key)
+    // Who it is with: the family's subscribers (nobody = no one follows that list).
+    const chez = (abonnes.get(s.id) ?? []).filter((id) => id !== userId).map((id) => noms.get(id) ?? '').filter(Boolean)
+    rows.push({ ...carte, chez })
+  }
+  for (const r of rappelsTard) {
+    const carte = carteRappel(r, aujourdhui)
+    if (vues.has(carte.key)) continue
+    vues.add(carte.key)
+    rows.push({ ...carte, chez: [r.pour].filter(Boolean) })
+  }
+  return rows
+}
 
 /** The Superviseur's points still to handle, as widget cards (lib/agents/superviseur/points.ts). */
 async function pointsSuperviseur() {

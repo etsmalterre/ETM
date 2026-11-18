@@ -2109,6 +2109,61 @@ ALTER TABLE urgence_sst ADD CONSTRAINT urgence_sst_type_check CHECK (type IN ('d
 ALTER TABLE ref_ecru ADD COLUMN essai smallint NOT NULL DEFAULT 0;
 `,
   },
+  {
+    // Since when an item is red (Vincent 2026-11-18, lib/taches/registre.ts).
+    // Every red of the lists is computed live from data, so nothing said how
+    // long it had been waiting: a task left red more than 2 working days must
+    // also reach the person who holds « Tâches en retard ». One row per red item
+    // of a family (`source` = the family's key, `cle` = the item's id), written
+    // by the periodic relevé: `depuis` is kept while the item stays red, the row
+    // is deleted the day it is no longer red. State, not history: mutable.
+    name: '0080_tache_rouge',
+    sql: `
+CREATE TABLE tache_rouge (
+  source text NOT NULL,
+  cle text NOT NULL,
+  titre text NOT NULL DEFAULT '',
+  raison text NOT NULL DEFAULT '',
+  lien text,
+  depuis timestamptz NOT NULL DEFAULT now(),
+  vu_le timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (source, cle)
+);
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'tache_rouge')}
+`,
+  },
+  {
+    // A reminder a person puts on an object (Vincent 2026-11-18, lib/rappels.ts):
+    // a date, an observation, and the object it is about (a fini lot, a yarn lot,
+    // a piece, an order: lib/rappels-objets.ts). First case: client order 3891,
+    // matter kept 6 months for the client, to hand back on 04/05/2027. From its
+    // date the reminder is a red task for `pour_id`, until « Fait ». The label of
+    // the object is frozen at creation (it must still read once the object is gone).
+    name: '0081_rappel',
+    sql: `
+CREATE TABLE rappel (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  objet_type text NOT NULL CHECK (objet_type IN ('lot_fini', 'lot_fil', 'piece_ecru', 'piece_fini', 'commande_fil', 'commande_client', 'commande_sst')),
+  objet_id bigint NOT NULL,
+  objet_libelle text NOT NULL DEFAULT '',
+  echeance date NOT NULL,
+  observation text NOT NULL,
+  pour_id bigint NOT NULL DEFAULT 0,
+  pour text NOT NULL DEFAULT '',
+  cree_le timestamptz NOT NULL DEFAULT now(),
+  par_id bigint NOT NULL DEFAULT 0,
+  par text NOT NULL DEFAULT '',
+  fait_le timestamptz,
+  fait_par_id bigint NOT NULL DEFAULT 0,
+  fait_par text,
+  fait_comment text
+);
+CREATE INDEX rappel_objet ON rappel (objet_type, objet_id);
+CREATE INDEX rappel_ouverts ON rappel (pour_id, echeance) WHERE fait_le IS NULL;
+${grantApi('SELECT, INSERT, UPDATE, DELETE', 'rappel')}
+${grantApi('USAGE, SELECT', 'SEQUENCE rappel_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

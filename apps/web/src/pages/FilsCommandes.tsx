@@ -55,6 +55,7 @@ import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
 import { postEmail } from '@/lib/email'
+import { RappelButton } from '@/components/rappels/RappelButton'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -1138,6 +1139,7 @@ function DetailHeader({
               </>
             ) : (
               <>
+                <RappelButton type="commande_fil" id={commande?.IDcommande_fil} titre={`Commande de fil N° ${commande?.IDcommande_fil ?? ''}`} />
                 <Button variant="outline" size="icon" className="h-9 w-9" title="Imprimer" onClick={onPrintClick}>
                   <Printer className="h-4 w-4" />
                 </Button>

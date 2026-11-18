@@ -9,6 +9,7 @@ import { declarerEtatInitial, type AutomateMode, type AutomateRun, type Automate
 import * as videosurveillance from './videosurveillance/videosurveillance.js'
 import * as rapportsPointage from './rapports-pointage/rapports-pointage.js'
 import * as pointSst from './point-sst/point-sst.js'
+import * as tachesRouges from './taches-rouges/taches-rouges.js'
 import { deLApp, type AppIa } from '../agents/app-scope.js'
 import { abonnementRapport } from '../rapports-pointage-envoi.js'
 import type { AbonnementAutomate } from './abonnement.js'
@@ -171,6 +172,34 @@ export const AUTOMATES: readonly AutomateDef[] = [
     detailRun: pointSst.detailRun,
     // Writes only drafts and sends only what a person scheduled: live in
     // production from the deploy; never on a dev or worktree API.
+    etatInitial: () => ({ mode: process.env.NODE_ENV === 'production' ? 'actif' : 'essai' }),
+  },
+  {
+    slug: tachesRouges.SLUG,
+    nom: 'Tâches rouges',
+    description:
+      'Relève toutes les 10 minutes ce qui est rouge dans les listes d’ETM (commandes clients, ennoblissement, tricotage, suivi des lots, commandes de fil, points du Superviseur, factures sous-traitants) et note depuis quand. C’est ce qui permet d’envoyer une tâche restée rouge plus de 2 jours ouvrés à la personne abonnée aux « Tâches en retard ».',
+    version: tachesRouges.VERSION,
+    versions: tachesRouges.VERSIONS,
+    declenchement: { type: 'releve', intervalleMs: 10 * 60_000 },
+    declencheur: 'Toutes les 10 minutes : relit chaque liste avec sa propre règle de couleur et met le registre à jour.',
+    lit: [
+      'Les commandes clients, les commandes d’ennoblissement et de tricotage, les lots en cours et les commandes de fil : seulement ce que leur liste affiche en rouge.',
+      'Les points du Superviseur à traiter et les factures des ennoblisseurs à contrôler.',
+    ],
+    ecritures: [
+      'Son propre registre (une ligne par élément rouge, avec le jour où il l’est devenu). Jamais une commande, un lot ni un stock.',
+    ],
+    abstention:
+      'Une liste qui ne peut pas être lue garde ce que le registre contenait : rien n’est effacé sur une erreur. Un élément qui n’est plus rouge sort du registre ; s’il le redevient, son délai repart de zéro.',
+    modes: {
+      off: 'Ne relève rien. Le centre de notifications relève quand même une liste au moment où un abonné l’ouvre, mais une liste que personne ne regarde n’est plus datée.',
+      essai: 'Relit les listes et compte ce qui est rouge, sans écrire le registre.',
+      actif: 'Relève et écrit le registre.',
+    },
+    executer: tachesRouges.executer,
+    // Writes only its own register: live in production from the deploy; never on a dev or worktree
+    // API (its scheduler is off anyway, the feed keeps the register fresh there).
     etatInitial: () => ({ mode: process.env.NODE_ENV === 'production' ? 'actif' : 'essai' }),
   },
 ]
