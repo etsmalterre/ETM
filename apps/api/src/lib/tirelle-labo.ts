@@ -11,7 +11,8 @@
 //     ruler: the allongement H / L in % (lib/allongement.ts, 2026-11-10);
 //   - the squares are washed and dried, as many at once as she likes;
 //   - AFTER THE WASH: she measures stab H, stab L and vrillage on the square,
-//     stores square + tirelle in a casier and marks the lot done.
+//     stores square + tirelle in a box of the shelf (A1 to F8,
+//     lib/tirelle-boites.ts) and marks the lot done.
 // Two statuses only (Vincent, 2026-11-03: « pas besoin d'étapes ») — the
 // machine and the dryer are not tracked, a lot simply waits in « après
 // lavage » until it is done. The status moves on its own once the measures
@@ -42,6 +43,7 @@ import { lireSaisieStab, StabInvalide, valeurStab } from './stabilites.js'
 import { AllongementInvalide, allongementHors, lireSaisieAllongement, valeurAllongement } from './allongement.js'
 import { RELANCE_J, plusJoursOuvres } from './cycle-ennoblissement.js'
 import { joursOuvresEntre } from './jours-ouvres.js'
+import { lireBoite } from './tirelle-boites.js'
 
 // ── The steps (pure) ─────────────────────────────────────
 
@@ -529,11 +531,10 @@ export async function enregistrerAvantLavage(id: number, b: { laize?: unknown; p
   return (await lireLotsLabo({ ids: [id] }))[0] ?? null
 }
 
-export const CASIER_MAX = 40
-
-/** After the wash (on the square): stab H, stab L, vrillage, and the casier
- *  where square and tirelle are stored. One gesture: the lab is done with the
- *  lot. Values already on the lot (typed on a PC) may be left as they are. */
+/** After the wash (on the square): stab H, stab L, vrillage, and the box
+ *  (A1 to F8, `casier` on the wire) where square and tirelle are stored. One
+ *  gesture: the lab is done with the lot. Values already on the lot (typed on
+ *  a PC) may be left as they are. */
 export async function terminerApresLavage(id: number, b: { stabh?: unknown; stabl?: unknown; vrillage?: unknown; casier?: unknown; observations?: unknown }): Promise<void> {
   const l = await lotOuRefus(id)
   if (l.etape !== 'apres_lavage') {
@@ -557,7 +558,10 @@ export async function terminerApresLavage(id: number, b: { stabh?: unknown; stab
     if (e instanceof VrillageInvalide) throw new RefusLabo('vrillage_invalide', e.message, 400)
     throw e
   }
-  const casier = typeof b.casier === 'string' ? b.casier.trim().slice(0, CASIER_MAX) : ''
+  // A box of the shelf, never free text: « vider la boîte » finds its lots by it (#1380).
+  const saisi = typeof b.casier === 'string' ? b.casier.trim() : ''
+  const casier = lireBoite(saisi)
+  if (saisi && !casier) throw new RefusLabo('boite_inconnue', 'Choisissez la boîte de rangement, de A1 à F8.', 400)
   const observations = lireObservations(b.observations)
   const manque: string[] = []
   // 0 / 0 is an ultra-stable matter, a real measure (#1358). A value already on
@@ -566,7 +570,7 @@ export async function terminerApresLavage(id: number, b: { stabh?: unknown; stab
     manque.push('les deux stabilités')
   }
   if (l.demandes.carre.includes('vrillage') && vrillage === null) manque.push('le vrillage')
-  if (!casier) manque.push('le casier')
+  if (!casier) manque.push('la boîte')
   if (manque.length) throw new RefusLabo('mesure_manquante', `Il manque ${manque.join(', ')}.`, 400)
 
   await mpsPg().begin(async (t) => {
@@ -581,12 +585,17 @@ export async function terminerApresLavage(id: number, b: { stabh?: unknown; stab
   })
 }
 
-/** After a reprise: round, square and tirelle are in the bin. */
+/** After a reprise: round, square and tirelle are in the bin, so the lot no
+ *  longer sits in a box (its count and « vider la boîte » would be wrong). */
 export async function marquerJete(id: number): Promise<void> {
-  const rows = await mpsPg()<{ n: number }[]>`
-    UPDATE tirelle_labo SET a_jeter_depuis = NULL, jete_le = now(), maj_le = now()
-    WHERE idsuivilot = ${id} AND a_jeter_depuis IS NOT NULL RETURNING 1 AS n`
-  if (rows.length === 0) throw new RefusLabo('rien_a_jeter', 'Rien à jeter pour ce lot.')
+  await mpsPg().begin(async (t) => {
+    const tx = t as unknown as Sql
+    const rows = await tx<{ n: number }[]>`
+      UPDATE tirelle_labo SET a_jeter_depuis = NULL, jete_le = now(), maj_le = now()
+      WHERE idsuivilot = ${id} AND a_jeter_depuis IS NOT NULL RETURNING 1 AS n`
+    if (rows.length === 0) throw new RefusLabo('rien_a_jeter', 'Rien à jeter pour ce lot.')
+    await tx`UPDATE suivilot SET emplacement_tirelle = '' WHERE idsuivilot = ${id}`
+  })
 }
 
 // ── Reprise (called by lib/reprises.ts, inside its transaction) ───

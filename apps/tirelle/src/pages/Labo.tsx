@@ -2,7 +2,7 @@
 // (design chosen 2026-11-09 over the first one, kept in git history at
 // 2322e59). Two statuses (API lib/tirelle-labo.ts, Vincent 2026-11-03: no
 // machine / dryer steps): « avant lavage » (laize, poids, coloris on the round)
-// moves on its own to « après lavage » (stabs, vrillage on the square + casier
+// moves on its own to « après lavage » (stabs, vrillage on the square + box
 // → done), plus « à jeter » after a reprise. The layout:
 //   • two screens: the queue, full width, one column per step; touching a
 //     card opens the lot full width (Vincent 2026-11-09: at 1005 px the lot
@@ -17,13 +17,15 @@
 //     are filled, so what is left reads at a glance;
 //   • the bottom button names what is missing instead of greying out;
 //   • queue cards carry a step stripe, the measures done and the lot's age;
-//   • the article reads after ETM's fini-roll icon.
+//   • the article reads after ETM's fini-roll icon;
+//   • « Rechercher » in the queue's band opens the shelf of stored tirelles
+//     (pages/Rangement.tsx, LIVA #1380): find one, empty a box.
 // Fits a Galaxy Tab A9 in landscape (1005 × 600).
 import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  AlertTriangle, Archive, ArrowLeft, Building2, Clock, Check, CheckCircle2, ChevronRight, CircleDashed, Droplets,
-  Loader2, Palette, Pencil, RefreshCw, Ruler, Scissors, Trash2, X,
+  AlertTriangle, ArrowLeft, Clock, Check, CheckCircle2, ChevronRight, CircleDashed, Droplets,
+  Loader2, Palette, Pencil, Ruler, Scissors, Search, Trash2, X,
 } from 'lucide-react'
 import {
   enregistrerAvantLavage, fetchLots, marquerJete, terminerApresLavage,
@@ -34,8 +36,13 @@ import { messagePourErreur } from '@/lib/erreurs'
 import { ChampNombre, aidesTolerance, fmt, horsBornes, horsBornesAllongement, horsRetrait, lireNombre } from '@/components/Champs'
 import { FiniRollIcon } from '@/components/FiniRollIcon'
 import { cn } from '@/lib/utils'
+import { Actualiser, Message, PillClient, jour } from '@/components/Commun'
+import { ChoixBoite } from '@/components/ChoixBoite'
+import { lireBoite } from '@/lib/boites'
+import { Rangement } from '@/pages/Rangement'
 
 const LOTS_KEY = ['tirelle', 'lots'] as const
+/** The last box a lot was stored in: the next one usually goes beside it. */
 const CLE_CASIER = 'tirelle.dernier-casier'
 
 const ETAPES: Record<EtapeLabo, { libelle: string; court: string; icone: typeof Scissors }> = {
@@ -54,12 +61,6 @@ const RAYURE: Record<EtapeLabo, string> = {
 }
 
 // ── Formatting ──────────────────────────────────────────
-
-function jour(d: string | null): string {
-  if (!d) return ''
-  const [y, m, j] = d.slice(0, 10).split('-')
-  return `${j}/${m}/${y}`
-}
 
 /** « reçu aujourd'hui / hier / il y a 12 j ». */
 function age(n: number): string {
@@ -86,6 +87,7 @@ export function Labo() {
   const lots = useQuery({ queryKey: LOTS_KEY, queryFn: fetchLots })
   const [selection, setSelection] = useState<number | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const [rangement, setRangement] = useState(false)
 
   const liste = lots.data?.lots ?? []
   const choisi = liste.find((l) => l.idsuivilot === selection) ?? null
@@ -98,11 +100,15 @@ export function Labo() {
     return () => clearTimeout(t)
   }, [message])
 
-  const rafraichir = () => qc.invalidateQueries({ queryKey: LOTS_KEY })
+  // The queue AND the boxes' counts (a lot just stored fills its box).
+  const rafraichir = () => qc.invalidateQueries({ queryKey: ['tirelle'] })
+
+  if (rangement) return <Rangement onFermer={() => setRangement(false)} />
 
   return (
     <div className="h-full flex flex-col bg-zinc-100">
-      <Entete lots={liste} lot={choisi} chargement={lots.isFetching} onRafraichir={rafraichir} onFermer={() => setSelection(null)} />
+      <Entete lots={liste} lot={choisi} chargement={lots.isFetching} onRafraichir={rafraichir} onFermer={() => setSelection(null)}
+        onRechercher={() => { setMessage(null); setRangement(true) }} />
       {lots.isError && !lots.data ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-destructive">
           <AlertTriangle className="h-10 w-10" />
@@ -140,26 +146,15 @@ export function Labo() {
   )
 }
 
-/** What the last validation did, over the queue for a few seconds. */
-function Message({ texte, onFermer }: { texte: string; onFermer: () => void }) {
-  return (
-    <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 rounded-full bg-success text-white pl-4 pr-2 py-2 shadow-lg" role="status">
-      <CheckCircle2 className="h-5 w-5 flex-shrink-0" />
-      <span className="text-base font-semibold whitespace-nowrap">{texte}</span>
-      <button type="button" onClick={onFermer} className="h-8 w-8 rounded-full flex items-center justify-center active:bg-white/20" title="Fermer">
-        <X className="h-4 w-4" />
-      </button>
-    </div>
-  )
-}
-
-function Entete({ lots, lot, chargement, onRafraichir, onFermer }: {
+function Entete({ lots, lot, chargement, onRafraichir, onFermer, onRechercher }: {
   lots: LotLabo[]
   /** The open lot: the band becomes its band. */
   lot: LotLabo | null
   chargement: boolean
   onRafraichir: () => void
   onFermer: () => void
+  /** Open the shelf of stored tirelles (pages/Rangement.tsx). */
+  onRechercher: () => void
 }) {
   const n = (e: EtapeLabo) => lots.filter((l) => l.etape === e).length
   if (lot) return <BandeauLot lot={lot} chargement={chargement} onRafraichir={onRafraichir} onFermer={onFermer} />
@@ -176,24 +171,14 @@ function Entete({ lots, lot, chargement, onRafraichir, onFermer }: {
           {n('a_jeter') > 0 && <Compteur icone={Trash2} n={n('a_jeter')} libelle="à jeter" rouge />}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <button type="button" onClick={onRechercher} className="h-11 pl-2.5 pr-3.5 rounded-xl flex items-center gap-2 text-white font-semibold ring-1 ring-white/25 active:bg-white/15 flex-shrink-0" title="Retrouver une tirelle rangée, vider une boîte">
+            <Search className="h-5 w-5" /><span className="hidden sm:inline">Rechercher</span>
+          </button>
           <span className="text-xs text-white/40 tabular-nums hidden md:inline">v{__APP_VERSION__}</span>
           <Actualiser chargement={chargement} onClick={onRafraichir} />
         </div>
       </header>
     </>
-  )
-}
-
-function Actualiser({ chargement, onClick }: { chargement: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="h-11 w-11 rounded-xl flex items-center justify-center text-white/80 active:bg-white/15 flex-shrink-0"
-      title="Actualiser"
-    >
-      <RefreshCw className={cn('h-5 w-5', chargement && 'animate-spin')} />
-    </button>
   )
 }
 
@@ -349,21 +334,6 @@ function Points({ fait, total }: { fait: number; total: number }) {
   )
 }
 
-function PillClient({ nom, titre, sombre }: { nom: string; titre?: string; sombre?: boolean }) {
-  return (
-    <span
-      title={titre ?? nom}
-      className={cn(
-        'inline-flex min-w-0 items-center gap-1 rounded-full border font-semibold',
-        sombre ? 'border-teal/40 bg-teal-light px-3 py-1 text-sm text-teal-dark' : 'border-teal/30 bg-teal-light px-2 py-0.5 text-xs text-teal-dark',
-      )}
-    >
-      <Building2 className={cn('flex-shrink-0', sombre ? 'h-4 w-4' : 'h-3 w-3')} />
-      <span className="truncate">{nom}</span>
-    </span>
-  )
-}
-
 // ── The open lot ────────────────────────────────────────
 
 function Lot({ lot, onFait, onRafraichir }: {
@@ -391,7 +361,7 @@ function Lot({ lot, onFait, onRafraichir }: {
           }}
         />
       ) : (
-        <ApresLavage lot={lot} onCorriger={() => setCorriger(true)} onFait={(casier) => onFait(`${lot.lot} terminé, rangé au casier ${casier}`)} />
+        <ApresLavage lot={lot} onCorriger={() => setCorriger(true)} onFait={(boite) => onFait(`${lot.lot} terminé, rangé dans la boîte ${boite}`)} />
       )}
     </div>
   )
@@ -718,9 +688,10 @@ function AvantLavage({ lot, correction = false, onAnnuler, onFait }: {
 
 // ── After the wash ──────────────────────────────────────
 
-function dernierCasier(): string {
+/** The last box used, when it is one (« 0 » typed before the boxes is not). */
+function derniereBoite(): string {
   try {
-    return localStorage.getItem(CLE_CASIER) ?? ''
+    return lireBoite(localStorage.getItem(CLE_CASIER)) ?? ''
   } catch {
     return ''
   }
@@ -734,7 +705,8 @@ function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: ()
   const [sh, setSh] = useState<'-' | '+'>(signeDe(lot.mesures.stabh))
   const [sl, setSl] = useState<'-' | '+'>(signeDe(lot.mesures.stabl))
   const [vrillage, setVrillage] = useState(fmt(lot.mesures.vrillage))
-  const [casier, setCasier] = useState(() => dernierCasier())
+  // The last box used: the next lot usually goes beside it.
+  const [casier, setCasier] = useState(() => derniereBoite())
   const [observations, setObservations] = useState(lot.observations)
   const aides = aidesTolerance(lot.tolerances)
   const demande = (m: string) => lot.demandes.carre.includes(m)
@@ -754,11 +726,11 @@ function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: ()
     }),
     onSuccess: () => {
       try {
-        localStorage.setItem(CLE_CASIER, casier.trim())
+        localStorage.setItem(CLE_CASIER, casier)
       } catch {
         /* storage disabled */
       }
-      onFait(casier.trim())
+      onFait(casier)
     },
   })
   const stabsFaites = !demande('stabilités') || (vh != null && vl != null)
@@ -766,7 +738,7 @@ function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: ()
   const manque = [
     !stabsFaites && 'les stabs',
     !vrillageFait && 'le vrillage',
-    !casier.trim() && 'le casier',
+    !casier && 'la boîte',
   ].filter(Boolean) as string[]
   const aMesurer = demande('stabilités') || demande('vrillage')
   let n = 0
@@ -785,7 +757,7 @@ function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: ()
       <RecapRond lot={lot} onCorriger={onCorriger} />
       {/* The square's measures one per line with their gauges (a little lower
           than the round's: up to three must fit the tablet's 600 px), then the
-          casier beside the observations. */}
+          box beside the observations. */}
         {aMesurer && (
           <Tache n={++n} titre="Mesurer le carré lavé et séché" fait={stabsFaites && vrillageFait}>
             <div className="flex flex-col gap-2">
@@ -809,19 +781,8 @@ function ApresLavage({ lot, onCorriger, onFait }: { lot: LotLabo; onCorriger: ()
           </Tache>
         )}
       <div className="flex-1 min-h-fit grid grid-cols-1 md:grid-cols-[2fr_3fr] gap-3">
-            <Tache n={++n} titre="Ranger le carré avec la tirelle" fait={!!casier.trim()}
-              droite={dernierCasier() ? <span className="text-sm text-muted-foreground">dernier : {dernierCasier()}</span> : undefined}>
-              <div className="relative">
-                <Archive className="absolute left-4 top-1/2 -translate-y-1/2 h-7 w-7 text-muted-foreground pointer-events-none" />
-                <input
-                  type="text"
-                  value={casier}
-                  onChange={(e) => setCasier(e.target.value)}
-                  maxLength={40}
-                  placeholder="Casier"
-                  className="w-full h-[72px] rounded-xl border-2 border-border bg-background pl-14 pr-4 text-4xl font-bold placeholder:text-2xl placeholder:font-normal focus:outline-none focus:ring-4 focus:ring-gold/40"
-                />
-              </div>
+            <Tache n={++n} titre="Ranger le carré avec la tirelle" fait={!!casier}>
+              <ChoixBoite valeur={casier} onChange={setCasier} />
             </Tache>
         <Observations n={++n} valeur={observations} onChange={setObservations} />
       </div>
@@ -890,7 +851,7 @@ function Jeter({ lot, onFait }: { lot: LotLabo; onFait: () => void }) {
         <p className="text-base text-muted-foreground">Retirez-le du classeur des ronds.</p>
       </Tache>
       <Tache n={2} titre="Jeter le carré et la tirelle" fait={false}>
-        <p className="text-base text-muted-foreground">{j?.casier ? <>Ils sont dans le casier <strong className="text-foreground">{j.casier}</strong>.</> : 'Dans leur casier.'}</p>
+        <p className="text-base text-muted-foreground">{lireBoite(j?.casier) ? <>Ils sont dans la boîte <strong className="text-foreground">{lireBoite(j?.casier)}</strong>.</> : 'Là où ils ont été rangés.'}</p>
       </Tache>
     </Etape>
   )

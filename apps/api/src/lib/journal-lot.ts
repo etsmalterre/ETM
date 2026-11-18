@@ -26,6 +26,7 @@ export type EvenementLot =
   | 'tirelle_avant_lavage'
   | 'tirelle_apres_lavage'
   | 'tirelle_jete'
+  | 'tirelle_boite_videe'
   | 'etat'
 
 export interface ParLot { id: number; nom: string }
@@ -135,6 +136,7 @@ const TITRES: Record<string, string> = {
   tirelle_avant_lavage: 'Tirelle : contrôle avant lavage',
   tirelle_apres_lavage: 'Tirelle : contrôle après lavage',
   tirelle_jete: 'Tirelle jetée',
+  tirelle_boite_videe: 'Tirelle jetée (boîte vidée)',
   etat: 'État du lot changé',
 }
 

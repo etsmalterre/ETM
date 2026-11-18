@@ -25,6 +25,8 @@ import { stripRtf } from '../lib/rtf-utils.js'
 import { actionsSansVerdict, prealableActions } from '../lib/actions-lot.js'
 import { ecrireVerdictLot, verdictsDesLots, type VerdictLot } from '../lib/conformite-lot.js'
 import { userHasPermission } from '../lib/permissions.js'
+import { lireBoite } from '../lib/tirelle-boites.js'
+import { lireBoites } from '../lib/tirelle-rangement.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { loadActions, loadAllMentions, mentionsForLine } from '../lib/actions-qualite.js'
 
@@ -109,13 +111,6 @@ function n(value: unknown): number {
   if (value === null || value === undefined || value === '') return 0
   const parsed = Number(value)
   return isNaN(parsed) ? 0 : parsed
-}
-
-/** Keep only an 8-digit YYYYMMDD; accepts 'YYYY-MM-DD' / 'YYYYMMDD' / ''. */
-function dateStr(value: unknown): string {
-  if (value === null || value === undefined) return ''
-  const s = String(value).replace(/-/g, '')
-  return /^\d{8}$/.test(s) ? s : ''
 }
 
 /** Resolve an accent-mangled SELECT * key by prefix regex (the Linux bridge
@@ -216,7 +211,6 @@ interface SuiviLotListRow {
   lot: string | null
   IDsous_traitant: number
   IDetatLot: number | null
-  fin_archivage: string | null
   DATE: string | null
 }
 
@@ -247,7 +241,7 @@ suiviLotsRouter.get('/', async (req: Request, res: Response) => {
     // column. Aliasing to sous_traitant_nom makes that CONVERT fail and silently
     // leaves the U+FFFD mangling in place. Rename to sous_traitant_nom in JS below.
     const rows = await query<SuiviLotListRow & { nom: string | null; IDcommande_sous_traitant: number | null }>(
-      `SELECT s.IDsuivilot, s.lot, s.IDsous_traitant, s.IDetatLot, s.fin_archivage, s.DATE, s.IDcommande_sous_traitant,
+      `SELECT s.IDsuivilot, s.lot, s.IDsous_traitant, s.IDetatLot, s.DATE, s.IDcommande_sous_traitant,
               st.nom
        FROM suivilot s
        LEFT JOIN sous_traitant st ON s.IDsous_traitant = st.IDsous_traitant
@@ -294,6 +288,21 @@ suiviLotsRouter.get('/', async (req: Request, res: Response) => {
     )
   } catch (err) {
     console.error('Error listing suivi-lots:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── The lab's shelf of tirelles (LIVA #1380, lib/tirelle-boites.ts) ─────
+//
+// GET /suivi-lots/boites-tirelle
+//
+// The 48 boxes (A1 to F8) with how many tirelles each holds, for the box picker
+// of the lot's « Emplacement »: the same grid as the lab tablet's.
+suiviLotsRouter.get('/boites-tirelle', async (_req: Request, res: Response) => {
+  try {
+    res.json({ boites: await lireBoites() })
+  } catch (err) {
+    console.error('Error in /suivi-lots/boites-tirelle:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -742,7 +751,6 @@ suiviLotsRouter.get('/:id', async (req: Request, res: Response) => {
 
       observations: (fixedSelf?.observations ?? '').toString(),
       emplacement_tirelle: (fixedSelf?.emplacement_tirelle ?? '').toString(),
-      fin_archivage: (raw.fin_archivage ?? '').toString(),
 
       IDetatLot: etat,
       etat_libelle: etat != null ? etatLabels.get(etat) ?? null : null,
@@ -1093,6 +1101,27 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
       throw e
     }
 
+    // The tirelle's location is a box of the lab's shelf (A1 to F8, #1380), picked,
+    // never typed: « vider la boîte » finds its lots by that exact name. The form
+    // sends every field on « Enregistrer », so what was stored before the boxes
+    // (« Carton ») passes while it is left as it is; a NEW value is a box or empty.
+    // A field the body leaves out keeps its value.
+    let emplacement: string | null = null
+    if ('emplacement_tirelle' in b) {
+      const saisi = typeof b.emplacement_tirelle === 'string' ? b.emplacement_tirelle.trim() : ''
+      const [avant] = await mpsPg()<{ v: string | null }[]>`SELECT trim(emplacement_tirelle::text) AS v FROM suivilot WHERE idsuivilot = ${id}`
+      if (saisi === (avant?.v ?? '')) emplacement = saisi
+      else if (saisi === '') emplacement = ''
+      else {
+        const boite = lireBoite(saisi)
+        if (!boite) {
+          res.status(400).json({ error: 'boite_inconnue', message: 'L’emplacement de la tirelle est une boîte, de A1 à F8.' })
+          return
+        }
+        emplacement = boite
+      }
+    }
+
     // The dyer measures before, for Flux Ennoblisseur › Contrôles in observation.
     const mesuresAvant = await lireMesuresLot(id)
     // Both sides before, for the lot's Journal (lib/journal-lot.ts).
@@ -1102,8 +1131,7 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
          laize_sst = ${n(b.laize_sst)}, poids_sst = ${n(b.poids_sst)}, rendement_sst = ${n(b.rendement_sst)},
          laize_tirelle = ${n(b.laize_tirelle)}, poids_tirelle = ${n(b.poids_tirelle)}, rendement_tirelle = ${n(b.rendement_tirelle)},
          ${stabs.map((x) => `${x}, `).join('')}
-         observations = ${sqlText(b.observations)}, emplacement_tirelle = ${sqlText(b.emplacement_tirelle)},
-         fin_archivage = '${dateStr(b.fin_archivage)}'
+         observations = ${sqlText(b.observations)}${emplacement === null ? '' : `, emplacement_tirelle = ${sqlText(emplacement)}`}
        WHERE IDsuivilot = ${id}`,
     )
     await ecrireVrillages(id, vrillages)

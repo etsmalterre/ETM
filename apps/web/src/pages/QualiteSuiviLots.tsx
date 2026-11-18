@@ -18,8 +18,9 @@
 //     mailed to the dyer from the footer / header; a refusal re-dyes the lot.
 //
 // Edit mode (Modifier → Enregistrer) only touches the Contrôles measurements +
-// observations + emplacement + fin d'archivage (the sample-disposal date — when
-// the physical swatch can be discarded; not a status). Plugged into the shared
+// observations + emplacement (the box of the lab's shelf holding the tirelle,
+// #1380). The legacy « fin d'archivage » date left the screen on 2026-11-18:
+// a tirelle is kept until its box is emptied. Plugged into the shared
 // unsaved-changes guard.
 
 import { useState, useMemo, useEffect, useCallback, useRef, createContext, useContext } from 'react'
@@ -66,6 +67,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { PopoverSelect } from '@/components/ui/popover-select'
+import { BoiteTirellePicker, BoiteTirelleValeur } from '@/components/qualite/BoiteTirelle'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
@@ -101,7 +103,7 @@ import { TableauMetrageLotDialog } from '@/components/etiquettes/TableauMetrageL
 import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 import { fmtNum } from '@/lib/format'
-import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
+import { formatHfsqlDate } from '@/lib/dates'
 import { SchemaControle, type SchemaKind } from '@/components/qualite/SchemaControle'
 import { cn } from '@/lib/utils'
 import { ouvertes, tricobotAttend, TricobotAvatar, useSaisiesLotTricobot, type CompteurTricobot } from '@/components/tricobot/SaisiesTricobot'
@@ -219,7 +221,6 @@ interface SuiviLotDetail {
   labo?: { etape: string | null; libelle: string; termine_le: string | null } | null
   observations: string
   emplacement_tirelle: string
-  fin_archivage: string
   IDetatLot: number | null
   etat_libelle: string | null
   /** The lot's reprises at the dyer, oldest first (absent on an older API). */
@@ -342,7 +343,6 @@ interface EditState {
   coloris_tirelle: '' | 'conforme' | 'ecart'
   observations: string
   emplacement_tirelle: string
-  fin_archivage: string // yyyy-mm-dd
 }
 
 function numStr(v: number): string {
@@ -375,7 +375,6 @@ function snapshotEdit(d: SuiviLotDetail): EditState {
     coloris_tirelle: d.coloris_tirelle ?? '',
     observations: d.observations ?? '',
     emplacement_tirelle: d.emplacement_tirelle ?? '',
-    fin_archivage: hfsqlDateToInput(d.fin_archivage),
   }
 }
 
@@ -499,7 +498,6 @@ export function QualiteSuiviLots() {
           coloris_tirelle: edit.coloris_tirelle || null,
           observations: edit.observations,
           emplacement_tirelle: edit.emplacement_tirelle,
-          fin_archivage: inputDateToHfsql(edit.fin_archivage),
         }),
       })
     },
@@ -2576,31 +2574,9 @@ function ControlesTab({
             label="Emplacement"
             value={
               isEditing && edit ? (
-                <input
-                  type="text"
-                  value={edit.emplacement_tirelle}
-                  onChange={(e) => onEditField('emplacement_tirelle', e.target.value)}
-                  className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right w-[160px]"
-                />
+                <BoiteTirellePicker valeur={edit.emplacement_tirelle} onChange={(b) => onEditField('emplacement_tirelle', b)} />
               ) : (
-                detail.emplacement_tirelle || '—'
-              )
-            }
-          />
-          <KV
-            label="Fin d'archivage"
-            value={
-              isEditing && edit ? (
-                <input
-                  type="date"
-                  value={edit.fin_archivage}
-                  onChange={(e) => onEditField('fin_archivage', e.target.value)}
-                  className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right w-[160px]"
-                />
-              ) : detail.fin_archivage ? (
-                formatHfsqlDate(detail.fin_archivage)
-              ) : (
-                '—'
+                <BoiteTirelleValeur valeur={detail.emplacement_tirelle} />
               )
             }
           />

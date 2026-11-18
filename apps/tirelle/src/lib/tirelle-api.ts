@@ -96,3 +96,44 @@ export const enregistrerAvantLavage = (id: number, b: { laize: string; poids: st
 export const terminerApresLavage = (id: number, b: { stabh: string; stabl: string; vrillage: string; casier: string; observations: string }) =>
   post(`/tirelle/lots/${id}/apres-lavage`, b)
 export const marquerJete = (id: number) => post(`/tirelle/lots/${id}/jete`)
+
+// ── The shelf: find a stored tirelle, empty a box (LIVA #1380) ──
+
+export interface TirelleTrouvee {
+  idsuivilot: number
+  lot: string
+  reception: string | null
+  reference: string
+  coloris: string
+  sous_traitant: string
+  clients: string[]
+  /** The box holding square + tirelle (« B3 »). Only stored tirelles are returned. */
+  boite: string
+  /** After a reprise: still in its box, to be thrown. */
+  a_jeter: boolean
+}
+
+export interface Recherche {
+  lots: TirelleTrouvee[]
+  /** How many matched; `lots` is capped. */
+  total: number
+}
+
+export interface EtatBoite {
+  boite: string
+  n: number
+  /** Reception of its oldest and of its most recent lot (ISO). */
+  du: string | null
+  au: string | null
+}
+
+export interface Boites {
+  boites: EtatBoite[]
+  /** Reception (ISO) of the oldest lot still in a box: how far back the archives go. */
+  depuis: string | null
+}
+
+export const chercherTirelles = (q: string) => apiFetch<Recherche>(`/tirelle/recherche?q=${encodeURIComponent(q)}`)
+export const fetchContenuBoite = (boite: string) => apiFetch<Recherche>(`/tirelle/recherche?boite=${encodeURIComponent(boite)}`)
+export const fetchBoites = () => apiFetch<Boites>('/tirelle/boites')
+export const viderBoite = (boite: string) => post<{ boite: string; lots: string[] }>(`/tirelle/boites/${encodeURIComponent(boite)}/vider`)

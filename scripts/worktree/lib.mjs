@@ -571,7 +571,9 @@ export function spawnDetached(cwd, pkg, script, logFile) {
     return pid
   }
   const out = fs.openSync(logFile, 'a')
-  const child = spawn('pnpm', ['--filter', pkg, script], {
+  // A script name (`dev:3001`) is one argument; a command line (`exec cross-env
+  // … vite --port 3001`, the tirelle app) must be split, there is no shell here.
+  const child = spawn('pnpm', ['--filter', pkg, ...script.split(/\s+/).filter(Boolean)], {
     cwd, detached: true, stdio: ['ignore', out, out],
   })
   child.unref()

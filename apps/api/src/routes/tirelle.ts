@@ -11,6 +11,11 @@
 //     POST /lots/:id/avant-lavage           { laize, poids, allongementh?, allongementl?, coloris, observations?, note? }
 //     POST /lots/:id/apres-lavage           { stabh, stabl, vrillage, casier, observations? } — done
 //     POST /lots/:id/jete                   after a reprise: round, square, tirelle thrown
+//   The shelf (LIVA #1380, lib/tirelle-boites.ts + lib/tirelle-rangement.ts):
+//     GET  /recherche?q=                    stored tirelles by lot, reference or coloris
+//     GET  /recherche?boite=B3              the content of one box
+//     GET  /boites                          the 48 boxes (A1 to F8) with their count, and since when the shelf goes
+//     POST /boites/:boite/vider             the box's tirelles are thrown: its lots lose their location
 //
 // ⚠️ Its own cookie, `mps_tirelle` (like `mps_pointeuse`): browsers share
 // cookies across ports on localhost, and lib/auth.ts would otherwise let the
@@ -43,6 +48,8 @@ import {
   marquerJete,
   terminerApresLavage,
 } from '../lib/tirelle-labo.js'
+import { debutArchive, lireBoite } from '../lib/tirelle-boites.js'
+import { RefusBoite, chercherTirelles, lireBoites, viderBoite } from '../lib/tirelle-rangement.js'
 
 export const tirelleRouter: RouterType = Router()
 
@@ -83,13 +90,18 @@ async function tablette(req: Request): Promise<AppareilAtelier | null> {
   return enrolementTirelleContourne() ? TABLETTE_DE_DEV : null
 }
 
-/** The lab tablet's gesture in the lot's Journal (lib/journal-lot.ts): who is the
- *  tablet (its label — an admin trying it from a desk is named), what changed. */
-async function journalTablette(req: Request, id: number, evenement: 'tirelle_avant_lavage' | 'tirelle_apres_lavage' | 'tirelle_jete', avant: MesuresLot | null): Promise<void> {
+/** Who a gesture of the tablet is signed by in the Journal: the tablet's label
+ *  (an admin trying it from a desk is named). */
+async function auteurTablette(req: Request): Promise<{ id: number; nom: string }> {
   const a = await tablette(req)
-  const par = a && a !== TABLETTE_DE_DEV
+  return a && a !== TABLETTE_DE_DEV
     ? { id: 0, nom: a.libelle || 'Tablette tirelle' }
     : req.userId ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : { id: 0, nom: 'Tablette tirelle' }
+}
+
+/** The lab tablet's gesture in the lot's Journal (lib/journal-lot.ts): who, what changed. */
+async function journalTablette(req: Request, id: number, evenement: 'tirelle_avant_lavage' | 'tirelle_apres_lavage' | 'tirelle_jete', avant: MesuresLot | null): Promise<void> {
+  const par = await auteurTablette(req)
   let detail: string | null = null
   if (evenement !== 'tirelle_jete') {
     const apres = await lireMesuresCotes(id)
@@ -115,7 +127,7 @@ async function gateEcriture(req: Request, res: Response): Promise<boolean> {
 }
 
 function erreur(res: Response, label: string, err: unknown): void {
-  if (err instanceof RefusLabo) {
+  if (err instanceof RefusLabo || err instanceof RefusBoite) {
     res.status(err.status).json({ error: err.code, message: err.message })
     return
   }
@@ -265,5 +277,41 @@ tirelleRouter.post('/lots/:id/jete', async (req: Request, res: Response) => {
     res.json({ ok: true })
   } catch (err) {
     erreur(res, 'jete', err)
+  }
+})
+
+// ── The shelf: find a stored tirelle, empty a box ──
+
+tirelleRouter.get('/recherche', async (req: Request, res: Response) => {
+  if (!(await gateLecture(req, res))) return
+  try {
+    const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 100) : ''
+    const boite = typeof req.query.boite === 'string' ? lireBoite(req.query.boite) : null
+    if (typeof req.query.boite === 'string' && !boite) {
+      res.status(404).json({ error: 'boite_inconnue', message: 'Cette boîte n’existe pas (A1 à F8).' })
+      return
+    }
+    res.json(await chercherTirelles(boite ? { boite } : { q }))
+  } catch (err) {
+    erreur(res, 'recherche', err)
+  }
+})
+
+tirelleRouter.get('/boites', async (req: Request, res: Response) => {
+  if (!(await gateLecture(req, res))) return
+  try {
+    const boites = await lireBoites()
+    res.json({ boites, depuis: debutArchive(boites) })
+  } catch (err) {
+    erreur(res, 'boites', err)
+  }
+})
+
+tirelleRouter.post('/boites/:boite/vider', async (req: Request, res: Response) => {
+  if (!(await gateEcriture(req, res))) return
+  try {
+    res.json(await viderBoite(req.params.boite, await auteurTablette(req)))
+  } catch (err) {
+    erreur(res, 'boites/vider', err)
   }
 })

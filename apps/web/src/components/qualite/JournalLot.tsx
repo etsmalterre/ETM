@@ -54,6 +54,7 @@ const LOOK: Record<string, { icon: LucideIcon; color: string }> = {
   tirelle_avant_lavage: { icon: FlaskConical, color: 'text-amber-700 bg-amber-500/10' },
   tirelle_apres_lavage: { icon: Droplets, color: 'text-amber-700 bg-amber-500/10' },
   tirelle_jete: { icon: Trash2, color: 'text-zinc-600 bg-zinc-500/10' },
+  tirelle_boite_videe: { icon: Trash2, color: 'text-zinc-600 bg-zinc-500/10' },
   soumission: { icon: Send, color: 'text-violet-600 bg-violet-500/10' },
   reponse_ok: { icon: ThumbsUp, color: 'text-green-700 bg-green-500/10' },
   reponse_refus: { icon: ThumbsDown, color: 'text-red-600 bg-red-500/10' },
