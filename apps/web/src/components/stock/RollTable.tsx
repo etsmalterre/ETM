@@ -40,7 +40,9 @@ export interface RollTableSelection<T> {
   selected: Set<number>
   /** shiftKey: the caller's §44 range handler. */
   onToggle: (id: number, shiftKey: boolean) => void
-  /** Why a row cannot be picked (undefined = it can). */
+  /** Why a row cannot be picked (undefined = it can). An empty string = not
+   *  this selection's business: no tick, no sign (a roll that is not « en
+   *  reprise » in a list where only reprises are received). */
   blockedReason?: (r: T) => string | undefined
   onToggleAll: () => void
   allTitle: string
@@ -55,12 +57,14 @@ export interface RollTableColumn<T> {
 }
 
 export function RollTable<T extends RollTableRow>({
-  rolls, kind, selection, columns = [], numeroExtra, notes, action, etat, onRowClick, rowClassName,
+  rolls, kind, selection, columns = [], numeroExtra, lotCell, notes, action, etat, onRowClick, rowClassName,
 }: {
   rolls: T[]
   kind: 'ecru' | 'fini'
   selection?: RollTableSelection<T>
   columns?: RollTableColumn<T>[]
+  /** The Lot cell when it is more than its text (a link to the lot's sheet). */
+  lotCell?: (r: T) => ReactNode
   /** Small badges after the numero (reprise, hors réf, fusion, reçu). */
   numeroExtra?: (r: T) => ReactNode
   /** Hover icons (RollObservationsIcon / RollDefautsIcon …). */
@@ -72,7 +76,7 @@ export function RollTable<T extends RollTableRow>({
   onRowClick?: (r: T) => void
   rowClassName?: (r: T) => string | undefined
 }) {
-  const choisissables = selection ? rolls.filter((r) => !selection.blockedReason?.(r)) : []
+  const choisissables = selection ? rolls.filter((r) => selection.blockedReason?.(r) === undefined) : []
   // A tombé de métier is weighed, not measured: no Métrage column unless a roll has one.
   const avecMetrage = kind === 'fini' || rolls.some((r) => Number(r.metrage) > 0)
   const nbCoches = choisissables.filter((r) => selection?.selected.has(r.id)).length
@@ -109,7 +113,7 @@ export function RollTable<T extends RollTableRow>({
         <tbody>
           {rolls.map((r) => {
             const bloque = selection?.blockedReason?.(r)
-            const choisissable = !!selection && !bloque
+            const choisissable = !!selection && bloque === undefined
             const coche = choisissable && selection!.selected.has(r.id)
             const cliquable = choisissable || !!onRowClick
             return (
@@ -139,7 +143,7 @@ export function RollTable<T extends RollTableRow>({
                 </td>
                 <td className={cn(td, 'text-right tabular-nums')}>{Number(r.poids) > 0 ? `${fmtNum(Number(r.poids), 1)} kg` : '—'}</td>
                 {avecMetrage && <td className={cn(td, 'text-right tabular-nums')}>{Number(r.metrage) > 0 ? `${fmtNum(Number(r.metrage), 1)} Ml` : ''}</td>}
-                <td className={cn(td, 'pl-5 text-muted-foreground')}>{r.lot || '—'}</td>
+                <td className={cn(td, 'pl-5 text-muted-foreground')}>{lotCell ? lotCell(r) : (r.lot || '—')}</td>
                 {columns.map((c) => (
                   <td key={c.key} className={cn(td, c.align === 'right' && 'text-right')}>{c.cell(r)}</td>
                 ))}

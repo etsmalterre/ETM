@@ -103,7 +103,7 @@ import { fermetures } from '../lib/delais-standards.js'
 import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, refusAvanceDelai, reportsDelaiParLigne, retardClientReports, retardDelai } from '../lib/report-delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
-import { normaliserLot, ouvrirReprise, refusLotSuffixe, reprisesParRouleau, retourRouleau, RepriseRefusee } from '../lib/reprises.js'
+import { normaliserLot, refusLotSuffixe, reprisesParRouleau, retourRouleau } from '../lib/reprises.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { lotsNonSoumissibles, type CommandeClientRef, type LotBloque } from '../lib/soumission-lots-bloques.js'
 import { affectationsCommandeSst } from '../lib/affectations-sst.js'
@@ -5913,6 +5913,8 @@ interface StockFiniLite {
    *  ligne_commande_client → commande_client → client. Inherited from
    *  the source écru's reservation at reception time. */
   client_nom?: string | null
+  /** The roll's lot on Qualité › Suivi lots (0 = no sheet). */
+  idsuivilot?: number
   /** commande_client.numero of that reservation (LIVA #1258). */
   commande_numero?: number | null
 }
@@ -6041,11 +6043,14 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
   const dye = { ref: ctx.IDref_fini, coloris: ctx.IDColoris }
   // TRM-knitted pieces whose OF fed a yarn off the écru reference's sheet
   // (lib/hors-ref-trm.ts) — the reception card shows it on écru and fini.
-  const [horsRefEcru, horsRefFini, reprisesFini] = await Promise.all([
+  const [horsRefEcru, horsRefFini, reprisesFini, suiviParLot] = await Promise.all([
     horsRefParEcru(allEcruIds),
     horsRefParFini(finiFixed.map((r) => Number(r.IDstock_fini) || 0)),
     // How many reprises each roll went through (lib/reprises.ts): « Repris ×N ».
     reprisesParRouleau(finiFixed.map((r) => Number(r.IDstock_fini) || 0)),
+    // Each lot's sheet on Qualité › Suivi lots: the Réception tab links to it,
+    // since the lot's gestures (reprise, validation) live there (LIVA #1384).
+    suiviLotsDeLigne(ligneId),
   ])
   const linked = linkedFixed.map((r) => ({
     ...r,
@@ -6102,6 +6107,7 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
       source_numeros: sources.map((id) => componentNumero.get(id) ?? `#${id}`),
       hors_ref: horsRefFini.get(Number(r.IDstock_fini)) ?? [],
       reprises: reprisesFini.get(Number(r.IDstock_fini))?.nombre ?? 0,
+      idsuivilot: suiviParLot.get(((r.lot ?? '') as string).toString().trim()) ?? 0,
     }
   })
 
@@ -6123,6 +6129,20 @@ async function fetchPiecesPayload(ctx: LineContext, ligneId: number): Promise<{
     // dialog hides the affordance when it is not there yet.
     fusion_disponible: await probeFiniSourceTable(),
   }
+}
+
+/** A line's lots on Qualité › Suivi lots: trimmed lot → its sheet's id (the
+ *  oldest when a lot has two). Native read, one query. */
+async function suiviLotsDeLigne(ligneId: number): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  const rows = await mpsPg()<{ id: number; lot: string | null }[]>`
+    SELECT idsuivilot AS id, trim(lot::text) AS lot FROM suivilot
+    WHERE idligne_commande_sous_traitant = ${ligneId} ORDER BY idsuivilot`
+  for (const r of rows) {
+    const lot = (r.lot ?? '').trim()
+    if (lot && !out.has(lot)) out.set(lot, Number(r.id))
+  }
+  return out
 }
 
 commandesSousTraitantRouter.get('/:commandeId/lignes/:ligneId/pieces', async (req: Request, res: Response) => {
@@ -7574,7 +7594,8 @@ commandesSousTraitantRouter.delete(
 //     reprise once nothing of it is left at the dyer;
 //   - « Corriger la réception »: lot / poids / métrage of a roll still in
 //     control, a typo at reception — never a reprise.
-// État 2 is never set here: a reprise is opened by its own route (motif).
+// État 2 is never set here: a reprise is opened on Qualité › Suivi lots
+// (« Reprendre », whole lot, motif — LIVA #1384).
 // A lot is never given a reprise suffix (refusLotSuffixe). Shipped rolls
 // keep their BL's lot / poids / métrage. Other stock_fini fields (magasin, …)
 // remain non-editable from this surface — they'd require revisiting the
@@ -7628,7 +7649,7 @@ commandesSousTraitantRouter.patch(
       }
       const etatAvant = Number(verify[0].IDetat_stock_fini) || 0
       if (d.IDetat_stock_fini === 2 && etatAvant !== 2) {
-        res.status(400).json({ error: 'reprise_par_geste', message: 'Une reprise s’ouvre par « Envoyer en reprise », avec son motif.' }); return
+        res.status(400).json({ error: 'reprise_par_geste', message: 'Une reprise s’ouvre sur le lot entier, dans Qualité › Suivi lots (« Reprendre »).' }); return
       }
       // A lot left as it is stays as it is (an old « MA 109401 » is not rewritten by an unrelated edit).
       if (d.lot !== undefined && d.lot.trim() !== String(verify[0].lot ?? '').trim()) d.lot = normaliserLot(d.lot)
@@ -7721,8 +7742,6 @@ commandesSousTraitantRouter.patch(
   },
 )
 
-// ── Envoyer en reprise (lib/reprises.ts) ─────────────────
-//
 // ── The délai question (LIVA #1314, lib/delai-sst.ts) ────
 //
 // POST /:id/delai/relances { canal: 'email' | 'telephone', note? } — the dyer
@@ -7903,40 +7922,20 @@ commandesSousTraitantRouter.post('/:commandeId/lignes/:ligneId/urgence/email', a
   }
 })
 
-// POST /:commandeId/lignes/:ligneId/reprises { rouleaux: number[], motif }
-// Chosen rolls of the line go back to the dyer: a reprise opens per lot (or
-// the lot's open reprise takes them), the rolls and the lot go « En reprise ».
-// The whole-lot gesture is « Reprendre » on Qualité › Suivi lots.
-const repriseBody = z.object({
-  rouleaux: z.array(z.number().int().positive()).min(1).max(500),
-  motif: z.string().trim().min(1).max(1000),
+// POST /:commandeId/lignes/:ligneId/reprises — closed (LIVA #1384, decision
+// Vincent 2026-11-20). « Envoyer en reprise » took chosen rolls of a line while
+// a reprise is a LOT's: its state, its controls and its tirelle fell for every
+// roll (cde 8990: one roll picked for a test, the 23 rolls of MA109271 « En
+// reprise », measures erased). A reprise opens on Qualité › Suivi lots only
+// (« Reprendre », the whole lot). The route stays to tell a screen not yet
+// refreshed where the gesture went; the return of a reprise is still received
+// here (PATCH of each roll, above).
+commandesSousTraitantRouter.post('/:commandeId/lignes/:ligneId/reprises', (_req: Request, res: Response) => {
+  res.status(409).json({
+    error: 'reprise_par_lot',
+    message: 'Une reprise porte sur le lot entier : ouvrez le lot dans Qualité › Suivi lots, puis « Reprendre ».',
+  })
 })
-
-commandesSousTraitantRouter.post(
-  '/:commandeId/lignes/:ligneId/reprises',
-  async (req: Request, res: Response) => {
-    try {
-      if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
-      const commandeId = parseInt(req.params.commandeId, 10)
-      const ligneId = parseInt(req.params.ligneId, 10)
-      if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
-      const ctx = await loadEnnoblisseurLineContext(commandeId, ligneId)
-      if (!ctx) { res.status(404).json({ error: 'Line not found or does not belong to commande' }); return }
-      if (refuseIfTerminee(res, await loadCommandeSoldee(commandeId))) return
-      const p = repriseBody.safeParse(req.body)
-      if (!p.success) { res.status(400).json({ error: 'motif_requis', message: 'Indiquez le motif de la reprise.' }); return }
-      const ouvertes = await ouvrirReprise({
-        ligneId, rouleaux: p.data.rouleaux, motif: p.data.motif,
-        par: { id: req.userId, nom: await nomUtilisateur(req.userId) },
-      })
-      res.json({ reprises: ouvertes, ...(await fetchPiecesPayload(ctx, ligneId)) })
-    } catch (err) {
-      if (err instanceof RepriseRefusee) { res.status(409).json({ error: err.code, message: err.message }); return }
-      console.error('Error opening reprise:', err)
-      res.status(500).json({ error: 'Internal server error' })
-    }
-  },
-)
 
 // ── Tricobot — autofill from BL PDFs ─────────────────────
 //

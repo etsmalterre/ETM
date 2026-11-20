@@ -285,7 +285,7 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
       sansReprise = {
         code: 'reprise_non_enregistree',
         gravite: 'avertissement',
-        message: `Pièce(s) déjà réceptionnée(s) sans reprise enregistrée : ${hors.join(', ')}. Sélectionnez-les dans l’onglet Réception et « Envoyer en reprise » avant de réceptionner.`,
+        message: `Pièce(s) déjà réceptionnée(s) sans reprise enregistrée : ${hors.join(', ')}. Ouvrez la reprise du lot dans Qualité › Suivi lots (« Reprendre ») avant de réceptionner.`,
       }
     }
   }

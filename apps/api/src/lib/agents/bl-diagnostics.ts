@@ -249,5 +249,5 @@ export function ecartsRecus(
 export function messageEcartsRecus(es: readonly EcartRecu[]): string {
   const unite = (e: EcartRecu) => (e.champ === 'poids' ? 'kg' : 'm')
   const parts = es.map((e) => `${e.numero} (BL ${fr(e.bl)} ${unite(e)}, en stock ${fr(e.stock)} ${unite(e)})`)
-  return `Pièce(s) déjà réceptionnée(s) avec d’autres valeurs que ce BL : ${parts.join(', ')}. BL rectifié : « Corriger la réception » de ces pièces ; reprise : sélectionnez-les dans l’onglet Réception et « Envoyer en reprise » avant de réceptionner.`
+  return `Pièce(s) déjà réceptionnée(s) avec d’autres valeurs que ce BL : ${parts.join(', ')}. BL rectifié : « Corriger la réception » de ces pièces ; reprise : ouvrez-la sur le lot (Qualité › Suivi lots, « Reprendre ») avant de réceptionner.`
 }

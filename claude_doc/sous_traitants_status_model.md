@@ -504,11 +504,10 @@ rolls stuck "En Contrôle" after lot validation — fixed + back-filled 79 prod 
 ## Reprise flow
 
 **Since 2026-10-12 a reprise is data** (`lib/reprises.ts`, `screen_notes.md` § 4): the lot keeps the
-dyer's number, « Envoyer en reprise » / « Reprendre » open a `reprise` row, the réception below closes it.
+dyer's number, « Reprendre » (Qualité › Suivi lots, the whole lot — the only way since LIVA #1384, 2026-11-20) opens a `reprise` row, the réception below closes it.
 
 Multi-select fini rolls whose `IDetat_stock_fini = 2` ("En reprise") in
-the Réception tab → "Réceptionner la reprise (X)" button in the tab strip header (rolls NOT in
-reprise selected instead → "Envoyer en reprise (X)", motif dialog) →
+the Réception tab (only they can be ticked) → "Réceptionner la reprise (X)" button in the tab strip header →
 opens `BatchReceptionDialog` in `mode='reprise'` (discriminated union):
 
 - Pre-fills lot/poids/metrage/observations from the existing fini rows

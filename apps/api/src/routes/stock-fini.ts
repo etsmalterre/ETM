@@ -484,7 +484,7 @@ stockFiniRouter.post('/fini', async (req: Request, res: Response) => {
     const secondChoix = b.second_choix ? 1 : 0
     const lot = normaliserLot((b.lot ?? '').toString())
     const refusLot = refusLotSuffixe(lot)
-    if (IDetat === 2) { res.status(400).json({ error: 'reprise_par_geste', message: 'Une reprise s’ouvre par « Envoyer en reprise » (Sous-traitants) ou « Reprendre » (Qualité), avec son motif.' }); return }
+    if (IDetat === 2) { res.status(400).json({ error: 'reprise_par_geste', message: 'Une reprise s’ouvre sur le lot entier, dans Qualité › Suivi lots (« Reprendre »).' }); return }
     if (refusLot) { res.status(400).json({ error: 'lot_suffixe_reprise', message: refusLot }); return }
     const numero = (b.numero ?? '').toString()
     const emplacement = (b.emplacement ?? '').toString()
@@ -1060,7 +1060,7 @@ stockFiniRouter.patch('/fini/:id', async (req: Request, res: Response) => {
     if (body.IDetat_stock_fini !== undefined) {
       const v = parseInt(String(body.IDetat_stock_fini), 10)
       // « En reprise » is a gesture with a motif (lib/reprises.ts), never a bare état.
-      if (v === 2) { res.status(400).json({ error: 'reprise_par_geste', message: 'Une reprise s’ouvre par « Envoyer en reprise » (Sous-traitants) ou « Reprendre » (Qualité), avec son motif.' }); return }
+      if (v === 2) { res.status(400).json({ error: 'reprise_par_geste', message: 'Une reprise s’ouvre sur le lot entier, dans Qualité › Suivi lots (« Reprendre »).' }); return }
       if (!isNaN(v)) sets.push(`IDetat_stock_fini = ${v}`)
     }
     if (typeof body.pointage === 'string') {

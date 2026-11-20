@@ -496,6 +496,8 @@ interface StockFiniLite {
    *  reception time. Shown as a `Building2` badge on the card. */
   client_nom?: string | null
   commande_numero?: number | null
+  /** The roll's lot on Qualité › Suivi lots (0 = no sheet). */
+  idsuivilot?: number
   /** Inherited from its écru piece(s) (« hors réf »). */
   hors_ref?: FilHorsRef[]
   /** Reprises at the dyer this roll went through (lib/reprises.ts). */
@@ -3206,9 +3208,11 @@ function PiecesDrawer({
   const [selectedEcruIds, setSelectedEcruIds] = useState<Set<number>>(new Set())
   const [showBatchReception, setShowBatchReception] = useState(false)
   const lastSelectedEcruIdRef = useRef<number | null>(null)
-  // Mirror of the affectés multi-select for the reception tab: rolls sent
-  // into reprise, or rolls « en reprise » received back in batch via the
-  // reprise mode of BatchReceptionDialog (lib/reprises.ts on the API).
+  // Mirror of the affectés multi-select for the reception tab: rolls « en
+  // reprise » received back in batch via the reprise mode of
+  // BatchReceptionDialog (lib/reprises.ts on the API). A reprise is OPENED on
+  // Qualité › Suivi lots only, for the whole lot (LIVA #1384): the Lot cell
+  // links there.
   const [selectedFiniIds, setSelectedFiniIds] = useState<Set<number>>(new Set())
   const [showBatchReprise, setShowBatchReprise] = useState(false)
   const lastSelectedFiniIdRef = useRef<number | null>(null)
@@ -3262,20 +3266,13 @@ function PiecesDrawer({
     [data?.finiReceived],
   )
 
-  // Two batches share the selection (lib/reprises.ts): rolls « En reprise »
-  // are received back, rolls still here (not shipped) are sent into reprise.
-  // A selection never mixes the two: a click on the other kind starts over.
-  const finiEnReprise = useCallback((id: number) => Number(finiReceived.find((r) => r.IDstock_fini === id)?.IDetat_stock_fini) === 2, [finiReceived])
-  const finiSelectable = (r: StockFiniLite) => Number(r.IDetat_stock_fini) !== 4
+  // The one batch of this tab: rolls « En reprise » are received back. Only
+  // they can be ticked (§44: the range runs over the selectable rows).
+  const finiEnReprise = (r: StockFiniLite) => Number(r.IDetat_stock_fini) === 2
+  const aReceptionner = useMemo(() => finiReceived.filter(finiEnReprise), [finiReceived])
 
   const handleFiniClick = useCallback((id: number, shiftKey: boolean) => {
-    const kind = finiEnReprise(id)
-    const ids = finiReceived.filter((r) => finiSelectable(r) && finiEnReprise(r.IDstock_fini) === kind).map((r) => r.IDstock_fini)
-    if ([...selectedFiniIds].some((x) => finiEnReprise(x) !== kind)) {
-      setSelectedFiniIds(new Set([id]))
-      lastSelectedFiniIdRef.current = id
-      return
-    }
+    const ids = aReceptionner.map((r) => r.IDstock_fini)
     const anchor = lastSelectedFiniIdRef.current
     if (shiftKey && anchor !== null && anchor !== id) {
       const a = ids.indexOf(anchor)
@@ -3297,9 +3294,9 @@ function PiecesDrawer({
       return next
     })
     lastSelectedFiniIdRef.current = id
-  }, [finiReceived, finiEnReprise, selectedFiniIds])
-  const selectionEnReprise = selectedFiniIds.size > 0 && [...selectedFiniIds].every(finiEnReprise)
-  const [showEnvoiReprise, setShowEnvoiReprise] = useState(false)
+  }, [aReceptionner])
+  // Only what is still « en reprise » counts: a roll received back leaves the selection.
+  const repriseChoisie = aReceptionner.filter((r) => selectedFiniIds.has(r.IDstock_fini))
 
   // Roll-up still used by the "Affectés" section header below the tab bar.
   const totalKgAffectes = ecruLinked.reduce((s, r) => s + (Number(r.poids) || 0), 0)
@@ -3346,18 +3343,16 @@ function PiecesDrawer({
               Réceptionner ({selectedEcruIds.size})
             </Button>
           )}
-          {!commandeSoldee && activeTab === 'reception' && selectedFiniIds.size > 0 && (
+          {!commandeSoldee && activeTab === 'reception' && repriseChoisie.length > 0 && (
             <Button
               variant="gold"
               size="sm"
               className="h-7 px-2.5 text-[11px]"
-              onClick={() => (selectionEnReprise ? setShowBatchReprise(true) : setShowEnvoiReprise(true))}
-              title={selectionEnReprise
-                ? 'Saisir le retour de reprise de ces rouleaux (BL de l’ennoblisseur)'
-                : 'Renvoyer ces rouleaux à l’ennoblisseur pour reprise'}
+              onClick={() => setShowBatchReprise(true)}
+              title="Saisir le retour de reprise de ces rouleaux (BL de l’ennoblisseur)"
             >
               <RotateCcw className="h-3 w-3 mr-1" />
-              {selectionEnReprise ? 'Réceptionner la reprise' : 'Envoyer en reprise'} ({selectedFiniIds.size})
+              Réceptionner la reprise ({repriseChoisie.length})
             </Button>
           )}
           <Button variant="ghost" size="icon" onClick={onClose} className="h-7 w-7" title="Fermer">
@@ -3519,18 +3514,29 @@ function PiecesDrawer({
                 <RollTable
                   rolls={finiReceived.map((r) => ({ ...r, id: r.IDstock_fini }))}
                   kind="fini"
-                  selection={commandeSoldee ? undefined : {
+                  // Ticks only while a reprise is to receive back, and only on its rolls.
+                  selection={commandeSoldee || aReceptionner.length === 0 ? undefined : {
                     selected: selectedFiniIds,
                     onToggle: handleFiniClick,
-                    blockedReason: (r) => (finiSelectable(r) ? undefined : 'Expédié'),
-                    allTitle: 'Tout sélectionner',
+                    blockedReason: (r) => (finiEnReprise(r) ? undefined : ''),
+                    allTitle: 'Tout sélectionner pour réceptionner la reprise',
                     onToggleAll: () => {
-                      const sel = finiReceived.filter(finiSelectable)
-                      const tous = sel.length > 0 && sel.every((r) => selectedFiniIds.has(r.IDstock_fini))
-                      setSelectedFiniIds(tous ? new Set() : new Set(sel.map((r) => r.IDstock_fini)))
-                      lastSelectedFiniIdRef.current = tous ? null : (sel.at(-1)?.IDstock_fini ?? null)
+                      const tous = repriseChoisie.length === aReceptionner.length
+                      setSelectedFiniIds(tous ? new Set() : new Set(aReceptionner.map((r) => r.IDstock_fini)))
+                      lastSelectedFiniIdRef.current = tous ? null : (aReceptionner.at(-1)?.IDstock_fini ?? null)
                     },
                   }}
+                  // The lot's gestures (reprise, validation) are on its sheet.
+                  lotCell={(r) => (r.lot && (r.idsuivilot ?? 0) > 0 ? (
+                    <Link
+                      to={`/qualite/suivi-lots?lot=${r.idsuivilot}&statut=tous`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-accent hover:underline"
+                      title="Ouvrir le lot dans Qualité › Suivi lots"
+                    >
+                      {r.lot}
+                    </Link>
+                  ) : (r.lot || '—'))}
                   numeroExtra={(r) => (
                     <>
                       <RepriseBadge nombre={r.reprises} enReprise={Number(r.IDetat_stock_fini) === 2} />
@@ -3615,28 +3621,12 @@ function PiecesDrawer({
           }}
         />
       )}
-      {showEnvoiReprise && (
-        <EnvoiRepriseDialog
-          commandeId={commandeId}
-          ligneId={ligne.IDligne_commande_sous_traitant}
-          rolls={finiReceived.filter((r) => selectedFiniIds.has(r.IDstock_fini))}
-          onClose={() => setShowEnvoiReprise(false)}
-          onSuccess={(payload) => {
-            queryClient.setQueryData(queryKey, payload)
-            invalidateStockCaches(queryClient)
-            onSuccess()
-            setShowEnvoiReprise(false)
-            setSelectedFiniIds(new Set())
-            lastSelectedFiniIdRef.current = null
-          }}
-        />
-      )}
       {showBatchReprise && (
         <BatchReceptionDialog
           mode="reprise"
           commandeId={commandeId}
           ligne={ligne}
-          finiRolls={finiReceived.filter((r) => selectedFiniIds.has(r.IDstock_fini))}
+          finiRolls={repriseChoisie}
           numerosExistants={finiReceived.map((r) => r.numero ?? '')}
           onClose={() => setShowBatchReprise(false)}
           onSuccess={(payload) => {
@@ -3645,6 +3635,7 @@ function PiecesDrawer({
             onSuccess()
             setShowBatchReprise(false)
             setSelectedFiniIds(new Set())
+            lastSelectedFiniIdRef.current = null
           }}
         />
       )}
@@ -4722,7 +4713,7 @@ function EditFiniRollDialog({
                   <Pencil className="h-3.5 w-3.5 text-accent" />Corriger la réception
                 </p>
                 <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Une erreur de saisie à la réception. Un rouleau renvoyé à l’ennoblisseur passe par « Envoyer en reprise ».
+                  Une erreur de saisie à la réception. Une reprise porte sur le lot entier, dans Qualité › Suivi lots.
                 </p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -4776,77 +4767,6 @@ function EditFiniRollDialog({
           <Button variant="outline" onClick={onCancel} disabled={isPending}>Annuler</Button>
           <Button onClick={() => onSave(changes)} disabled={!dirty || invalide || isPending}>
             {isPending ? 'Enregistrement...' : 'Enregistrer'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-/** « Envoyer en reprise »: the chosen rolls go back to the dyer. ETM records
- *  the reprise (who, when, why) and keeps the lot as the dyer numbers it —
- *  never an « R » typed onto it (lib/reprises.ts, decision 2026-10-12). */
-function EnvoiRepriseDialog({
-  commandeId, ligneId, rolls, onClose, onSuccess,
-}: {
-  commandeId: number
-  ligneId: number
-  rolls: StockFiniLite[]
-  onClose: () => void
-  onSuccess: (payload: PiecesPayload) => void
-}) {
-  const [motif, setMotif] = useState('')
-  const mut = useMutation({
-    mutationFn: () => apiFetch(`/commandes-sous-traitant/${commandeId}/lignes/${ligneId}/reprises`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rouleaux: rolls.map((r) => r.IDstock_fini), motif: motif.trim() }),
-    }) as Promise<PiecesPayload>,
-    onSuccess,
-  })
-  const lots = [...new Set(rolls.map((r) => (r.lot ?? '').trim()).filter(Boolean))]
-  const kg = rolls.reduce((s, r) => s + (Number(r.poids) || 0), 0)
-  const ml = rolls.reduce((s, r) => s + (Number(r.metrage) || 0), 0)
-
-  return (
-    <Dialog open onOpenChange={(o) => { if (!o && !mut.isPending) onClose() }}>
-      <DialogContent className="max-w-md" onClose={onClose}>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <RotateCcw className="h-5 w-5 text-accent" />
-            Envoyer en reprise
-          </DialogTitle>
-        </DialogHeader>
-        <div className="mt-4 space-y-3">
-          <p className="text-sm text-muted-foreground">
-            {rolls.length} rouleau{rolls.length > 1 ? 'x' : ''} · {fmtNum(kg, 1)} kg · {fmtNum(ml, 1)} Ml
-            {lots.length > 0 && <> · lot{lots.length > 1 ? 's' : ''} {lots.join(', ')}</>}
-          </p>
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Motif de la reprise</label>
-            <textarea
-              value={motif}
-              onChange={(e) => setMotif(e.target.value)}
-              rows={3}
-              autoFocus
-              placeholder="Teinte hors tolérance, laize trop étroite…"
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y"
-            />
-          </div>
-          <p className="text-[11px] text-muted-foreground">
-            Le lot garde le numéro de l’ennoblisseur : ETM enregistre la reprise. Au retour, sélectionnez les rouleaux puis « Réceptionner la reprise ».
-          </p>
-          {mut.error && (
-            <div className="flex items-start gap-2 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" /><span>{mutationMessage(mut.error)}</span>
-            </div>
-          )}
-        </div>
-        <DialogFooter className="mt-4">
-          <Button variant="outline" onClick={onClose} disabled={mut.isPending}>Annuler</Button>
-          <Button onClick={() => mut.mutate()} disabled={!motif.trim() || mut.isPending}>
-            {mut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5 mr-1.5" />}
-            Envoyer en reprise
           </Button>
         </DialogFooter>
       </DialogContent>

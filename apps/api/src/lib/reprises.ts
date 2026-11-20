@@ -10,9 +10,12 @@
 // Now:
 //   - the lot keeps the dyer's number, always (writers refuse a reprise
 //     suffix: refusLotSuffixe());
-//   - « Reprendre » (Qualité › Suivi lots, whole lot) or « Envoyer en reprise »
-//     (Sous-traitants › Réception, chosen rolls) OPENS a reprise: one `reprise`
-//     row per (line, lot) episode, rank 1, 2…, with one `reprise_piece` per
+//   - « Reprendre » (Qualité › Suivi lots) OPENS a reprise, and it is the ONLY
+//     way: a reprise takes the WHOLE lot still in stock, never chosen rolls
+//     (decision Vincent 2026-11-20, LIVA #1384 — « Envoyer en reprise » on the
+//     dyer order's Réception tab took one roll while the lot's state, controls
+//     and tirelle fell for all of them; it is gone). One `reprise` row per
+//     (line, lot) episode, rank 1, 2…, with one `reprise_piece` per
 //     roll, rolls in état 2, the lot in état 2, the lot's measures kept in
 //     `lot_avant` and ERASED on suivilot — the dyer's and ours — so both
 //     controls are redone on return, and the lab tablet is asked to throw
@@ -23,7 +26,9 @@
 //     still at the dyer;
 //   - correcting a reception typo is a different gesture (« Corriger la
 //     réception »), never a reprise — on 2026-10-12 « Reprendre » was used two
-//     minutes after a reception only to fix a mistyped lot.
+//     minutes after a reception only to fix a mistyped lot;
+//   - a reprise opened by mistake has no gesture: scripts/reprise-annuler.ts
+//     puts the rolls, the lot and its measures back and removes the row.
 // Everything else (lot step « En reprise », « repris ×N », soumission after the
 // return, Tricobot's reprise BL) is read from these rows.
 //
@@ -96,14 +101,10 @@ export class RepriseRefusee extends Error {
 
 interface RouleauLigne { idstock_fini: number; lot: string; poids: number; metrage: number; etat: number; expedie: boolean }
 
-async function rouleauxDeLigne(tx: Sql, ligneId: number, ids: number[] | null, lot: string | null): Promise<RouleauLigne[]> {
-  const rows = ids
-    ? await tx<{ idstock_fini: number; lot: string | null; poids: number; metrage: number; etat: number; le: number }[]>`
-        SELECT idstock_fini, trim(lot::text) AS lot, poids, metrage, COALESCE(idetat_stock_fini, 0) AS etat, COALESCE(idligne_expedition, 0) AS le
-        FROM stock_fini WHERE idstock_fini = ANY(${ids}) AND idref_commande_source = ${ligneId} FOR UPDATE`
-    : await tx<{ idstock_fini: number; lot: string | null; poids: number; metrage: number; etat: number; le: number }[]>`
-        SELECT idstock_fini, trim(lot::text) AS lot, poids, metrage, COALESCE(idetat_stock_fini, 0) AS etat, COALESCE(idligne_expedition, 0) AS le
-        FROM stock_fini WHERE idref_commande_source = ${ligneId} AND trim(lot::text) = ${lot ?? ''} FOR UPDATE`
+async function rouleauxDuLot(tx: Sql, ligneId: number, lot: string): Promise<RouleauLigne[]> {
+  const rows = await tx<{ idstock_fini: number; lot: string | null; poids: number; metrage: number; etat: number; le: number }[]>`
+    SELECT idstock_fini, trim(lot::text) AS lot, poids, metrage, COALESCE(idetat_stock_fini, 0) AS etat, COALESCE(idligne_expedition, 0) AS le
+    FROM stock_fini WHERE idref_commande_source = ${ligneId} AND trim(lot::text) = ${lot} FOR UPDATE`
   return rows.map((r) => ({
     idstock_fini: Number(r.idstock_fini), lot: String(r.lot ?? ''), poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
     etat: Number(r.etat), expedie: Number(r.le) > 0 || Number(r.etat) === 4,
@@ -115,12 +116,17 @@ async function rouleauxDeLigne(tx: Sql, ligneId: number, ids: number[] | null, l
  *  lot is controlled again from scratch, by the dyer and by us, so this copy
  *  is the only trace of the first control. */
 async function mesuresLot(tx: Sql, ligneId: number, lot: string): Promise<Record<string, unknown> | null> {
+  // `labo_connu` / `labo_termine_le`: where the lab stood (the opening resets its
+  // row), so that a reprise opened by mistake can be undone whole
+  // (scripts/reprise-annuler.ts, LIVA #1384).
   const [s] = await tx<Record<string, unknown>[]>`
-    SELECT idsuivilot, idetatlot, laize_sst, poids_sst, rendement_sst, stabl_sst, stabh_sst, vrillage_sst,
-           laize_tirelle, poids_tirelle, rendement_tirelle, stabl_tirelle, stabh_tirelle, vrillage_tirelle,
-           allongementh_tirelle, allongementl_tirelle, coloris_tirelle, trim(emplacement_tirelle::text) AS emplacement_tirelle
-    FROM suivilot WHERE idligne_commande_sous_traitant = ${ligneId} AND trim(lot::text) = ${lot}
-    ORDER BY idsuivilot LIMIT 1`
+    SELECT s.idsuivilot, s.idetatlot, s.laize_sst, s.poids_sst, s.rendement_sst, s.stabl_sst, s.stabh_sst, s.vrillage_sst,
+           s.laize_tirelle, s.poids_tirelle, s.rendement_tirelle, s.stabl_tirelle, s.stabh_tirelle, s.vrillage_tirelle,
+           s.allongementh_tirelle, s.allongementl_tirelle, s.coloris_tirelle, trim(s.emplacement_tirelle::text) AS emplacement_tirelle,
+           t.idsuivilot IS NOT NULL AS labo_connu, t.termine_le AS labo_termine_le
+    FROM suivilot s LEFT JOIN tirelle_labo t ON t.idsuivilot = s.idsuivilot
+    WHERE s.idligne_commande_sous_traitant = ${ligneId} AND trim(s.lot::text) = ${lot}
+    ORDER BY s.idsuivilot LIMIT 1`
   return s ?? null
 }
 
@@ -132,14 +138,12 @@ async function rangSuivant(tx: Sql, ligneId: number, lot: string): Promise<numbe
 
 export interface RepriseOuverte { id: number; lot: string; rang: number; rouleaux: number }
 
-/** Send rolls back to the dyer: the whole lot (`rouleaux` null) or the chosen
- *  rolls of a line, grouped by lot. A lot already in reprise takes the new
- *  rolls into its open reprise. Shipped rolls are refused (a whole-lot
- *  reprise skips them). */
+/** Send a lot back to the dyer: every roll of it still in stock (a shipped
+ *  roll stays where it is). Always the whole lot, never chosen rolls (LIVA
+ *  #1384). A lot already in reprise takes its rolls into the open reprise. */
 export async function ouvrirReprise(opts: {
   ligneId: number
-  lot?: string | null
-  rouleaux?: number[] | null
+  lot: string
   motif: string
   /** 'teinture' re-dyes the lot: its coloris is submitted again (LIVA #1313).
    *  Default 'rame': back on the stenter only. */
@@ -150,16 +154,8 @@ export async function ouvrirReprise(opts: {
   if (!motif) throw new RepriseRefusee('motif_requis', 'Indiquez le motif de la reprise.')
   return mpsPg().begin(async (t) => {
     const tx = t as unknown as Sql
-    const ids = opts.rouleaux?.length ? [...new Set(opts.rouleaux)] : null
-    let rouleaux = await rouleauxDeLigne(tx, opts.ligneId, ids, ids ? null : (opts.lot ?? '').trim())
-    if (ids) {
-      if (rouleaux.length !== ids.length) throw new RepriseRefusee('rouleau_autre_ligne', 'Un rouleau choisi n’appartient pas à cette ligne.')
-      const exp = rouleaux.filter((r) => r.expedie)
-      if (exp.length) throw new RepriseRefusee('rouleau_expedie', 'Un rouleau expédié ne part pas en reprise.')
-    } else {
-      rouleaux = rouleaux.filter((r) => !r.expedie)
-    }
-    rouleaux = rouleaux.filter((r) => r.lot)
+    const lotDemande = opts.lot.trim()
+    const rouleaux = lotDemande ? (await rouleauxDuLot(tx, opts.ligneId, lotDemande)).filter((r) => !r.expedie && r.lot) : []
     if (rouleaux.length === 0) throw new RepriseRefusee('aucun_rouleau', 'Aucun rouleau à envoyer en reprise.')
 
     const parLot = new Map<string, RouleauLigne[]>()
