@@ -8,7 +8,10 @@
 //      delete cascaded blindly, 4 prod sst lines point at a deleted coloris);
 //   2. no ordre_fabrication hangs off a type-4 TRM line (an OF would write a
 //      ref_rectiligne id into IDref_ecru);
-//   3. no stock_ecru piece nor ligne_expedition hangs off a type-4 TRM line;
+//   3. no stock_ecru piece hangs off a type-4 TRM line; its shipment lines
+//      (cols / bandes delivered by count, LIVA #1381) each carry a positive
+//      `quantite`, and no roll line carries one — the count and the rolls are
+//      two ways to say what an avis ships, never both on one line;
 //   4. every mirror line has the TYPE of the sst line it mirrors (the bridge
 //      used to hardcode 1).
 // Exits 1 when 2, 3 or 4 fail; 1 is reported only.
@@ -54,16 +57,27 @@ async function main() {
     const nOf = Number(ofs[0]?.n) || 0
     console.log(`[2] OF on a type-4 line: ${nOf}`)
     if (nOf > 0) failures++
-    // 3 — no piece, no shipment line.
-    const [pieces, les] = await Promise.all([
+    // 3 — no piece; shipment lines of a type-4 line carry a count.
+    const [pieces, les, vides] = await Promise.all([
       query<{ n: number }>(`SELECT COUNT(*) AS n FROM stock_ecru WHERE IDLigne_Commande_TRM IN (${inList})`),
       query<{ n: number }>(`SELECT COUNT(*) AS n FROM ligne_expedition WHERE IDligne_commande_client IN (${inList})`),
+      query<{ n: number }>(`SELECT COUNT(*) AS n FROM ligne_expedition WHERE IDligne_commande_client IN (${inList}) AND quantite <= 0`),
     ])
     const nP = Number(pieces[0]?.n) || 0
     const nL = Number(les[0]?.n) || 0
-    console.log(`[3] stock_ecru pieces: ${nP}, ligne_expedition rows: ${nL}`)
-    if (nP + nL > 0) failures++
+    const nV = Number(vides[0]?.n) || 0
+    console.log(`[3] stock_ecru pieces: ${nP}; ligne_expedition rows: ${nL}, of which without a quantity: ${nV}`)
+    if (nP + nV > 0) failures++
   }
+  // 3 bis — a quantity on a shipment line of anything but a type-4 line.
+  const egarees = await query<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM ligne_expedition le
+     JOIN ligne_commande_client l ON l.IDligne_commande_client = le.IDligne_commande_client
+     WHERE le.quantite > 0 AND l.TYPE <> ${T}`,
+  )
+  const nE = Number(egarees[0]?.n) || 0
+  console.log(`[3] shipment lines carrying a quantity on a roll line: ${nE}`)
+  if (nE > 0) failures++
 
   // 4 — mirror TYPE parity, both directions.
   const mismatches = await query<{ n: number }>(

@@ -2164,6 +2164,15 @@ ${grantApi('SELECT, INSERT, UPDATE, DELETE', 'rappel')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE rappel_id_seq')}
 `,
   },
+  {
+    // Cols / bandes delivered by quantity (LIVA #1381, lib/livraison-rectiligne.ts).
+    // A shipment line had no quantity of its own: what an avis ships is the sum
+    // of the rolls stamped with it. A rectiligne line (ligne_commande_client
+    // TYPE 4) has no roll, so the pieces delivered are written here. It stays 0
+    // on every roll line, where the rolls remain the only truth.
+    name: '0082_ligne_expedition_quantite',
+    sql: `ALTER TABLE ligne_expedition ADD COLUMN quantite double precision NOT NULL DEFAULT 0;`,
+  },
 ]
 
 export interface MigrationStatus {

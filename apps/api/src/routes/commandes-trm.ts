@@ -59,7 +59,8 @@ import { CommandeClientPdf, type CommandeClientPdfData } from '../lib/pdf/Comman
 import { companyTrm } from '../lib/pdf/theme.js'
 import { loadClientTvaRate, loadMentionTva } from '../lib/tva.js'
 import { formatHfsqlDateLongFr, logEnvoiEmails, maxId, newIdAfterInsert, todayDigits, type EmailRecipientPayload } from './expeditions.js'
-import { requireEditExpeditions, stampShippedPieces } from './expeditions-trm.js'
+import { requireEditExpeditions, stampShippedPieces, quantitesLivreesParLigne, quantitesParAvis } from './expeditions-trm.js'
+import { arrondiQuantite, ligneLivree, normaliserLivraison, resteALivrer } from '../lib/livraison-rectiligne.js'
 import { createSerialLock } from '../lib/serial-lock.js'
 import { TYPE_DOC_COMMANDE_CLIENT } from './commandes-client.js'
 import { sendMail } from '../lib/gmail.js'
@@ -743,9 +744,9 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
     const totalsMap = new Map<number, {
       total_eur: number; total_qte: number; nb_lignes: number
       earliest_delivery: string | null; produit: number; lignes_sans_delai: number
-      kgs: number; pieces: number
+      kgs: number; pieces: number; pieces_livrees: number
     }>()
-    const emptyTotals = () => ({ total_eur: 0, total_qte: 0, nb_lignes: 0, earliest_delivery: null, produit: 0, lignes_sans_delai: 0, kgs: 0, pieces: 0 })
+    const emptyTotals = () => ({ total_eur: 0, total_qte: 0, nb_lignes: 0, earliest_delivery: null, produit: 0, lignes_sans_delai: 0, kgs: 0, pieces: 0, pieces_livrees: 0 })
     // An urgency ETS Malterre asked on a mirror line (lib/urgence-sst.ts): the order wears the icon,
     // and while the answer is awaited it is TRM's to give — its délai, or « impossible ».
     const urgenceParCommande = new Map<number, { urgente: boolean; aRepondre: boolean }>()
@@ -766,15 +767,21 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
         const acc = urgenceParCommande.get(cid) ?? { urgente: false, aRepondre: false }
         urgenceParCommande.set(cid, { urgente: true, aRepondre: acc.aRepondre || enAttenteDeReponse(u) })
       }
-      const prodMap = await lineProductionAggregates(
-        lignes.map((l: any) => Number(l.IDligne_commande_client) || 0),
-      )
+      const [prodMap, livMap] = await Promise.all([
+        lineProductionAggregates(lignes.map((l: any) => Number(l.IDligne_commande_client) || 0)),
+        // Cols / bandes delivered by count (LIVA #1381) — the card's « 83 / 441 U ».
+        quantitesLivreesParLigne(
+          lignes.filter((l: any) => isRectiligneType(l.type_kind)).map((l: any) => Number(l.IDligne_commande_client) || 0),
+        ),
+      ])
       for (const l of lignes) {
         const id = Number(l.IDcommande_client)
         const acc = totalsMap.get(id) ?? emptyTotals()
         const qty = Number(l.quantite) || 0
-        if (isRectiligneType(l.type_kind)) acc.pieces += qty
-        else acc.kgs += qty
+        if (isRectiligneType(l.type_kind)) {
+          acc.pieces += qty
+          acc.pieces_livrees += livMap.get(Number(l.IDligne_commande_client))?.livre ?? 0
+        } else acc.kgs += qty
         acc.total_qte += qty
         acc.total_eur += qty * (Number(l.prix) || 0)
         acc.nb_lignes += 1
@@ -808,6 +815,7 @@ commandesTrmRouter.get('/', async (req: Request, res: Response) => {
         total_qte: round2(t.total_qte),
         total_kgs: round2(t.kgs),
         total_pieces: round2(t.pieces),
+        pieces_livrees: round2(t.pieces_livrees),
         produit: round2(t.produit),
         nb_lignes: t.nb_lignes,
         earliest_delivery: t.earliest_delivery,
@@ -880,9 +888,14 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
     )) as any[]
     for (const l of lignesFixed) l.commentaire = stripRtf(l.commentaire) || null
 
-    const [labels, prodMap] = await Promise.all([
+    const [labels, prodMap, livMap] = await Promise.all([
       resolveTrmLineLabels(lignesFixed),
       lineProductionAggregates(lignesFixed.map((l) => Number(l.IDligne_commande_client) || 0)),
+      // A rectiligne line has no roll: what left of it is the count typed at
+      // « Livrer », carried by its shipment lines (LIVA #1381).
+      quantitesLivreesParLigne(
+        lignesFixed.filter((l) => isRectiligneType(l.type_kind)).map((l) => Number(l.IDligne_commande_client) || 0),
+      ),
     ])
 
     // Marge — the legacy line card's "37 %" chip: how much of the sale price is
@@ -960,6 +973,8 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
       const prix = Number(l.prix) || 0
       const prod = prodMap.get(Number(l.IDligne_commande_client)) ?? { nb_pieces: 0, produit: 0, expedie: 0 }
       const m = marges[i]
+      const recti = isRectiligneType(l.type_kind)
+      const liv = livMap.get(Number(l.IDligne_commande_client)) ?? { livre: 0, nb: 0 }
       const sst = sstMap.get(Number(l.IDligne_commande_ETM) || 0)
       // The frozen original only means something once it differs from the
       // current date — same test as ETM's line card.
@@ -969,8 +984,9 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
         IDligne_commande_client: Number(l.IDligne_commande_client),
         IDcommande_client: Number(l.IDcommande_client),
         type: Number(l.type_kind) || 0,
-        // 'rectiligne' = cols / bandes (no OF, pieces, stock nor shipment).
-        kind: isRectiligneType(l.type_kind) ? 'rectiligne' : 'ecru',
+        // 'rectiligne' = cols / bandes: no OF, no piece, no stock — delivered
+        // by count (`expedie` is then the pieces delivered, see below).
+        kind: recti ? 'rectiligne' : 'ecru',
         IDreference: refId,
         IDcolori: Number(l.IDcolori) || 0,
         quantite: qty,
@@ -990,7 +1006,13 @@ commandesTrmRouter.get('/:id', async (req: Request, res: Response) => {
         tarif: m?.tarif ?? null,
         nb_pieces: prod.nb_pieces,
         produit: prod.produit,
-        expedie: prod.expedie,
+        // Kgs of shipped rolls, or on a rectiligne line the count delivered.
+        expedie: recti ? liv.livre : prod.expedie,
+        // Rectiligne only: how many deliveries, what is left, and whether the
+        // line is done (everything ordered has left).
+        nb_livraisons: recti ? liv.nb : 0,
+        reste_a_livrer: recti ? resteALivrer(qty, liv.livre) : 0,
+        livree: recti ? ligneLivree(qty, liv.livre) : false,
         // Mirrored lines carry a back-pointer to the ETM sst line that owns them.
         IDligne_commande_ETM: Number(l.IDligne_commande_ETM) || 0,
         // Délai (LIVA #1123): ETM is waiting for TRM to announce a date.
@@ -1474,6 +1496,18 @@ commandesTrmRouter.delete('/lignes/:lineId', async (req: Request, res: Response)
       })
       return
     }
+    // A line already on an avis (shipped rolls, or cols / bandes delivered by
+    // count) must keep existing: the avis and its invoice point at it.
+    const les = await query<{ nb: number }>(
+      `SELECT COUNT(*) AS nb FROM ligne_expedition WHERE IDligne_commande_client = ${lineId}`,
+    )
+    if ((Number(les[0]?.nb) || 0) > 0) {
+      res.status(409).json({
+        error: 'ligne_expediee',
+        message: 'Cette ligne ne peut pas être supprimée : elle figure déjà sur un avis d’expédition.',
+      })
+      return
+    }
     await query(`UPDATE stock_ecru SET IDLigne_Commande_TRM = 0 WHERE IDLigne_Commande_TRM = ${lineId}`)
     await query(`DELETE FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`)
     res.json({ ok: true })
@@ -1636,6 +1670,32 @@ commandesTrmRouter.get('/:id/lignes/:ligneId/pieces', async (req: Request, res: 
 const expedierBody = z.object({ stockIds: z.array(z.number().int().positive()).min(1) })
 const expedierLock = createSerialLock()
 
+/** A new avis d'expédition for a TRM order, header defaulted like the Clients ›
+ *  Expéditions create: livraison address from the commande, carrier from the
+ *  client, today's date. Returns its id, 0 when the insert could not be found
+ *  back. Call it under `expedierLock` (the id is MAX+1). */
+async function creerAvisCommande(commandeId: number): Promise<number> {
+  const cmd = await query<{ IDclient: number; IDadresse_livraison: number; donation: number | null }>(
+    `SELECT IDclient, IDadresse_livraison, donation FROM commande_client WHERE IDcommande_client = ${commandeId}`,
+  )
+  const IDclient = Number(cmd[0]?.IDclient) || 0
+  const cli = await query<{ IDtransporteur: number }>(
+    `SELECT IDtransporteur FROM client WHERE IDclient = ${IDclient}`,
+  )
+  const idAdresse = Number(cmd[0]?.IDadresse_livraison) || 0
+  const idTrans = Number(cli[0]?.IDtransporteur) || 0
+  const donation = Number(cmd[0]?.donation) === 1 ? 1 : 0
+
+  // `envoyé_client` / `envoyé_sst` are accented and deliberately omitted
+  // (HFSQL zero-fills them) — same INSERT as expeditions-trm.ts.
+  const before = await maxId('expedition', 'IDexpedition')
+  await query(
+    `INSERT INTO expedition (IDsociete, IDcommande_client, IDadresse, IDtransporteur, IDcontact, DATE, donation, affiche_observations, est_valide, est_facture) ` +
+      `VALUES (${TRM_SOCIETE}, ${commandeId}, ${idAdresse}, ${idTrans}, 0, '${todayDigits()}', ${donation}, 1, 0, 0)`,
+  )
+  return newIdAfterInsert('expedition', 'IDexpedition', before)
+}
+
 commandesTrmRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request, res: Response) => {
   if (!(await requireEditExpeditions(req, res))) return
   try {
@@ -1672,25 +1732,7 @@ commandesTrmRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request, re
         return
       }
 
-      const cmd = await query<{ IDclient: number; IDadresse_livraison: number; donation: number | null }>(
-        `SELECT IDclient, IDadresse_livraison, donation FROM commande_client WHERE IDcommande_client = ${commandeId}`,
-      )
-      const IDclient = Number(cmd[0]?.IDclient) || 0
-      const cli = await query<{ IDtransporteur: number }>(
-        `SELECT IDtransporteur FROM client WHERE IDclient = ${IDclient}`,
-      )
-      const idAdresse = Number(cmd[0]?.IDadresse_livraison) || 0
-      const idTrans = Number(cli[0]?.IDtransporteur) || 0
-      const donation = Number(cmd[0]?.donation) === 1 ? 1 : 0
-
-      // `envoyé_client` / `envoyé_sst` are accented and deliberately omitted
-      // (HFSQL zero-fills them) — same INSERT as expeditions-trm.ts.
-      const before = await maxId('expedition', 'IDexpedition')
-      await query(
-        `INSERT INTO expedition (IDsociete, IDcommande_client, IDadresse, IDtransporteur, IDcontact, DATE, donation, affiche_observations, est_valide, est_facture) ` +
-          `VALUES (${TRM_SOCIETE}, ${commandeId}, ${idAdresse}, ${idTrans}, 0, '${todayDigits()}', ${donation}, 1, 0, 0)`,
-      )
-      const expId = await newIdAfterInsert('expedition', 'IDexpedition', before)
+      const expId = await creerAvisCommande(commandeId)
       if (expId <= 0) { res.status(500).json({ error: 'expedition_insert_failed' }); return }
 
       const beforeLe = await maxId('ligne_expedition', 'IDligne_expedition')
@@ -1705,6 +1747,76 @@ commandesTrmRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request, re
     })
   } catch (err) {
     console.error('Error shipping commande-trm pieces:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── « Livrer » des cols / bandes (LIVA #1381) ────────────
+//
+// A rectiligne line has no roll to tick: what leaves is a COUNT, typed by the
+// person who ships it (lib/livraison-rectiligne.ts). One call = ONE new avis
+// for the commande, with one ligne_expedition per delivered line carrying its
+// `quantite` — several lines of cols leave together in the same box. The avis
+// is then printed, emailed and invoiced like any other.
+//
+// Same rules as « Expédier »: under `edit_expeditions`, allowed on a mirror
+// (delivering is TRM's act), refused on a soldée order, serialised on the same
+// lock. Delivering more than what remains is allowed — the screen warns, the
+// batch decides. Nothing is handed over to Ets Malterre here: there is no
+// stock row, the cols land in ETM's own « stock de divers ».
+
+const livrerBody = z.object({
+  lignes: z.array(z.object({
+    IDligne_commande_client: z.number().int().positive(),
+    quantite: z.number().min(0).max(1_000_000),
+  }).strict()).min(1).max(200),
+}).strict()
+
+commandesTrmRouter.post('/:id/livrer', async (req: Request, res: Response) => {
+  if (!(await requireEditExpeditions(req, res))) return
+  try {
+    const commandeId = parseInt(req.params.id, 10)
+    if (isNaN(commandeId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = livrerBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const g = await loadCommandeGuard(commandeId)
+    if (!g) { res.status(404).json({ error: 'Commande not found' }); return }
+    if (refuseIfSoldee(res, g)) return
+
+    const lignes = await query<any>(
+      `SELECT IDligne_commande_client, TYPE AS type_kind FROM ligne_commande_client
+       WHERE IDcommande_client = ${commandeId} ORDER BY IDligne_commande_client`,
+    )
+    const demande = normaliserLivraison(
+      parsed.data.lignes,
+      lignes.map((l: any) => ({
+        IDligne_commande_client: Number(l.IDligne_commande_client) || 0,
+        type_kind: Number(l.type_kind) || 0,
+      })),
+    )
+    if (!demande.ok) {
+      res.status(demande.error === 'ligne_inconnue' ? 404 : 400).json({ error: demande.error, message: demande.message })
+      return
+    }
+
+    await expedierLock.run(async () => {
+      const expId = await creerAvisCommande(commandeId)
+      if (expId <= 0) { res.status(500).json({ error: 'expedition_insert_failed' }); return }
+      for (const l of demande.lignes) {
+        await query(
+          `INSERT INTO ligne_expedition (IDexpedition, IDligne_commande_client, est_facture, quantite) ` +
+            `VALUES (${expId}, ${l.IDligne_commande_client}, 0, ${l.quantite})`,
+        )
+      }
+      res.status(201).json({
+        ok: true,
+        IDexpedition: expId,
+        lignes: demande.lignes.length,
+        quantite: arrondiQuantite(demande.lignes.reduce((s, l) => s + l.quantite, 0)),
+      })
+    })
+  } catch (err) {
+    console.error('Error delivering commande-trm rectiligne lines:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -2162,6 +2274,9 @@ commandesTrmRouter.get('/:id/expeditions', async (req: Request, res: Response) =
       }
     }
 
+    // Cols / bandes delivered by count on each avis (LIVA #1381).
+    const quantitesByExp = await quantitesParAvis(expIds)
+
     const transporteurIds = Array.from(new Set(exps.map((e: any) => Number(e.IDtransporteur) || 0).filter(Boolean)))
     const transporteurNames = new Map<number, string>()
     if (transporteurIds.length > 0) {
@@ -2189,6 +2304,7 @@ commandesTrmRouter.get('/:id/expeditions', async (req: Request, res: Response) =
       expeditions: exps.map((e: any) => {
         const eid = Number(e.IDexpedition)
         const rolls = rollsByExp.get(eid) ?? []
+        const quantites = quantitesByExp.get(eid) ?? []
         return {
           id: eid,
           date: e.date_exp ?? null,
@@ -2199,6 +2315,10 @@ commandesTrmRouter.get('/:id/expeditions', async (req: Request, res: Response) =
           observation_bl: (e.observation_bl ?? '') || null,
           poids: round2(rolls.reduce((s: number, r: any) => s + (Number(r.poids) || 0), 0)),
           rolls,
+          // The avis's counted lines (cols / bandes) and their total; empty
+          // on a roll avis.
+          quantites,
+          quantite: arrondiQuantite(quantites.reduce((s, q) => s + q.quantite, 0)),
         }
       }),
     })

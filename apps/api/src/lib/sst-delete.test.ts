@@ -14,6 +14,11 @@ describe('sstDeleteBlocker', () => {
   it('a knitted roll blocks even without an OF row', () => {
     expect(sstDeleteBlocker({ est_soldee: 0, ofCount: 0, rollCount: 3 })?.error).toBe('trm_production_started')
   })
+  it('cols / bandes delivered by count block too, with no OF and no roll (#1381)', () => {
+    const b = sstDeleteBlocker({ est_soldee: 0, ofCount: 0, rollCount: 0, livraisonCount: 2 })
+    expect(b?.error).toBe('trm_production_started')
+    expect(b?.message).toMatch(/livré/)
+  })
   it('a mirror soldée by TRM blocks first', () => {
     expect(sstDeleteBlocker({ est_soldee: 1, ofCount: 2, rollCount: 0 })?.error).toBe('trm_soldee')
   })

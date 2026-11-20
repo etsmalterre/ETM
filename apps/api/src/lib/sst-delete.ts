@@ -15,6 +15,9 @@ export interface TrmMirrorActivity {
   ofCount: number
   /** `stock_ecru` rows with `IDLigne_Commande_TRM` on any mirror line. */
   rollCount: number
+  /** `ligne_expedition` rows on any mirror line: cols / bandes delivered by
+   *  count leave no roll behind (LIVA #1381). Optional — absent means 0. */
+  livraisonCount?: number
 }
 
 export interface DeleteBlocker {
@@ -41,6 +44,12 @@ export function sstDeleteBlocker(mirror: TrmMirrorActivity | null): DeleteBlocke
     return {
       error: 'trm_production_started',
       message: 'Cette commande ne peut pas être supprimée : Tricotage Malterre a déjà tricoté des pièces dessus.',
+    }
+  }
+  if ((mirror.livraisonCount ?? 0) > 0) {
+    return {
+      error: 'trm_production_started',
+      message: 'Cette commande ne peut pas être supprimée : Tricotage Malterre a déjà livré des pièces dessus.',
     }
   }
   return null

@@ -67,14 +67,17 @@ interface JsonResponder {
 /**
  * 409 for the production paths a rectiligne line has none of: no OF (its
  * IDreference would be written into ordre_fabrication.IDref_ecru and knit the
- * écru sharing the id), no piece, no shipment — the legacy never tracked cols
- * past the order. Returns true when it answered.
+ * écru sharing the id), no piece, no roll to put on an avis — the legacy
+ * never tracked cols past the order. Since LIVA #1381 a rectiligne line IS
+ * delivered, but by count (`ligne_expedition.quantite`,
+ * lib/livraison-rectiligne.ts), never through the roll paths this guards.
+ * Returns true when it answered.
  */
 export function refuseIfRectiligne(res: JsonResponder, typeKind: unknown): boolean {
   if (!isRectiligneType(typeKind)) return false
   res.status(409).json({
     error: 'ligne_rectiligne',
-    message: "Ligne rectiligne (cols / bandes) : pas d'ordre de fabrication, de pièces ni d'expédition.",
+    message: "Ligne rectiligne (cols / bandes) : pas d'ordre de fabrication ni de pièces. Elle se livre par quantité, depuis la commande.",
   })
   return true
 }

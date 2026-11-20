@@ -76,6 +76,12 @@ export interface BlArticle {
   /** Client-side article reference → "V/réf. : 227A" */
   refClientArticle: string | null
   lots: BlLot[]
+  /** A COUNTED article — TRM cols / bandes (LIVA #1381,
+   *  lib/livraison-rectiligne.ts): no roll and no lot, the avis delivers a
+   *  quantity. `lots` is then empty and the article prints one « Quantité
+   *  livrée » row. Unset on every roll article, so the ETM document and the
+   *  TRM roll avis are untouched. */
+  quantite?: { valeur: number; unite: 'piece' | 'kg'; libelle: string } | null
 }
 
 export interface BonLivraisonPdfData {
@@ -243,6 +249,17 @@ const styles = StyleSheet.create({
   lotTotalLabel: { fontSize: 10, color: colors.text, fontWeight: 900 },
   lotTotalCell: { fontSize: 10, color: colors.text, fontWeight: 900 },
 
+  // Counted article (TRM cols / bandes): one framed row, label left, count right.
+  quantiteRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    backgroundColor: colors.bgMuted,
+  },
+  quantiteText: { fontSize: 10, color: colors.text, fontWeight: 900, lineHeight: 1.2 },
+
   // Per-article totals line
   articleTotal: {
     flexDirection: 'row',
@@ -354,6 +371,19 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
       { nb: 0, poids: 0, metrage: 0 },
     )
 
+  // Counted articles (cols / bandes): their totals, by unit, next to the rolls'.
+  const comptes = data.articles.filter((a) => !!a.quantite)
+  const totalCompte = (unite: 'piece' | 'kg') =>
+    comptes.filter((a) => a.quantite!.unite === unite).reduce((s, a) => s + (Number(a.quantite!.valeur) || 0), 0)
+  const nbPiecesComptees = totalCompte('piece')
+  const kgComptes = totalCompte('kg')
+  const texteComptes = [
+    nbPiecesComptees > 0 ? `${fmtNum(nbPiecesComptees, 0)} pièce${nbPiecesComptees > 1 ? 's' : ''}` : '',
+    kgComptes > 0 ? `${fmtNum(kgComptes)} Kg` : '',
+  ].filter(Boolean).join('   ·   ')
+  // An avis of counted articles only has no lot, métier nor dye pass to mix up.
+  const sansRouleau = grand.nb === 0 && comptes.length > 0
+
   return (
     <MalterreDocument
       // No accent on purpose — the uppercased É renders badly in the header font.
@@ -393,7 +423,7 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
 
       {/* Fixed legacy quality notices + free-text BL observation */}
       <View style={styles.notices}>
-        <Text style={styles.noticeAttention}>{NOTICE_ATTENTION}</Text>
+        {sansRouleau ? null : <Text style={styles.noticeAttention}>{NOTICE_ATTENTION}</Text>}
         {v.charteNotice ? <Text style={styles.noticeCharte}>{NOTICE_CHARTE}</Text> : null}
         {data.observationBl?.trim() ? (
           <Text style={styles.noticeObs}>{data.observationBl.trim()}</Text>
@@ -422,6 +452,17 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
                 <Text style={styles.articleVref}>V/réf. : {article.refClientArticle}</Text>
               ) : null}
             </View>
+
+            {article.quantite ? (
+              <View style={styles.lotBlock} wrap={false}>
+                <View style={styles.table}>
+                  <View style={styles.quantiteRow}>
+                    <Text style={styles.quantiteText}>Quantité livrée</Text>
+                    <Text style={styles.quantiteText}>{article.quantite.libelle}</Text>
+                  </View>
+                </View>
+              </View>
+            ) : null}
 
             {article.lots.map((lot, li) => {
               const t = lotAgg(lot)
@@ -498,11 +539,18 @@ export function BonLivraisonPdf({ data }: { data: BonLivraisonPdfData }) {
       <View style={styles.grandWrapper} wrap={false}>
         <View style={styles.grand}>
           <View style={styles.grandRow}>
-            <Text style={styles.grandLabel}>{`TOTAL AVIS - ${grand.nb} PIÈCE${grand.nb > 1 ? 'S' : ''}`}</Text>
+            <Text style={styles.grandLabel}>
+              {sansRouleau ? 'TOTAL AVIS' : `TOTAL AVIS - ${grand.nb} PIÈCE${grand.nb > 1 ? 'S' : ''}`}
+            </Text>
             <Text style={styles.grandValue}>
-              {showMetrage
-                ? `${fmtNum(grand.poids)} Kg   ·   ${fmtNum(grand.metrage)} Ml`
-                : `${fmtNum(grand.poids)} Kg`}
+              {sansRouleau
+                ? texteComptes
+                : [
+                    showMetrage
+                      ? `${fmtNum(grand.poids)} Kg   ·   ${fmtNum(grand.metrage)} Ml`
+                      : `${fmtNum(grand.poids)} Kg`,
+                    texteComptes,
+                  ].filter(Boolean).join('   ·   ')}
             </Text>
           </View>
         </View>

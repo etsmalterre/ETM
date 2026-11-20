@@ -20,6 +20,13 @@
 //                  IDligne_commande_client, which is 0 on every TRM row — same
 //                  quirk the Tombé Métier › Stock screen documents).
 //
+//   TRM rectiligne Cols / bandes (ligne_commande_client TYPE 4) have no roll at
+//                  all: the line of the avis carries the count delivered,
+//                  `ligne_expedition.quantite` (LIVA #1381,
+//                  lib/livraison-rectiligne.ts). Written by « Livrer » on
+//                  Clients › Commandes (POST /commandes-trm/:id/livrer),
+//                  corrected here (PUT /:id/lignes/:lccId/quantite).
+//
 // So: own population filter, own piece joins, own document. Everything that IS
 // identical — client / transporteur / adresse / contact resolution, the facture
 // lock, the id-after-insert dance, the envoi_email audit log, the défauts lookup
@@ -79,6 +86,8 @@ import { getUserEmail } from '../lib/user-emails.js'
 import { fetchDefectsByEcru, type DefautQualite } from './stock-ecru.js'
 import { isRectiligneType, refuseIfRectiligne } from '../lib/sst-line-kind.js'
 import { loadRectiligneRefLabels, loadRectiligneColorisLabels } from '../lib/rectiligne.js'
+import { arrondiQuantite, libelleQuantite } from '../lib/livraison-rectiligne.js'
+import { createSerialLock } from '../lib/serial-lock.js'
 import {
   sqlText,
   norm,
@@ -366,6 +375,104 @@ async function pieceAggregates(expIds: number[]): Promise<Map<number, { nb: numb
   return out
 }
 
+/** Σ ligne_expedition.quantite per expedition — the cols / bandes of an avis. */
+async function quantiteAggregates(expIds: number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>()
+  const ids = Array.from(new Set(expIds.filter((x) => x > 0)))
+  if (ids.length === 0) return out
+  const rows = await query<{ IDexpedition: number; quantite: number | null }>(
+    `SELECT IDexpedition, quantite FROM ligne_expedition WHERE IDexpedition IN (${ids.join(',')}) AND quantite > 0`,
+  )
+  for (const r of rows) {
+    const id = Number(r.IDexpedition)
+    out.set(id, arrondiQuantite((out.get(id) ?? 0) + (Number(r.quantite) || 0)))
+  }
+  return out
+}
+
+// ── Cols / bandes: quantities carried by the shipment line ──
+//
+// A rectiligne order line (TYPE 4) has no roll: what an avis delivers of it is
+// `ligne_expedition.quantite` (LIVA #1381, lib/livraison-rectiligne.ts). The
+// column is 0 on every roll line, so `quantite > 0` is the whole filter.
+
+/** Pieces delivered so far per order line, with the number of deliveries. */
+export async function quantitesLivreesParLigne(lccIds: number[]): Promise<Map<number, { livre: number; nb: number }>> {
+  const out = new Map<number, { livre: number; nb: number }>()
+  const ids = Array.from(new Set(lccIds.filter((x) => x > 0)))
+  if (ids.length === 0) return out
+  const rows = await query<{ IDligne_commande_client: number; quantite: number | null }>(
+    `SELECT IDligne_commande_client, quantite FROM ligne_expedition
+     WHERE IDligne_commande_client IN (${ids.join(',')}) AND quantite > 0`,
+  )
+  for (const r of rows) {
+    const lcc = Number(r.IDligne_commande_client) || 0
+    const acc = out.get(lcc) ?? { livre: 0, nb: 0 }
+    acc.livre = arrondiQuantite(acc.livre + (Number(r.quantite) || 0))
+    acc.nb += 1
+    out.set(lcc, acc)
+  }
+  return out
+}
+
+export interface QuantiteAvis {
+  IDligne_expedition: number
+  IDligne_commande_client: number
+  ref_label: string
+  ref_designation: string
+  colori_reference: string
+  quantite: number
+  /** ligne_commande_client.unite — 4 = pieces, 1 = Kg (R005). */
+  unite: number
+  libelle: string
+}
+
+/** The quantity lines of a set of avis (cols / bandes), labelled from the
+ *  rectiligne catalog, per expedition and in shipment-line order. */
+export async function quantitesParAvis(expIds: number[]): Promise<Map<number, QuantiteAvis[]>> {
+  const out = new Map<number, QuantiteAvis[]>()
+  const ids = Array.from(new Set(expIds.filter((x) => x > 0)))
+  if (ids.length === 0) return out
+  const les = await query<{ IDligne_expedition: number; IDexpedition: number; IDligne_commande_client: number; quantite: number | null }>(
+    `SELECT IDligne_expedition, IDexpedition, IDligne_commande_client, quantite FROM ligne_expedition
+     WHERE IDexpedition IN (${ids.join(',')}) AND quantite > 0 ORDER BY IDligne_expedition`,
+  )
+  if (les.length === 0) return out
+  const lccIds = Array.from(new Set(les.map((l) => Number(l.IDligne_commande_client) || 0).filter((x) => x > 0)))
+  const lccRows = lccIds.length > 0
+    ? await query<any>(
+        `SELECT IDligne_commande_client, TYPE AS type_kind, IDreference, IDcolori, unite
+         FROM ligne_commande_client WHERE IDligne_commande_client IN (${lccIds.join(',')})`,
+      )
+    : []
+  const lccById = new Map<number, any>(lccRows.map((r: any) => [Number(r.IDligne_commande_client), r]))
+  const recti = lccRows.filter((r: any) => isRectiligneType(r.type_kind))
+  const [refs, coloris] = await Promise.all([
+    loadRectiligneRefLabels(recti.map((r: any) => Number(r.IDreference) || 0)),
+    loadRectiligneColorisLabels(recti.map((r: any) => Number(r.IDcolori) || 0)),
+  ])
+  for (const le of les) {
+    const lcc = lccById.get(Number(le.IDligne_commande_client) || 0)
+    if (!lcc || !isRectiligneType(lcc.type_kind)) continue
+    const ref = refs.get(Number(lcc.IDreference) || 0)
+    const quantite = arrondiQuantite(le.quantite)
+    const unite = Number(lcc.unite) || 4
+    const arr = out.get(Number(le.IDexpedition)) ?? []
+    arr.push({
+      IDligne_expedition: Number(le.IDligne_expedition),
+      IDligne_commande_client: Number(le.IDligne_commande_client),
+      ref_label: ref?.reference ?? '',
+      ref_designation: ref?.designation ?? '',
+      colori_reference: coloris.get(Number(lcc.IDcolori) || 0) ?? '',
+      quantite,
+      unite,
+      libelle: libelleQuantite(quantite, unite),
+    })
+    out.set(Number(le.IDexpedition), arr)
+  }
+  return out
+}
+
 /** Delivery-address label per expedition — the legacy list's "Livraison"
  *  column, which is the address `nom` (often a different site than the client). */
 async function resolveAdresseNames(ids: number[]): Promise<Map<number, string>> {
@@ -523,11 +630,12 @@ expeditionsTrmRouter.get('/', async (req: Request, res: Response) => {
       numero: c.numero != null ? Number(c.numero) : null,
       IDclient: Number(c.IDclient) || 0,
     }]))
-    const [clientNames, transNames, adresseNames, aggs] = await Promise.all([
+    const [clientNames, transNames, adresseNames, aggs, quantites] = await Promise.all([
       resolveClientNames(cmdRows.map((c) => Number(c.IDclient))),
       resolveTransporteurNames(heads.map((h: any) => Number(h.IDtransporteur))),
       resolveAdresseNames(heads.map((h: any) => Number(h.IDadresse))),
       pieceAggregates(heads.map((h: any) => Number(h.IDexpedition))),
+      quantiteAggregates(heads.map((h: any) => Number(h.IDexpedition))),
     ])
 
     let result = heads.map((h: any) => {
@@ -548,6 +656,8 @@ expeditionsTrmRouter.get('/', async (req: Request, res: Response) => {
         donation: Number(h.donation) || 0,
         nb_pieces: agg.nb,
         total_poids: agg.poids,
+        // Cols / bandes delivered by count on this avis (0 on a roll avis).
+        total_quantite: quantites.get(id) ?? 0,
       }
     })
 
@@ -701,6 +811,14 @@ expeditionsTrmRouter.get('/:id', async (req: Request, res: Response) => {
     const { leByLcc, expAgg, dispoCount } = await lignePieceInfo(
       id, lignesArr.map((l) => Number(l.IDligne_commande_client) || 0),
     )
+    // Cols / bandes: the count this avis delivers per line, and the line's
+    // total over every avis (what is left to deliver is the difference).
+    const rectiIds = lignesArr.filter((l) => isRectiligneType(l.type_kind)).map((l) => Number(l.IDligne_commande_client) || 0)
+    const [icies, livrees] = await Promise.all([
+      quantitesParAvis(rectiIds.length > 0 ? [id] : []),
+      quantitesLivreesParLigne(rectiIds),
+    ])
+    const iciParLigne = new Map((icies.get(id) ?? []).map((q) => [q.IDligne_commande_client, q.quantite]))
 
     const lignes = lignesArr.map((l) => {
       const lcc = Number(l.IDligne_commande_client) || 0
@@ -711,6 +829,10 @@ expeditionsTrmRouter.get('/:id', async (req: Request, res: Response) => {
         IDligne_commande_client: lcc,
         IDligne_expedition: leByLcc.get(lcc) ?? 0,
         type: Number(l.type_kind) || 0,
+        // 'rectiligne' = delivered by count (`quantite_exp`), never by rolls.
+        kind: recti ? 'rectiligne' : 'ecru',
+        quantite_exp: recti ? (iciParLigne.get(lcc) ?? 0) : 0,
+        quantite_livree: recti ? (livrees.get(lcc)?.livre ?? 0) : 0,
         ref_label: ref?.reference || null,
         ref_designation: ref?.designation || null,
         colori_reference: (recti ? rectiColoris : coloris).get(Number(l.IDcolori) || 0) || null,
@@ -952,7 +1074,8 @@ expeditionsTrmRouter.put('/:id/lignes/:lccId/pieces/:stockId', async (req: Reque
     if (await isLocked(id)) { res.status(409).json(FACTURE_LOCK); return }
     const ctx = await loadLineCtx(lccId)
     if (!ctx) { res.status(404).json({ error: 'Ligne introuvable' }); return }
-    // Cols / bandes (type 4) have no piece to ship (LIVA #1185).
+    // Cols / bandes (type 4) have no piece to ship: they are delivered by
+    // count, through PUT /:id/lignes/:lccId/quantite (LIVA #1381).
     if (refuseIfRectiligne(res, ctx.type)) return
 
     // The piece must be TRM's own, reserved to this order line, and free.
@@ -1019,6 +1142,65 @@ expeditionsTrmRouter.delete('/:id/lignes/:lccId/pieces/:stockId', async (req: Re
     res.json(await buildPiecePayload(id, ctx))
   } catch (err) {
     console.error('Error unassigning TRM expedition piece:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ════════════════════════════════════════════════════════
+//  QUANTITY per commande line  (cols / bandes, LIVA #1381)
+// ════════════════════════════════════════════════════════
+
+const quantiteBody = z.object({ quantite: z.number().min(0).max(1_000_000) }).strict()
+const quantiteLock = createSerialLock()
+
+/** Set the count this avis delivers of a rectiligne line: the correction of a
+ *  delivery typed wrong, or a line added to an avis after the fact. 0 removes
+ *  the line from the avis. Refused once the avis is invoiced, like every
+ *  other write here. The shipment line is created lazily, as for the rolls. */
+expeditionsTrmRouter.put('/:id/lignes/:lccId/quantite', async (req: Request, res: Response) => {
+  if (!(await requireEditExpeditions(req, res))) return
+  try {
+    const id = parseInt(req.params.id, 10)
+    const lccId = parseInt(req.params.lccId, 10)
+    if (isNaN(id) || isNaN(lccId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = quantiteBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const head = await query<{ IDcommande_client: number }>(
+      `SELECT IDcommande_client FROM expedition WHERE IDexpedition = ${id} AND IDsociete = ${SOCIETE_TRM}`,
+    )
+    if (head.length === 0) { res.status(404).json({ error: 'Expédition not found' }); return }
+    if (await isLocked(id)) { res.status(409).json(FACTURE_LOCK); return }
+    const lineRows = await query<any>(
+      `SELECT IDcommande_client, TYPE AS type_kind FROM ligne_commande_client WHERE IDligne_commande_client = ${lccId}`,
+    )
+    if (lineRows.length === 0 || Number(lineRows[0].IDcommande_client) !== Number(head[0].IDcommande_client)) {
+      res.status(404).json({ error: 'Ligne introuvable' }); return
+    }
+    if (!isRectiligneType(lineRows[0].type_kind)) {
+      res.status(409).json({
+        error: 'ligne_non_rectiligne',
+        message: 'Seules les lignes de cols et de bandes se livrent par quantité.',
+      })
+      return
+    }
+    const quantite = arrondiQuantite(parsed.data.quantite)
+
+    await quantiteLock.run(async () => {
+      const leId = await findLigneExpedition(id, lccId)
+      if (!(quantite > 0)) {
+        if (leId > 0) await query(`DELETE FROM ligne_expedition WHERE IDligne_expedition = ${leId}`)
+      } else if (leId > 0) {
+        await query(`UPDATE ligne_expedition SET quantite = ${quantite} WHERE IDligne_expedition = ${leId}`)
+      } else {
+        await query(
+          `INSERT INTO ligne_expedition (IDexpedition, IDligne_commande_client, est_facture, quantite) ` +
+            `VALUES (${id}, ${lccId}, 0, ${quantite})`,
+        )
+      }
+    })
+    res.json({ ok: true, quantite })
+  } catch (err) {
+    console.error('Error setting TRM expedition line quantity:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -1126,7 +1308,7 @@ export async function buildBlTrmPdfData(id: number): Promise<BonLivraisonPdfData
     loadAdresse(Number(h.IDadresse) || 0),
     loadContactName(Number(h.IDcontact) || 0),
     query<any>(
-      `SELECT IDligne_expedition, IDligne_commande_client FROM ligne_expedition ` +
+      `SELECT IDligne_expedition, IDligne_commande_client, quantite FROM ligne_expedition ` +
         `WHERE IDexpedition = ${id} ORDER BY IDligne_expedition`,
     ),
   ])
@@ -1137,11 +1319,12 @@ export async function buildBlTrmPdfData(id: number): Promise<BonLivraisonPdfData
     const lccId = Number(le.IDligne_commande_client) || 0
     if (leId === 0 || lccId === 0) continue
     const lccRows = await query<any>(
-      `SELECT IDligne_commande_client, IDdesignation_client, IDreference, IDcolori ` +
+      `SELECT IDligne_commande_client, IDdesignation_client, TYPE AS type_kind, IDreference, IDcolori, unite ` +
         `FROM ligne_commande_client WHERE IDligne_commande_client = ${lccId}`,
     )
     if (lccRows.length === 0) continue
     const lcc = lccRows[0]
+    const recti = isRectiligneType(lcc.type_kind)
 
     // Client-side article reference → "V/réf. : ech42".
     let refClientArticle: string | null = null
@@ -1154,13 +1337,30 @@ export async function buildBlTrmPdfData(id: number): Promise<BonLivraisonPdfData
       refClientArticle = (dc?.designation ?? '').toString().trim() || null
     }
 
-    const { refs, coloris } = await resolveEcruLineLabels([
-      { IDreference: Number(lcc.IDreference) || 0, IDcolori: Number(lcc.IDcolori) || 0 },
+    // Each line in ITS catalog: the ids of ref_rectiligne and ref_ecru collide.
+    const { refs, coloris, rectiRefs, rectiColoris } = await resolveEcruLineLabels([
+      { IDreference: Number(lcc.IDreference) || 0, IDcolori: Number(lcc.IDcolori) || 0, type_kind: Number(lcc.type_kind) || 0 },
     ])
-    const ref = refs.get(Number(lcc.IDreference) || 0)
+    const ref = (recti ? rectiRefs : refs).get(Number(lcc.IDreference) || 0)
     const reference = ref?.reference ?? ''
     const designation = ref?.designation ?? ''
-    const colorisLabel = coloris.get(Number(lcc.IDcolori) || 0) ?? ''
+    const colorisLabel = (recti ? rectiColoris : coloris).get(Number(lcc.IDcolori) || 0) ?? ''
+
+    // Cols / bandes: no roll, the line of the avis carries the count (#1381).
+    if (recti) {
+      const valeur = arrondiQuantite(le.quantite)
+      if (!(valeur > 0)) continue
+      const unite = Number(lcc.unite) || 4
+      articles.push({
+        titre: [reference, colorisLabel].filter(Boolean).join(' ') || `Ligne ${lccId}`,
+        sousTitre: designation || null,
+        finition: null,
+        refClientArticle,
+        lots: [],
+        quantite: { valeur, unite: unite === 1 ? 'kg' : 'piece', libelle: libelleQuantite(valeur, unite) },
+      })
+      continue
+    }
 
     const pieceRaw = await query<any>(
       `SELECT ${PIECE_SELECT} ${PIECE_JOINS} WHERE se.IDligne_expedition_TRM = ${leId}`,

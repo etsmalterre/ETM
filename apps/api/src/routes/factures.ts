@@ -81,6 +81,9 @@ import { normalizePays } from '../lib/pays.js'
 import { loadMentionTva } from '../lib/tva.js'
 import { mentionNonFactures, quantiteFacturee } from '../lib/ml-non-factures.js'
 import { loadRendementVenteEcru, metrageEcruVendu } from '../lib/unite-ecru.js'
+import { isRectiligneType } from '../lib/sst-line-kind.js'
+import { loadRectiligneRefLabels, loadRectiligneColorisLabels } from '../lib/rectiligne.js'
+import { arrondiQuantite } from '../lib/livraison-rectiligne.js'
 
 // ── Société scope ────────────────────────────────────────
 //
@@ -1118,8 +1121,8 @@ async function resolveLineStockKinds(leIds: number[]): Promise<Map<number, LineS
     )
     for (const r of rows) {
       // TYPE 4 is rectiligne (cols / bandes, ref_rectiligne — LIVA #1185): no
-      // roll behind it, so the neutral glyph. None has ever been shipped, and
-      // the TRM shipment paths refuse one.
+      // roll behind it, so the neutral glyph. It is delivered and invoiced
+      // by count (LIVA #1381, lib/livraison-rectiligne.ts).
       const tk = Number(r.type_kind) || 0
       lccKind.set(Number(r.IDligne_commande_client), tk === 1 ? 'ecru' : tk === 2 ? 'fini' : 'divers')
     }
@@ -1339,8 +1342,21 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
 
     interface GenLine { leId: number; designation: string; quantite: number; unite: string; prix: number }
 
-    /** One facture line for one ligne_expedition — null when nothing shipped. */
-    async function lineFor(leId: number, lccId: number, expId: number, cmd: { numero: number | null; ref_client: string }): Promise<GenLine | null> {
+    /** "N/Commande : 2925 V/Commande : …" + "Avis : 12345" — the two lines
+     *  that close every generated designation. */
+    function suiviLines(expId: number, cmd: { numero: number | null; ref_client: string }): string[] {
+      const out: string[] = []
+      let cmdLine = cmd.numero != null ? `N/Commande : ${cmd.numero}` : ''
+      if (cmd.ref_client) cmdLine += `${cmdLine ? ' ' : ''}V/Commande : ${cmd.ref_client}`
+      if (cmdLine) out.push(cmdLine)
+      out.push(`Avis : ${expId}`)
+      return out
+    }
+
+    /** One facture line for one ligne_expedition — null when nothing shipped.
+     *  `leQuantite` is ligne_expedition.quantite: the count a rectiligne line
+     *  delivers on this avis, 0 on every roll line. */
+    async function lineFor(leId: number, lccId: number, expId: number, cmd: { numero: number | null; ref_client: string }, leQuantite = 0): Promise<GenLine | null> {
       if (!(leId > 0 && lccId > 0)) return null
       const lccRows = await query<any>(
         `SELECT IDligne_commande_client, IDdesignation_client, TYPE AS type_kind, IDreference, IDcolori, unite, prix
@@ -1348,12 +1364,36 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
       )
       if (lccRows.length === 0) return null
       const lcc = lccRows[0]
-      // TYPE 4 is rectiligne (cols / bandes, ref_rectiligne — LIVA #1185),
-      // not écru: its ids collide with ref_ecru, and it has no roll to count.
-      // No TYPE-4 line has ever reached a ligne_expedition and the TRM
-      // shipment paths refuse one (lib/sst-line-kind.ts refuseIfRectiligne),
-      // so there is nothing to invoice from here.
       const typeKind = Number(lcc.type_kind) || 0
+      // TYPE 4 on the TRM ledger is rectiligne (cols / bandes, ref_rectiligne
+      // — LIVA #1185): its ids collide with ref_ecru and it has no roll to
+      // weigh. It is delivered by count, and the avis line carries that count
+      // (LIVA #1381, lib/livraison-rectiligne.ts): the invoice line is that
+      // quantity at the order line's price per piece, labelled from the
+      // rectiligne catalog. These were typed by hand until then (« Refacturation
+      // Cols R006 (3 fils) Taille 46 … 611 Pièce », no link to any delivery).
+      if (scope.societe === 2 && isRectiligneType(typeKind)) {
+        const qty = arrondiQuantite(leQuantite)
+        if (!(qty > 0)) return null
+        const refId = Number(lcc.IDreference) || 0
+        const colId = Number(lcc.IDcolori) || 0
+        const [refs, coloris] = await Promise.all([
+          loadRectiligneRefLabels([refId]),
+          loadRectiligneColorisLabels([colId]),
+        ])
+        const ref = refs.get(refId)
+        const parts = [[ref?.reference ?? '', coloris.get(colId) ?? ''].filter(Boolean).join(' ') || `Ligne ${lccId}`]
+        if (ref?.designation) parts.push(ref.designation)
+        parts.push(...suiviLines(expId, cmd))
+        return {
+          leId,
+          designation: parts.join('\r\n'),
+          quantite: qty,
+          // « Pièce », as these invoices have always read (diversUniteLabel).
+          unite: diversUniteLabel(lcc.unite),
+          prix: Number(lcc.prix) || 0,
+        }
+      }
       const kind = typeKind === 1 ? 'ecru' : typeKind === 2 ? 'fini' : 'none'
       if (kind === 'none') return null
       const refId = Number(lcc.IDreference) || 0
@@ -1427,10 +1467,7 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
 
       const parts = [artLabel || `Ligne ${lccId}`]
       if (vref) parts.push(`V/ref : ${vref}`)
-      let cmdLine = cmd.numero != null ? `N/Commande : ${cmd.numero}` : ''
-      if (cmd.ref_client) cmdLine += `${cmdLine ? ' ' : ''}V/Commande : ${cmd.ref_client}`
-      if (cmdLine) parts.push(cmdLine)
-      parts.push(`Avis : ${expId}`)
+      parts.push(...suiviLines(expId, cmd))
       parts.push(...nonFactures)
 
       return {
@@ -1517,10 +1554,10 @@ router.post('/prov/generate', async (req: Request, res: Response) => {
       for (const e of group) {
         const cmd = cmdMap.get(e.cmdId)!
         const leRows = await query<any>(
-          `SELECT IDligne_expedition, IDligne_commande_client FROM ligne_expedition WHERE IDexpedition = ${e.id} ORDER BY IDligne_expedition`,
+          `SELECT IDligne_expedition, IDligne_commande_client, quantite FROM ligne_expedition WHERE IDexpedition = ${e.id} ORDER BY IDligne_expedition`,
         )
         for (const le of leRows) {
-          const line = await lineFor(Number(le.IDligne_expedition) || 0, Number(le.IDligne_commande_client) || 0, e.id, cmd)
+          const line = await lineFor(Number(le.IDligne_expedition) || 0, Number(le.IDligne_commande_client) || 0, e.id, cmd, Number(le.quantite) || 0)
           if (line) {
             lines.push(line)
             contributing.add(e.id)

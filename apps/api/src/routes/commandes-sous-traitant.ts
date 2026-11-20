@@ -539,6 +539,18 @@ async function refuseIfTrmHasOFs(res: Response, ccLineId: number): Promise<boole
     })
     return true
   }
+  // A line already on a TRM avis — cols / bandes delivered by count leave no
+  // OF behind (#1381) — must keep existing: the avis and its invoice name it.
+  const le = await query<{ n: number | null }>(
+    `SELECT COUNT(*) AS n FROM ligne_expedition WHERE IDligne_commande_client = ${ccLineId}`,
+  )
+  if ((Number(le[0]?.n) || 0) > 0) {
+    res.status(409).json({
+      error: 'trm_production_started',
+      message: 'Cette ligne ne peut pas être supprimée : Tricotage Malterre a déjà livré des pièces dessus.',
+    })
+    return true
+  }
   return false
 }
 
@@ -4982,20 +4994,26 @@ commandesSousTraitantRouter.delete('/:id', async (req: Request, res: Response) =
       mirrorLineIds = mirrorLines.map((l) => Number(l.IDligne_commande_client)).filter((x) => x > 0)
       let ofCount = 0
       let rollCount = 0
+      let livraisonCount = 0
       if (mirrorLineIds.length > 0) {
         const idList = mirrorLineIds.join(',')
-        const [ofRows, rollRows] = await Promise.all([
+        const [ofRows, rollRows, leRows] = await Promise.all([
           query<{ n: number | null }>(
             `SELECT COUNT(*) AS n FROM ordre_fabrication WHERE IDligne_commande_client IN (${idList})`,
           ),
           query<{ n: number | null }>(
             `SELECT COUNT(*) AS n FROM stock_ecru WHERE IDLigne_Commande_TRM IN (${idList})`,
           ),
+          // Cols / bandes delivered by count: an avis line, no roll (#1381).
+          query<{ n: number | null }>(
+            `SELECT COUNT(*) AS n FROM ligne_expedition WHERE IDligne_commande_client IN (${idList})`,
+          ),
         ])
         ofCount = Number(ofRows[0]?.n) || 0
         rollCount = Number(rollRows[0]?.n) || 0
+        livraisonCount = Number(leRows[0]?.n) || 0
       }
-      const blocker = sstDeleteBlocker({ est_soldee: Number(hdr[0]?.est_soldee) || 0, ofCount, rollCount })
+      const blocker = sstDeleteBlocker({ est_soldee: Number(hdr[0]?.est_soldee) || 0, ofCount, rollCount, livraisonCount })
       if (blocker) { res.status(409).json(blocker); return }
     }
 
