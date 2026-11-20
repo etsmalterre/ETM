@@ -1756,8 +1756,9 @@ commandesTrmRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request, re
 // A rectiligne line has no roll to tick: what leaves is a COUNT, typed by the
 // person who ships it (lib/livraison-rectiligne.ts). One call = ONE new avis
 // for the commande, with one ligne_expedition per delivered line carrying its
-// `quantite` — several lines of cols leave together in the same box. The avis
-// is then printed, emailed and invoiced like any other.
+// `quantite`. The route takes a list; the TRM screen sends one line per call
+// (Vincent, 2026-11-20: a very simple dialog, one line, one quantity). The
+// avis is then printed, emailed and invoiced like any other.
 //
 // Same rules as « Expédier »: under `edit_expeditions`, allowed on a mirror
 // (delivering is TRM's act), refused on a soldée order, serialised on the same
