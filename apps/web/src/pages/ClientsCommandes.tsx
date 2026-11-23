@@ -3636,11 +3636,12 @@ function ExpeditionTab({
                   {/* Fiche de transport — internal pickup request for the carrier. */}
                   <Button
                     variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
-                    title={r.adresse_a_definir ? ADRESSE_A_DEFINIR_BLOQUE : 'Imprimer la demande de transport'}
+                    title={r.adresse_a_definir ? ADRESSE_A_DEFINIR_BLOQUE : 'Imprimer le bon de transport'}
                     disabled={r.adresse_a_definir}
                     onClick={(e) => { e.stopPropagation(); window.open(`${API_URL}/expeditions/formelle/${r.IDexpedition}/demande-transport/pdf`, '_blank') }}
                   >
-                    <Truck className="h-3.5 w-3.5" />
+                    {/* A sheet, not the truck: the truck is the avis d'expédition's icon (LIVA #1387). */}
+                    <FileText className="h-3.5 w-3.5" />
                   </Button>
                 </span>
               ),

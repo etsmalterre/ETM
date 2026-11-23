@@ -954,8 +954,8 @@ function TransportPickDialog({
 // ── Center: Detail Header ──────────────────────────────
 
 /** Print button for formelle expeditions — a small popover menu offering the
- *  three printable documents (avis d'expédition / rapport de contrôle / info
- *  matières). Divers keeps the plain one-click Printer button (BL only). */
+ *  printable documents (avis d'expédition / bon de transport / info matières).
+ *  Divers keeps the plain one-click Printer button (BL only). */
 function PrintMenuButton({ expeditionId, blBlocked }: { expeditionId: number; blBlocked: boolean }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -975,11 +975,15 @@ function PrintMenuButton({ expeditionId, blBlocked }: { expeditionId: number; bl
     setMenuOpen(false)
   }
 
-  // The avis itself is the BL: it waits for a real address (LIVA #1189). Info
-  // matières carries no delivery address and stays available. (The rapport de
-  // contrôle is sent per lot from Qualité › Suivi lots since LIVA #1304.)
+  // The avis itself is the BL: it waits for a real address (LIVA #1189), and so
+  // does the bon de transport — the carrier's pickup sheet for this one avis
+  // (LIVA #1387; the same PDF as the grouped « Demande de transport » of the
+  // list footer). Info matières carries no delivery address and stays
+  // available. (The rapport de contrôle is sent per lot from Qualité › Suivi
+  // lots since LIVA #1304.)
   const items = [
     { label: "Avis d'expédition", icon: Truck, path: '/pdf', blocked: blBlocked },
+    { label: 'Bon de transport', icon: FileText, path: '/demande-transport/pdf', blocked: blBlocked },
     { label: 'Info matières', icon: Layers, path: '/info-matieres/pdf', blocked: false },
   ]
 
