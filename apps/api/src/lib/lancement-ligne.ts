@@ -19,6 +19,16 @@
 // The date is typed by hand for now; the doctrine's own computation (jalonnement, plafonds per
 // partner) will write the same columns later. Every change is kept in lancement_ligne_client
 // (append-only, migrations 0039/0040), the columns hold the latest one for the list's colour.
+//
+// « Prévoir une urgence » (Vincent 2026-11-23, migration 0085): a date planned too late for the client's
+// date is red at once (lib/urgence-commande-client.ts), and its most used gesture — asking the partner
+// for an urgency — could not be noted before the partner's order exists. The plan now carries it:
+// `urgence_prevue` beside the date = « launch on that day, en urgence ». It is a PLAN, nobody was asked:
+// the date to ask is computed from the client's date (lib/delai-au-plus-tot.ts dateSouhaiteeUrgence),
+// the line is neutral until the launch date only while that plan holds the client's date, and the
+// launch dialog opens with « Commande urgente » on. Only for a launch close enough
+// (URGENCE_PREVUE_MAX_J): a delay known weeks ahead is solved by launching earlier, not by pressing
+// the partner. The flag goes with the date (removed, launched).
 
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
@@ -26,10 +36,15 @@ import { mpsPg } from './mps-pg.js'
 export const ETAPES_LANCEMENT = ['fil', 'tricotage', 'ennoblissement'] as const
 export type EtapeLancement = (typeof ETAPES_LANCEMENT)[number]
 
+/** « Prévoir une urgence » is offered only when the launch is at most this many working days away. */
+export const URGENCE_PREVUE_MAX_J = 5
+
 export interface Lancement {
   /** YYYYMMDD */
   date: string
   etape: EtapeLancement | null
+  /** the launch is planned « en urgence »: the partner will be asked a date with the order */
+  urgencePrevue: boolean
 }
 
 export interface ChangementLancement {
@@ -41,6 +56,8 @@ export interface ChangementLancement {
   saisi_par: string | null
   /** the date ended because the step was launched from the line (not removed by hand) */
   lancee: boolean
+  /** planned « en urgence » */
+  urgence_prevue: boolean
 }
 
 /** lancement_ligne_client.motif of a row written by leverAuLancement (the 0039 column, else unused). */
@@ -63,35 +80,41 @@ export async function datesLancement(ligneIds: readonly number[]): Promise<Map<n
   const ids = [...new Set(ligneIds.filter((x) => x > 0))]
   const out = new Map<number, Lancement>()
   if (ids.length === 0) return out
-  const rows = await mpsPg().unsafe<{ id: number; d: string; etape: string | null }[]>(
-    `SELECT idligne_commande_client AS id, to_char(date_lancement, 'YYYYMMDD') AS d, etape_lancement AS etape
+  const rows = await mpsPg().unsafe<{ id: number; d: string; etape: string | null; urgence: number | null }[]>(
+    `SELECT idligne_commande_client AS id, to_char(date_lancement, 'YYYYMMDD') AS d, etape_lancement AS etape,
+            urgence_prevue AS urgence
        FROM ligne_commande_client
       WHERE idligne_commande_client = ANY($1::bigint[]) AND date_lancement IS NOT NULL`, [ids as any])
-  for (const r of rows) out.set(Number(r.id), { date: r.d, etape: etapeDe(r.etape) })
+  for (const r of rows) out.set(Number(r.id), { date: r.d, etape: etapeDe(r.etape), urgencePrevue: Number(r.urgence) === 1 })
   return out
 }
 
 /** Every change of a line's launch date, newest first. */
 export async function historiqueLancement(ligneId: number): Promise<ChangementLancement[]> {
-  const rows = await mpsPg()<{ id: number; d: string | null; etape: string | null; saisi_le: Date; saisi_par: string | null; motif: string | null }[]>`
-    SELECT id, to_char(date_lancement, 'YYYYMMDD') AS d, etape, saisi_le, saisi_par, motif
+  const rows = await mpsPg()<{ id: number; d: string | null; etape: string | null; saisi_le: Date; saisi_par: string | null; motif: string | null; urgence: number | null }[]>`
+    SELECT id, to_char(date_lancement, 'YYYYMMDD') AS d, etape, saisi_le, saisi_par, motif, urgence_prevue AS urgence
       FROM lancement_ligne_client WHERE idligne_commande_client = ${ligneId}
      ORDER BY saisi_le DESC, id DESC`
-  return rows.map((r) => ({ id: Number(r.id), date: r.d, etape: etapeDe(r.etape), saisi_le: r.saisi_le, saisi_par: r.saisi_par, lancee: r.motif === MOTIF_LANCEE }))
+  return rows.map((r) => ({
+    id: Number(r.id), date: r.d, etape: etapeDe(r.etape), saisi_le: r.saisi_le, saisi_par: r.saisi_par,
+    lancee: r.motif === MOTIF_LANCEE, urgence_prevue: Number(r.urgence) === 1,
+  }))
 }
 
-/** Sets (or removes, date null) the launch date and its step: the columns and their journal row, together. */
-export async function fixerDateLancement(p: { ligneId: number; date: string | null; etape: EtapeLancement | null; parId: number; par: string | null }): Promise<void> {
+/** Sets (or removes, date null) the launch date, its step and whether it is planned « en urgence »:
+ *  the columns and their journal row, together. */
+export async function fixerDateLancement(p: { ligneId: number; date: string | null; etape: EtapeLancement | null; urgencePrevue?: boolean; parId: number; par: string | null }): Promise<void> {
   const datePg = p.date === null ? null : versDatePg(p.date)
   if (p.date !== null && !datePg) throw new Error('date de lancement invalide')
   const etape = datePg ? p.etape : null
+  const urgence = datePg && p.urgencePrevue ? 1 : 0
   await mpsPg().begin(async (t) => {
     const tx = t as unknown as Sql
-    await tx`UPDATE ligne_commande_client SET date_lancement = ${datePg}::date, etape_lancement = ${etape}
+    await tx`UPDATE ligne_commande_client SET date_lancement = ${datePg}::date, etape_lancement = ${etape}, urgence_prevue = ${urgence}
               WHERE idligne_commande_client = ${p.ligneId}`
     await tx`
-      INSERT INTO lancement_ligne_client (idligne_commande_client, date_lancement, etape, saisi_par_id, saisi_par)
-      VALUES (${p.ligneId}, ${datePg}::date, ${etape}, ${p.parId}, ${p.par})`
+      INSERT INTO lancement_ligne_client (idligne_commande_client, date_lancement, etape, urgence_prevue, saisi_par_id, saisi_par)
+      VALUES (${p.ligneId}, ${datePg}::date, ${etape}, ${urgence}, ${p.parId}, ${p.par})`
   })
 }
 
@@ -104,7 +127,7 @@ export async function leverAuLancement(p: { ligneId: number; etape: EtapeLanceme
       SELECT etape_lancement AS etape FROM ligne_commande_client
        WHERE idligne_commande_client = ${p.ligneId} AND date_lancement IS NOT NULL FOR UPDATE`
     if (!row || (row.etape !== null && row.etape !== p.etape)) return
-    await tx`UPDATE ligne_commande_client SET date_lancement = NULL, etape_lancement = NULL
+    await tx`UPDATE ligne_commande_client SET date_lancement = NULL, etape_lancement = NULL, urgence_prevue = 0
               WHERE idligne_commande_client = ${p.ligneId}`
     await tx`
       INSERT INTO lancement_ligne_client (idligne_commande_client, date_lancement, etape, motif, saisi_par_id, saisi_par)

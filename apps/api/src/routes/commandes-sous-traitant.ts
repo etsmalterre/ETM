@@ -98,7 +98,7 @@ import { adressesDuClient, clientEnCopie, nomFichierRc, PHRASE_RC_SOUMISSION, PI
 import { compteursParCommande, ligneModifiee } from '../lib/agents/flux-ennoblisseur/saisies.js'
 import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
-import { contexteMailUrgence, demanderUrgence, GESTES_MAIL, joursReponseUrgence, leverUrgence, noterMailUrgence, noterReponseUrgence, refuserUrgence, texteMailUrgence, UrgenceRefusee, urgencesLignes, type UrgenceLigne } from '../lib/urgence-sst.js'
+import { contexteMailUrgence, demanderUrgence, GESTES_MAIL, joursReponseUrgence, leverUrgence, noterMailUrgence, noterReponseUrgence, refuserUrgence, refusUrgenceNouvelleLigne, texteMailUrgence, UrgenceRefusee, urgencesLignes, type UrgenceLigne } from '../lib/urgence-sst.js'
 import { fermetures } from '../lib/delais-standards.js'
 import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, refusAvanceDelai, reportsDelaiParLigne, retardClientReports, retardDelai } from '../lib/report-delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
@@ -5099,6 +5099,16 @@ commandesSousTraitantRouter.post('/:id/lignes', async (req: Request, res: Respon
     // At Tricotage Malterre the line is born waiting for TRM's délai: ETM types no date on it.
     const dateLiv = isTrm ? '' : dateStr(d.date_livraison)
     const lineType = d.type ?? (isTricoteur ? 1 : 2)
+    // Born « en urgence »: the date wished is checked BEFORE anything is written (a dyer is never asked
+    // under its floor, lib/urgence-sst.ts) — afterwards the line would exist without its urgency.
+    if (d.urgence) {
+      const [cmd] = await mpsPg()<{ sst: number | null; le: string | null }[]>`
+        SELECT idsous_traitant AS sst, to_char(date_commande, 'YYYY-MM-DD') AS le FROM commande_sous_traitant WHERE idcommande_sous_traitant = ${id}`
+      const refus = await refusUrgenceNouvelleLigne({
+        typeLigne: lineType, idsousTraitant: Number(cmd?.sst) || 0, commandeLe: cmd?.le ?? null, dateSouhaitee: d.urgence.date_souhaitee,
+      })
+      if (refus) { res.status(400).json({ error: 'date_souhaitee_invalide', message: refus }); return }
+    }
     // A knit line at Tricotage Malterre goes out with its yarn (lib/lancement-tricotage.ts): the
     // lots are planned before anything is written, and the line is refused while a yarn of the
     // composition is not covered. Cols / bandes knit no écru composition.

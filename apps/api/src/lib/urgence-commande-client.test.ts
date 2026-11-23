@@ -119,6 +119,13 @@ describe('urgenceLigne', () => {
     // the displayed état stays « planifiée »: the pill says where it stands, the liseré what to do
     expect(etatAffiche('a_lancer', 2, dans(70), today)).toBe('planifiee')
   })
+  it('…unless the launch is planned « en urgence » and that holds the date (3949, 2026-11-23)', () => {
+    const held = (p: Partial<LigneUrgence>): LigneUrgence => ({ ...l('a_lancer', 25), lancementLe: dans(2), lancementEtape: 'ennoblissement', preteSiLanceLe: dans(30), ...p })
+    expect(niveau(held({}))).toBe('rouge')
+    expect(niveau(held({ urgencePrevue: true }))).toBe(null)
+    // On the launch date the line is to launch, red, urgency planned or not.
+    expect(urgenceCommande([held({ urgencePrevue: true, lancementLe: dans(0) })], today)?.raison).toBe(`1 ligne à ennoblir`)
+  })
   it('a line waiting for its étude shows who holds it, before « à lancer » on the order (3904, 2026-10-30)', () => {
     expect(etatAffiche('a_lancer', 2, null, today, { attente: 'client' })).toBe('etude_client')
     expect(etatAffiche('a_lancer', 2, null, today, { attente: 'labo' })).toBe('etude_labo')

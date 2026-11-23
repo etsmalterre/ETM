@@ -38,6 +38,8 @@
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 import { DELAI_TRM_J, ouvresEntre, plusOuvres } from './delai-sst.js'
+import { fermetures } from './delais-standards.js'
+import { ajouterJoursOuvres, type Periode } from './jours-ouvres.js'
 
 /** Tricotage Malterre's id (lib/sst-tricotage.ts, which reads this file: not imported back). */
 const TRICOTAGE_MALTERRE_ID = 1
@@ -161,6 +163,42 @@ export function refusDateSouhaitee(dateSouhaitee: string | null | undefined, del
   return null
 }
 
+/** The working days of treatment a dyer is never asked to go under, counted from its order date
+ *  (Vincent 2026-11-23). Measured on MATEL, order → first reception of the lot, 1 034 lines since
+ *  2025 (weekends out): 2 % came back within 5 working days, 7 % within 7, 23 % within 10, a third
+ *  within 12, median 15. Under 7 we would ask what it almost never does: the answer is to launch
+ *  earlier or to move the client's date. One figure for every dyer for now (per sous-traitant beside
+ *  its standard, if they turn out to differ). Knitters have none: no measure yet. */
+export const URGENCE_ENNOBLISSEUR_MIN_J = 7
+
+/** The earliest date a dyer may be asked for ('YYYY-MM-DD'), its order dated `commandeLe`; null when
+ *  that date is unknown. `fermeturesSst`: its closures (YYYYMMDD). Pure. */
+export function plancherEnnoblisseur(commandeLe: string | null | undefined, fermeturesSst: readonly Periode[] = []): string | null {
+  const de = isoDe(commandeLe)
+  if (!de) return null
+  const r = ajouterJoursOuvres(de.replace(/-/g, ''), URGENCE_ENNOBLISSEUR_MIN_J, fermeturesSst)
+  return `${r.slice(0, 4)}-${r.slice(4, 6)}-${r.slice(6, 8)}`
+}
+
+/** Why a date wished is refused for a dyer's order dated `commandeLe` — under the floor — or null. Pure. */
+export function refusPlancherEnnoblisseur(dateSouhaitee: string | null | undefined, commandeLe: string | null | undefined, fermeturesSst: readonly Periode[] = []): string | null {
+  const d = isoDe(dateSouhaitee)
+  const min = plancherEnnoblisseur(commandeLe, fermeturesSst)
+  if (!d || !min || d >= min) return null
+  return `Un ennoblisseur a besoin d’au moins ${URGENCE_ENNOBLISSEUR_MIN_J} jours ouvrés : date souhaitée au plus tôt le ${min.slice(8, 10)}/${min.slice(5, 7)}.`
+}
+
+/** Type of an ennoblisseur line (ligne_commande_sous_traitant.type). */
+const TYPE_LIGNE_ENNOBLISSEUR = 2
+
+/** The same check for a line about to be created « en urgence » (the order may not exist yet): a
+ *  dyer line only. Null when the date is fine. */
+export async function refusUrgenceNouvelleLigne(p: { typeLigne: number; idsousTraitant: number; commandeLe: string | null | undefined; dateSouhaitee: string }): Promise<string | null> {
+  if (p.typeLigne !== TYPE_LIGNE_ENNOBLISSEUR) return null
+  const ferm = (await fermetures([p.idsousTraitant])).get(p.idsousTraitant) ?? []
+  return refusPlancherEnnoblisseur(p.dateSouhaitee, p.commandeLe, ferm)
+}
+
 // ── Reads ────────────────────────────────────────────────
 
 /** The urgency facts of each line, oldest first. */
@@ -226,12 +264,12 @@ export class UrgenceRefusee extends Error {
   constructor(public code: string, message: string, public status = 409) { super(message) }
 }
 
-interface LigneUrgence { cmd: number; sst: number; delai: string | null; terminee: boolean }
+interface LigneUrgence { cmd: number; sst: number; delai: string | null; terminee: boolean; typeLigne: number; commandeLe: string | null }
 
 async function ligneDe(sql: Sql, idligne: number): Promise<LigneUrgence | null> {
-  const [l] = await sql<{ cmd: number; sst: number | null; delai: string | null; sstatut: string | null }[]>`
+  const [l] = await sql<{ cmd: number; sst: number | null; delai: string | null; sstatut: string | null; type_ligne: number | null; commande_le: string | null }[]>`
     SELECT l.idcommande_sous_traitant AS cmd, c.idsous_traitant AS sst, to_char(l.date_livraison, 'YYYY-MM-DD') AS delai,
-           l.sstatut::text AS sstatut
+           l.sstatut::text AS sstatut, l.type AS type_ligne, to_char(c.date_commande, 'YYYY-MM-DD') AS commande_le
       FROM ligne_commande_sous_traitant l
       LEFT JOIN commande_sous_traitant c ON c.idcommande_sous_traitant = l.idcommande_sous_traitant
      WHERE l.idligne_commande_sous_traitant = ${idligne}`
@@ -241,6 +279,8 @@ async function ligneDe(sql: Sql, idligne: number): Promise<LigneUrgence | null> 
     sst: Number(l.sst) || 0,
     delai: jourOuVide(l.delai),
     terminee: (l.sstatut ?? '').trim().startsWith('Termin'),
+    typeLigne: Number(l.type_ligne) || 0,
+    commandeLe: jourOuVide(l.commande_le),
   }
 }
 
@@ -272,6 +312,9 @@ export async function demanderUrgence(d: {
   const dateSouhaitee = garde ?? d.dateSouhaitee ?? null
   if (!garde) {
     const refus = refusDateSouhaitee(dateSouhaitee, l.delai, d.aujourdhui)
+      // A dyer is never asked under its floor, counted from the order date (not from today: an order
+      // ten days in may well be asked for the day after tomorrow).
+      ?? await refusUrgenceNouvelleLigne({ typeLigne: l.typeLigne, idsousTraitant: l.sst, commandeLe: l.commandeLe, dateSouhaitee: dateSouhaitee! })
     if (refus) throw new UrgenceRefusee('date_souhaitee_invalide', refus, 400)
   }
   const reponseAttendue = plusOuvres(d.aujourdhui, joursReponseUrgence(l.sst))

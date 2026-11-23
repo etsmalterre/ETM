@@ -90,7 +90,7 @@ import { AffecteGauge, ChoixQuantite, RepartitionCommande, COULEURS_AUTRES_LIGNE
 import { ReservationsTricotage, type LectureTricotage } from '@/components/commandes/ReservationsTricotage'
 import { EcruLigneZone, PieceEcruLigne, PiecesEcruCarte, lieuxAEnnoblir, matiereEcruQueryKey, useMatiereEcru, type LieuEnnoblisseur } from '@/components/commandes/EcruLigneZone'
 import { BoutonsCommande, ZoneLigne } from '@/components/commandes/ZonesLigne'
-import { LancementLabel, PlanifierBouton, type EtapeLancement } from '@/components/commandes/LancementLigne'
+import { GESTES_TROP_TARD, LancementLabel, PlanifierBouton, type EtapeLancement, type UrgencePrevue } from '@/components/commandes/LancementLigne'
 import { LotsFilPicker, couvertureFils, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
 import { RappelButton } from '@/components/rappels/RappelButton'
 
@@ -170,6 +170,12 @@ interface LigneCommande {
   etape_lancement: EtapeLancement | null
   /** the earliest ready date if launched on date_lancement (YYYYMMDD); after date_livraison = planned too late */
   prete_si_lance_le?: string | null
+  /** the launch is planned « en urgence » (API lib/lancement-ligne.ts): the date to ask of the partner and
+   *  whether the client's date then holds; null = none planned, or none needed any more */
+  urgence_prevue?: UrgencePrevue | null
+  /** the timeline from the launch date still to come (the wait, then the steps, with the planned urgency
+   *  while it holds); null without one */
+  au_plus_tot_planifie?: AuPlusTot | null
   /** the line's own colour on the order list's rule */
   urgence: 'rouge' | 'ambre' | null
   commentaire: string | null
@@ -224,6 +230,8 @@ interface AuPlusTot {
     /** the urgency asked of that partner and still awaiting its answer, on a step with or without a délai
      *  (API lib/urgence-sst.ts), YYYYMMDD */
     urgence?: { demandeeLe: string; reponseAttendue: string; aRelancer: boolean; dateSouhaitee?: string | null }
+    /** a step still to launch, shortened to the date we plan to ask of the partner with the order */
+    urgencePrevue?: boolean
   }[]
   /** part of the quantity has no matter reserved */
   sansMatiere: boolean
@@ -251,16 +259,22 @@ const COULEUR_ATTENTE = '#a1a1aa'
 function urgenceEtape(a: AuPlusTot | null | undefined) {
   return a?.etapes.find((e) => e.urgence)?.urgence ?? null
 }
+/** The wait before a launch date still to come (API ETAPE_ATTENTE): the first step of a planned timeline. */
+const ETAPE_ATTENTE = 'Attente du lancement'
 const COULEUR_ETAPE: Record<string, string> = {
+  [ETAPE_ATTENTE]: '#e4e4e7',
   Fil: '#bbf7d0', Tricotage: '#86efac', Ennoblissement: '#4ade80', 'Contrôle qualité': '#22c55e', 'Réserve Malterre': 'hsl(var(--primary))', Marge: '#f59e0b',
 }
 
 /** The hover of a line's date (Vincent 2026-10-29: designed like the gauge's): the date given, its
  *  engagement and how the order leaves, then the earliest date as a timeline of its steps. */
-function DelaiLigneDetail({ auPlusTot: a, entete }: {
+function DelaiLigneDetail({ auPlusTot: a, entete, lanceeAujourdhui }: {
+  /** the timeline shown: from today, or from the line's launch date when one is to come */
   auPlusTot: AuPlusTot | null | undefined
   /** the date given and its context; absent = the line has no date yet (earliest date only) */
-  entete?: { date: string; lignes: string[] }
+  entete?: { date: string; lignes: string[]; /** what to do about a red date */ alerte?: string }
+  /** a timeline from a launch date to come: the date it would be ready if launched today (YYYYMMDD) */
+  lanceeAujourdhui?: string | null
 }) {
   // A delay resting on a step nobody gave a délai for is an estimate (Vincent 2026-11-16): the
   // partner's standard from today, which slides every morning. And while an urgency asked of that
@@ -275,6 +289,7 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
           <p className="text-[10px] font-semibold uppercase tracking-wide text-primary/70">Prête le</p>
           <p className="text-sm font-semibold tabular-nums">{formatHfsqlDate(entete.date)}</p>
           {entete.lignes.map((l) => <p key={l} className="text-xs text-muted-foreground">{l}</p>)}
+          {entete.alerte && <p className="mt-1 text-xs font-medium text-red-600">{entete.alerte}</p>}
         </>
       )}
       {a && (
@@ -316,6 +331,15 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
                     {e.engagement && <span className="font-normal text-muted-foreground"> (engagement {formatHfsqlDate(e.engagement).slice(0, 5)})</span>}
                   </p>
                 )}
+                {/* An urgency only PLANNED with the launch (Vincent 2026-11-23): the step is shortened to the
+                    date we will ask with the order. Same place and grammar as the urgency asked, below. */}
+                {e.urgencePrevue && (
+                  <p className="flex items-center gap-1.5 pl-[18px] text-[11px] text-muted-foreground">
+                    <CornerDownRight className="h-3 w-3 flex-shrink-0 text-muted-foreground/60" aria-hidden />
+                    <UrgenceIcon />
+                    <span>Urgence prévue</span>
+                  </p>
+                )}
                 {/* An urgency asked of that partner (Vincent 2026-11-16): a detail OF THIS STEP, so indented
                     under its label behind a « ↳ », then the siren and the day it was asked — nothing else
                     while it is awaited; overdue, the action. */}
@@ -331,6 +355,10 @@ function DelaiLigneDetail({ auPlusTot: a, entete }: {
                 )}
                 </div>
               ))}
+              {/* Planned to launch later: what launching today would give (the first gesture when too late). */}
+              {lanceeAujourdhui && lanceeAujourdhui !== a.date && (
+                <p className="pt-0.5 text-xs text-muted-foreground tabular-nums">Lancée aujourd’hui : prête le {formatHfsqlDate(lanceeAujourdhui)}</p>
+              )}
               <p className="pt-0.5 text-[10px] text-muted-foreground">En jours ouvrés, fermetures des partenaires comprises</p>
             </div>
           )}
@@ -2377,6 +2405,23 @@ function RouleauRow({ label, value, strong }: { label: string; value: string; st
 /** A figure with a hover (Vincent 2026-10-29): dotted underline, the card's own cursor kept (the hand). */
 /** « Commande complète »: the order leaves when its last line still to ship is ready, i.e. the latest D
  *  among them (doctrine des délais §5 bis). Null when one of them has no date yet. */
+/** Launched on its planned date, the line is ready after D (« planifiée trop tard », API planif_tardive).
+ *  Null when in time — or when the launch is planned « en urgence » and that holds D. One rule for the
+ *  line card (both dates red) and the drawer's « Planifié le … » button. */
+function lancementTropTard(l: LigneCommande): { preteLe: string; delai: string } | null {
+  if (l.urgence_prevue?.tient) return null
+  return l.date_lancement && l.prete_si_lance_le && l.date_livraison && l.prete_si_lance_le > l.date_livraison
+    ? { preteLe: l.prete_si_lance_le, delai: l.date_livraison } : null
+}
+
+/** The launch dialog's « Commande urgente » when it opens: on, with the date to ask, when the line's
+ *  launch of that step was planned « en urgence » and the urgency is still needed (the API gives none
+ *  otherwise); off else. The user may still change or untick it. */
+function urgenceDuPlan(l: LigneCommande, etape: EtapeLancement): UrgenceSaisie {
+  const u = l.etape_lancement === etape ? l.urgence_prevue : null
+  return u ? { active: true, date: hfsqlDateToInput(u.souhaitee) } : URGENCE_VIDE
+}
+
 function departCommande(lignes: LigneCommande[]): string | null {
   const restantes = lignes.filter((l) => l.statut?.etat !== 'expediee' && l.statut?.etat !== 'soldee')
   if (restantes.some((l) => !l.date_livraison)) return null
@@ -2414,6 +2459,11 @@ function LineCard({
   const variations = [line.variation1_label, line.variation2_label].filter(Boolean).join(' · ')
   // Waiting for its étude coloris: no coloris yet, no délai to give (API lib/etude-ligne-client.ts).
   const enEtude = line.type === 2 && line.IDetude_col > 0 && !line.IDcolori
+  // Launched on its planned date, the line is ready after D (« planifiée trop tard », API planif_tardive):
+  // both dates are in question, so both are red — unless the launch is planned « en urgence » and that
+  // holds D (API lib/lancement-ligne.ts): neutral, the siren says how.
+  const urgencePrevue = line.urgence_prevue?.tient ? line.urgence_prevue : null
+  const tropTard = lancementTropTard(line)
 
   return (
     <div
@@ -2447,8 +2497,7 @@ function LineCard({
           {/* The launch date beside the pill (« Planifiée » before it, « À lancer » red from it). */}
           {canAffect && !linesLocked && (line.statut?.etat === 'planifiee' || line.statut?.etat === 'a_lancer') && (
             <LancementLabel date={line.date_lancement} etape={line.etape_lancement} rouge={line.statut?.etat === 'a_lancer' && line.urgence === 'rouge'}
-              tropTard={line.prete_si_lance_le && line.date_livraison && line.prete_si_lance_le > line.date_livraison
-                ? { preteLe: line.prete_si_lance_le, delai: line.date_livraison } : null} />
+              tropTard={tropTard} urgence={urgencePrevue} />
           )}
           {/* A divers line has nothing to launch (#1362): « À lancer » there only meant « not shipped yet ». */}
           {line.statut && !(line.type === 3 && line.statut.etat === 'a_lancer') && <StatutLignePill statut={line.statut} />}
@@ -2485,8 +2534,8 @@ function LineCard({
           const retard = line.delai_initial && line.date_livraison && line.delai_initial !== line.date_livraison
             ? joursEntre(line.delai_initial, line.date_livraison) : 0
           // A line with a launch date (doctrine des délais §5, label beside the pill): its colour is
-          // about that date, not the délai.
-          const parLancement = canAffect && (etat === 'a_lancer' || etat === 'planifiee') && !!line.date_lancement && !!line.date_livraison
+          // about that date, not the délai — unless that launch date makes D impossible to hold.
+          const parLancement = canAffect && (etat === 'a_lancer' || etat === 'planifiee') && !!line.date_lancement && !!line.date_livraison && !tropTard
           return (
             <div className="ml-auto flex items-end gap-4 text-right">
               {enEtude && !line.date_livraison && (
@@ -2523,12 +2572,17 @@ function LineCard({
                 return (
                   <>
                   <Tooltip side="top" content={
-                    <DelaiLigneDetail auPlusTot={partie ? null : line.au_plus_tot} entete={{
-                      date: line.date_livraison,
-                      lignes: [
-                        line.delai_initial && retard !== 0 ? `Engagement ${formatHfsqlDate(line.delai_initial)}` : enPreparation ? 'Date libre jusqu’à la validation' : 'Notre engagement',
-                      ],
-                    }} />
+                    // Held by a launch date to come: the timeline runs from that date (Vincent 2026-11-23).
+                    <DelaiLigneDetail auPlusTot={partie ? null : (line.au_plus_tot_planifie ?? line.au_plus_tot)}
+                      // « Lancée aujourd'hui » is the first gesture of a date planned too late, nothing else.
+                      lanceeAujourdhui={!partie && tropTard && line.au_plus_tot_planifie ? line.au_plus_tot?.date : null}
+                      entete={{
+                        date: line.date_livraison,
+                        lignes: [
+                          line.delai_initial && retard !== 0 ? `Engagement ${formatHfsqlDate(line.delai_initial)}` : enPreparation ? 'Date libre jusqu’à la validation' : 'Notre engagement',
+                        ],
+                        alerte: tropTard && tint === 'text-red-600' && !partie ? `${GESTES_TROP_TARD}.` : undefined,
+                      }} />
                   }>{stat}</Tooltip>
                   {/* How the line leaves once ready (LIVA #1354), right of its date. */}
                   {!partie && (() => {
@@ -2792,7 +2846,8 @@ function AffectationDrawer({
       ? { date: plan.ennoblirLe, pourquoi: `${plan.attenteEcru} j ouvrés de marge laissés à l’écru en stock, selon la doctrine` }
       : null
     return <PlanifierBouton commandeId={commandeId} ligneId={ligne.IDligne_commande_client}
-      date={ici ? ligne.date_lancement : null} etapeActuelle={ligne.etape_lancement} etape={etape} proposee={proposee} />
+      date={ici ? ligne.date_lancement : null} etapeActuelle={ligne.etape_lancement} etape={etape} proposee={proposee}
+      tropTard={ici ? lancementTropTard(ligne) : null} urgence={ici && ligne.urgence_prevue?.tient ? ligne.urgence_prevue : null} />
   }
 
   // Ennoblissement row clicked → open the roll-affectation modal for that dyer order.
@@ -5555,8 +5610,9 @@ function CreateEnnoblisseurOrderDialog({
   const ligneId = ligne.IDligne_commande_client
   const [dateCommande, setDateCommande] = useState(() => new Date().toISOString().slice(0, 10))
   const [dateLivraison, setDateLivraison] = useState('')
-  // « Commande urgente » (API lib/urgence-sst.ts): off by default, the dyer gives its délai.
-  const [urgence, setUrgence] = useState<UrgenceSaisie>(URGENCE_VIDE)
+  // « Commande urgente » (API lib/urgence-sst.ts): off by default, the dyer gives its délai — on, with
+  // its date, when the launch was planned « en urgence » (« Planifier », API lib/lancement-ligne.ts).
+  const [urgence, setUrgence] = useState<UrgenceSaisie>(() => urgenceDuPlan(ligne, 'ennoblissement'))
   const [commentaire, setCommentaire] = useState('')
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState(false)
@@ -5968,8 +6024,9 @@ function CreateTricotageOrderDialog({
   const [stockStr, setStockStr] = useState('')
   const [choix, setChoix] = useState<ChoixLots>({})
   // No date is asked of the knitter: it gives its délai (Attente délai). Pressed, the order goes out
-  // « en urgence » with the date wished (API lib/urgence-sst.ts, Vincent 2026-11-16).
-  const [urgence, setUrgence] = useState<UrgenceSaisie>(URGENCE_VIDE)
+  // « en urgence » with the date wished (API lib/urgence-sst.ts, Vincent 2026-11-16) — already on, with
+  // its date, when the launch was planned « en urgence » (« Planifier »).
+  const [urgence, setUrgence] = useState<UrgenceSaisie>(() => urgenceDuPlan(ligne, 'tricotage'))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 

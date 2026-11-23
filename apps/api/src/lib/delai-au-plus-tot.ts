@@ -23,7 +23,7 @@
 // on a control that does not hold it). Its rolls that still cannot ship (En reprise, Attente décision) keep
 // the control step: something does hold them.
 
-import { ajouterJoursOuvres, joursOuvresEntre, type Periode } from './jours-ouvres.js'
+import { ajouterJoursOuvres, dernierDepart, dernierOuvre, joursOuvresEntre, type Periode } from './jours-ouvres.js'
 import { CONTROLE_QUALITE_JOURS, RESERVE_MALTERRE_JOURS, fermetures, standards, tricotageJours, type StandardsSst } from './delais-standards.js'
 import { MATEL_IDSOUS_TRAITANT } from './pricing-sst.js'
 import { SEUIL_EXPEDIE } from './statut-ligne-client.js'
@@ -54,7 +54,17 @@ export interface EtapeDelai {
   /** the urgency asked of that partner and still awaited (lib/urgence-sst.ts), on a step without a délai
    *  as on one that has its délai (« can you go faster? ») */
   urgence?: UrgenceEtape
+  /** a step still to launch, shortened to the date we plan to ask of the partner with the order
+   *  (« Prévoir une urgence », lib/lancement-ligne.ts): nobody was asked yet */
+  urgencePrevue?: boolean
 }
+
+/** The wait before a launch date still to come (doctrine des délais §5): the first step of a timeline
+ *  computed from that date. */
+export const ETAPE_ATTENTE = 'Attente du lancement'
+
+/** The step a launch date holds, as the timeline names it. */
+export type EtapePressee = 'Tricotage' | 'Ennoblissement'
 
 /** An urgency asked of the partner of a step: its answer is awaited until `reponseAttendue`, then it is
  *  ours to chase. Dates YYYYMMDD; `dateSouhaitee` the date we wish. */
@@ -127,6 +137,12 @@ export interface EntreeDelai {
   enCours?: boolean
   /** the reference ships « dès la réception » (#1351): no quality control after the dyer */
   sansControle?: boolean
+  /** `aujourdhui` is a launch date still to come (the line is computed as if it started that day): the
+   *  real today (YYYYMMDD), so the timeline opens on the wait */
+  attenteDepuis?: string | null
+  /** an urgency planned with the launch: the step still to launch ends on the date we will ask
+   *  (dateSouhaiteeUrgence) instead of the partner's standard */
+  urgencePrevue?: { etape: EtapePressee; souhaitee: string } | null
 }
 
 /** Matter at a partner on a launched order, in the line's unit. `urgence`: asked of that partner on
@@ -194,18 +210,28 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
       ...(engagement ? { engagement } : {}), ...(retard > 0 ? { retard } : {}), ...urgence,
     }
   }
+  /** A step still to launch: the partner's standard, or the date we plan to ask when an urgency is
+   *  planned with the launch and asks for less than the standard. */
+  const aLancer = (libelle: EtapePressee, du: string, standard: number, ferm: Periode[]): EtapeDelai => {
+    const au = ajouterJoursOuvres(du, standard, ferm)
+    const u = e.urgencePrevue
+    if (u && u.etape === libelle && u.souhaitee > du && u.souhaitee < au) {
+      return { libelle, du, au: u.souhaitee, jours: joursOuvresEntre(du, u.souhaitee, ferm), urgencePrevue: true }
+    }
+    return { libelle, du, au, jours: standard }
+  }
   const suite = (depart: string, avecTricot: boolean, tricotLance?: EtapeDelai): EtapeDelai[] => {
     const out: EtapeDelai[] = []
     let t = depart
     if (tricotLance) { out.push(tricotLance); t = tricotLance.au }
     else if (avecTricot) {
-      const au = ajouterJoursOuvres(t, joursTricot, e.tricoteur.fermetures)
-      out.push({ libelle: 'Tricotage', du: t, au, jours: joursTricot }); t = au
+      const tricot = aLancer('Tricotage', t, joursTricot, e.tricoteur.fermetures)
+      out.push(tricot); t = tricot.au
     }
     if (e.kind === 'fini') {
-      const au = ajouterJoursOuvres(t, joursEnno, e.ennoblisseur.fermetures)
-      out.push({ libelle: 'Ennoblissement', du: t, au, jours: joursEnno })
-      if (!e.sansControle) out.push(controle(au))
+      const enno = aLancer('Ennoblissement', t, joursEnno, e.ennoblisseur.fermetures)
+      out.push(enno)
+      if (!e.sansControle) out.push(controle(enno.au))
     }
     return out
   }
@@ -243,8 +269,13 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
   }
 
   const fin = (p: EtapeDelai[]) => p[p.length - 1]?.au ?? e.aujourdhui
-  const decisive = portions.reduce<EtapeDelai[] | null>((m, p) => (m == null || fin(p) > fin(m) ? p : m), null)
-  if (!decisive || decisive.length === 0) return { date: e.aujourdhui, etapes: [], sansMatiere: false }
+  const portion = portions.reduce<EtapeDelai[] | null>((m, p) => (m == null || fin(p) > fin(m) ? p : m), null)
+  if (!portion || portion.length === 0) return { date: e.aujourdhui, etapes: [], sansMatiere: false }
+  // Computed from a launch date still to come: the timeline opens on the wait until that day.
+  const attente: EtapeDelai[] = e.attenteDepuis && /^\d{8}$/.test(e.attenteDepuis) && e.attenteDepuis < e.aujourdhui
+    ? [{ libelle: ETAPE_ATTENTE, du: e.attenteDepuis, au: e.aujourdhui, jours: joursOuvresEntre(e.attenteDepuis, e.aujourdhui, malterre) }]
+    : []
+  const decisive = [...attente, ...portion]
   if (e.enCours) {
     // En cours: the date the matter can really be ready, no reserve; read against the engagement.
     return { date: fin(decisive), etapes: decisive, sansMatiere: rien > 0, plan: null }
@@ -272,6 +303,31 @@ function planDoctrine(e: EntreeDelai, etapes: EtapeDelai[], auPlusTot: string): 
   const enno = etapes.find((x) => x.libelle === 'Ennoblissement')
   const ennoblirLe = enno ? ajouterJoursOuvres(enno.du, marge, e.fermeturesMalterre ?? []) : null
   return { marge, attenteEcru: marge, ennoblirLe }
+}
+
+/** « Prévoir une urgence » (Vincent 2026-11-23): the date to ask of the partner whose step a launch
+ *  date holds, so that the line is ready on the client's date `delaiClient` — that date walked back
+ *  through what comes after the step (our quality control, and the dyer's standard when the knitter
+ *  is the one pressed), each in its own working days, then brought to a day the partner works: 5
+ *  working days of control before Friday 18/12 = the dyer back by Sunday 13/12, so Friday 11/12 is
+ *  the date to ask. Computed, never typed. Null when the step does not exist on the line (no dyer on
+ *  an écru line). Pure. */
+export function dateSouhaiteeUrgence(p: {
+  etape: EtapePressee
+  kind: 'fini' | 'ecru'
+  /** YYYYMMDD */
+  delaiClient: string
+  sansControle?: boolean
+  tricoteur: PartenaireDelai
+  ennoblisseur: PartenaireDelai
+  fermeturesMalterre?: Periode[]
+}): string | null {
+  if (!/^\d{8}$/.test(p.delaiClient)) return null
+  if (p.kind === 'ecru') return p.etape === 'Tricotage' ? dernierOuvre(p.delaiClient, p.tricoteur.fermetures) : null
+  const retourEnno = p.sansControle ? p.delaiClient : dernierDepart(p.delaiClient, CONTROLE_QUALITE_JOURS, p.fermeturesMalterre ?? [])
+  if (p.etape === 'Ennoblissement') return dernierOuvre(retourEnno, p.ennoblisseur.fermetures)
+  const retourTricot = dernierDepart(retourEnno, p.ennoblisseur.standards.ennoblissement_jours, p.ennoblisseur.fermetures)
+  return dernierOuvre(retourTricot, p.tricoteur.fermetures)
 }
 
 // ── Partners (I/O) ──────────────────────────────────────────

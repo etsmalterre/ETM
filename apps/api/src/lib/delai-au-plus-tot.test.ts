@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { delaiAuPlusTot, type EntreeDelai } from './delai-au-plus-tot.js'
+import { dateSouhaiteeUrgence, delaiAuPlusTot, ETAPE_ATTENTE, type EntreeDelai } from './delai-au-plus-tot.js'
 import { STANDARDS_DEFAUT } from './delais-standards.js'
 import { ajouterJoursOuvres } from './jours-ouvres.js'
 
@@ -163,6 +163,49 @@ describe('délai au plus tôt (doctrine des délais §5 ter)', () => {
     it('préparation keeps the reserve', () => {
       const d = delaiAuPlusTot(base({ ecru: 1000, ecruChezEnnoblisseur: [{ quantite: 1000, partenaire: 'MATEL', delai: '20261110' }] }))!
       expect(d.etapes.at(-1)!.libelle).toBe('Réserve Malterre')
+    })
+  })
+
+  // Order 3949 (Vincent 2026-11-23): écru reserved, « Prête le » Friday 18/12, planned on Monday 23/11
+  // to be dyed from Wednesday 25/11.
+  describe('a launch date to come, and the urgency planned with it', () => {
+    const partenaires = { tricoteur: base({}).tricoteur, ennoblisseur: base({}).ennoblisseur }
+    const ligne = (p: Partial<EntreeDelai> = {}) => base({ ecru: 1000, enCours: true, aujourdhui: '20261125', attenteDepuis: '20261123', ...p })
+    it('the timeline opens on the wait, then runs from the launch date', () => {
+      const d = delaiAuPlusTot(ligne())!
+      expect(d.etapes.map((x) => [x.libelle, x.du, x.au, x.jours])).toEqual([
+        [ETAPE_ATTENTE, '20261123', '20261125', 2],
+        ['Ennoblissement', '20261125', '20261216', 15],
+        ['Contrôle qualité', '20261216', '20261223', 5],
+      ])
+      expect(d.date).toBe('20261223') // 3 working days after the 18/12
+      // Launched today (no wait): 21/12, what « lancée aujourd'hui » reads.
+      expect(delaiAuPlusTot(base({ ecru: 1000, enCours: true, aujourdhui: '20261123' }))!.date).toBe('20261221')
+      // The launch day itself: no wait left to draw.
+      expect(delaiAuPlusTot(ligne({ attenteDepuis: '20261125' }))!.etapes[0].libelle).toBe('Ennoblissement')
+    })
+    it('the date to ask of the dyer = the client date minus our control', () => {
+      const p = { kind: 'fini' as const, delaiClient: '20261218', ...partenaires }
+      expect(dateSouhaiteeUrgence({ ...p, etape: 'Ennoblissement' })).toBe('20261211')
+      // No control on a reference shipped dès la réception: the dyer may deliver on the day.
+      expect(dateSouhaiteeUrgence({ ...p, etape: 'Ennoblissement', sansControle: true })).toBe('20261218')
+      // The knitter pressed instead: the dyer keeps its 15 working days after it.
+      expect(dateSouhaiteeUrgence({ ...p, etape: 'Tricotage' })).toBe('20261120')
+      // An écru line: no dyer to press, the knitter delivers on the day.
+      expect(dateSouhaiteeUrgence({ ...p, kind: 'ecru', etape: 'Ennoblissement' })).toBeNull()
+      expect(dateSouhaiteeUrgence({ ...p, kind: 'ecru', etape: 'Tricotage' })).toBe('20261218')
+    })
+    it('planned « en urgence », the step ends on that date and the line is ready on time', () => {
+      const d = delaiAuPlusTot(ligne({ urgencePrevue: { etape: 'Ennoblissement', souhaitee: '20261211' } }))!
+      expect(d.etapes[1]).toEqual({ libelle: 'Ennoblissement', du: '20261125', au: '20261211', jours: 12, urgencePrevue: true })
+      expect(d.date).toBe('20261218')
+    })
+    it('an urgency that asks nothing (the standard is enough) or names another step changes nothing', () => {
+      const std = delaiAuPlusTot(ligne())!
+      expect(delaiAuPlusTot(ligne({ urgencePrevue: { etape: 'Ennoblissement', souhaitee: '20261216' } }))).toEqual(std)
+      expect(delaiAuPlusTot(ligne({ urgencePrevue: { etape: 'Tricotage', souhaitee: '20261201' } }))).toEqual(std)
+      // …nor one before the step starts: nothing to ask.
+      expect(delaiAuPlusTot(ligne({ urgencePrevue: { etape: 'Ennoblissement', souhaitee: '20261125' } }))).toEqual(std)
     })
   })
 })

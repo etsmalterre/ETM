@@ -114,6 +114,9 @@ export interface LigneUrgence {
   /** the earliest ready date if the line is launched on lancementLe (lib/delai-au-plus-tot.ts from that
    *  day, YYYYMMDD); after dateLivraison = planned too late */
   preteSiLanceLe?: string | null
+  /** the launch is planned « en urgence » (lib/lancement-ligne.ts) and the date to ask of the partner
+   *  holds the client's date: the delay is dealt with, nothing to do before the launch date */
+  urgencePrevue?: boolean
   /** état tricotage / ennoblisseur: the earliest ready date from where the matter is now, the partners'
    *  current délais included (lib/delai-au-plus-tot.ts, YYYYMMDD); after dateLivraison = the client's date
    *  can no longer be held (LIVA #1364) */
@@ -233,7 +236,9 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     if (lancement) {
       const jl = joursAvant(lancement, today)
       const prete = ymd(l.preteSiLanceLe)
-      if (jl > 0 && prete && prete > date) {
+      // …unless the plan itself answers it: launched that day « en urgence » (the partner is asked
+      // with the order). A plan, not a promise — only offered for a launch close enough.
+      if (jl > 0 && prete && prete > date && !l.urgencePrevue) {
         return { niveau: 'rouge', action: 'planif_tardive', jours: j, date }
       }
       if (jl > 0) return null

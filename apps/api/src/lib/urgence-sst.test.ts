@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { enAttenteDeReponse, joursReponseUrgence, refusDateSouhaitee, texteMailUrgence, urgenceLigne, type FaitUrgence } from './urgence-sst.js'
+import { enAttenteDeReponse, joursReponseUrgence, plancherEnnoblisseur, refusDateSouhaitee, refusPlancherEnnoblisseur, texteMailUrgence, urgenceLigne, type FaitUrgence } from './urgence-sst.js'
 import { urgenceAvecDemande, urgenceDemandeeCommande } from './sst-tricotage.js'
 import { estUneAvanceDelai } from './report-delai-sst.js'
 
@@ -113,6 +113,21 @@ describe('date souhaitée', () => {
     expect(refusDateSouhaitee('2026-11-25', '2026-11-30', '2026-11-16')).toBeNull()
     expect(refusDateSouhaitee('2026-11-30', '2026-11-30', '2026-11-16')).toMatch(/avant le délai déjà donné \(30\/11\)/)
     expect(refusDateSouhaitee('2026-12-02', '2026-11-30', '2026-11-16')).toMatch(/avant le délai/)
+  })
+
+  it('a dyer is never asked under its floor, counted from its order date (Vincent 2026-11-23)', () => {
+    // Ordered Wednesday 25/11/2026: 7 working days later is Friday 04/12.
+    expect(plancherEnnoblisseur('2026-11-25')).toBe('2026-12-04')
+    expect(plancherEnnoblisseur('20261125')).toBe('2026-12-04')
+    expect(refusPlancherEnnoblisseur('2026-12-11', '2026-11-25')).toBeNull() // 12 working days: the 3949 case
+    expect(refusPlancherEnnoblisseur('2026-12-04', '2026-11-25')).toBeNull()
+    expect(refusPlancherEnnoblisseur('2026-12-03', '2026-11-25')).toMatch(/au moins 7 jours ouvrés : date souhaitée au plus tôt le 04\/12/)
+    // Its closures do not count as treatment.
+    expect(plancherEnnoblisseur('2026-11-25', [{ du: '20261130', au: '20261204' }])).toBe('2026-12-11')
+    // An order already ten days in may be asked for tomorrow: the floor is behind it.
+    expect(refusPlancherEnnoblisseur('2026-11-24', '2026-11-09')).toBeNull()
+    // No order date known: nothing to count from.
+    expect(refusPlancherEnnoblisseur('2026-11-26', null)).toBeNull()
   })
 })
 

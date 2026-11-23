@@ -2210,6 +2210,19 @@ WHERE type_compte = 'personne'
 ON CONFLICT DO NOTHING;
 `,
   },
+  {
+    // « Prévoir une urgence » (Vincent 2026-11-23, lib/lancement-ligne.ts): a
+    // launch date planned too late for the client's date was red with three
+    // gestures, and the one most used — asking the partner for an urgency —
+    // could not be recorded before the partner's order exists. The plan now
+    // says it: « Ennoblir le 25/11 en urgence ». A flag beside the launch date
+    // (the date wished is computed from the client's date, never stored), and
+    // on each journal row.
+    name: '0085_ligne_client_urgence_prevue',
+    sql: `
+ALTER TABLE ligne_commande_client ADD COLUMN urgence_prevue smallint NOT NULL DEFAULT 0 CHECK (urgence_prevue IN (0, 1));
+ALTER TABLE lancement_ligne_client ADD COLUMN urgence_prevue smallint NOT NULL DEFAULT 0 CHECK (urgence_prevue IN (0, 1));`,
+  },
 ]
 
 export interface MigrationStatus {

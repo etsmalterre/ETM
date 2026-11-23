@@ -50,6 +50,22 @@ export function ajouterJoursOuvres(depart: string, n: number, fermetures: readon
   return versYmd(t)
 }
 
+/** `ymd` itself when it is a working day, else the working day before it. */
+export function dernierOuvre(ymd: string, fermetures: readonly Periode[] = []): string {
+  let t = versMs(ymd)
+  while (!estOuvre(versYmd(t), fermetures)) t -= DAY
+  return versYmd(t)
+}
+
+/** The latest CALENDAR day from which `n` working days end on `fin` at the latest: the inverse of
+ *  ajouterJoursOuvres (ajouterJoursOuvres(dernierDepart(fin, n), n) <= fin). It may be a weekend — a
+ *  Sunday starts the count on the Monday; dernierOuvre() gives the working day a partner can be asked. */
+export function dernierDepart(fin: string, n: number, fermetures: readonly Periode[] = []): string {
+  let t = versMs(fin)
+  while (ajouterJoursOuvres(versYmd(t), n, fermetures) > fin) t -= DAY
+  return versYmd(t)
+}
+
 /** Working days from `a` to `b` (b after a → positive), `a` excluded, `b` included. */
 export function joursOuvresEntre(a: string, b: string, fermetures: readonly Periode[] = []): number {
   if (a === b) return 0
