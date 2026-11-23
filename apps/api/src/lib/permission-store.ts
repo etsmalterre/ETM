@@ -10,7 +10,9 @@
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
 
-export type PermissionApp = 'etm' | 'trm'
+/** An app with its own rights: the two companies' ERPs, and Expe
+ *  (expe.intra…, repo expe, since 2026-11-23). */
+export type PermissionApp = 'etm' | 'trm' | 'expe'
 
 export interface PermissionStore {
   get(userId: number): Promise<string[]>

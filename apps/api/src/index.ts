@@ -66,9 +66,10 @@ import { fournituresTrmRouter } from './routes/fournitures-trm.js'
 import { retoursClientTrmRouter } from './routes/retours-client-trm.js'
 import { authRouter } from './routes/auth.js'
 import { comptesRouter } from './routes/comptes.js'
-import { ticketsAdminRouter, ticketsRouter, ticketsTrmRouter } from './routes/tickets.js'
+import { ticketsAdminRouter, ticketsExpeRouter, ticketsRouter, ticketsTrmRouter } from './routes/tickets.js'
 import { permissionsRouter } from './routes/permissions.js'
 import { permissionsTrmRouter } from './routes/permissions-trm.js'
+import { permissionsExpeRouter } from './routes/permissions-expe.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { createAgentsIaRouter } from './routes/agents-ia.js'
 import { rhRouter } from './routes/rh.js'
@@ -76,7 +77,7 @@ import { webserviceSiteRouter } from './routes/webservice-site.js'
 import { demarrerAgents, enregistrerTaches } from './lib/agents/scheduler.js'
 import { journaliserActivite } from './lib/journal-activite.js'
 import { createAutomatesRouter } from './routes/automates.js'
-import { AGENTS_IA_ETM, AGENTS_IA_TRM } from './lib/agents/app-scope.js'
+import { AGENTS_IA_ETM, AGENTS_IA_EXPE, AGENTS_IA_TRM } from './lib/agents/app-scope.js'
 import { tachesAutomates } from './lib/automates/execution.js'
 import { abonnementsRouter } from './routes/abonnements.js'
 import { rappelsRouter } from './routes/rappels.js'
@@ -85,6 +86,7 @@ import { userProfilesRouter } from './routes/user-profiles.js'
 import { query, dbBackend, dbName } from './lib/hfsql-auto.js'
 import { attachUser } from './lib/auth.js'
 import { exigerConsole, POINTS_TABLEAU_DE_BORD } from './lib/console-acces.js'
+import { exigerExpe } from './lib/expe-acces.js'
 import { closeConnection } from './lib/hfsql-auto.js'
 import { probeFiniSourceTable, FINI_SOURCE_TABLE } from './lib/fini-sources.js'
 
@@ -152,11 +154,15 @@ app.use('/api/tickets', ticketsRouter)
 app.use('/api/tickets-trm', ticketsTrmRouter)
 // The Console Administration's tickets (product admin-malterre), its members only.
 app.use('/api/tickets-admin', exigerConsole(), ticketsAdminRouter)
+// Expe's tickets (product expe, repo expe), its members only.
+app.use('/api/tickets-expe', exigerExpe(), ticketsExpeRouter)
 app.use('/api/permissions', permissionsRouter)
 // TRM's own permission catalog + store (Paramètres > Utilisateurs of the
 // sister TRM app) — separate from /api/permissions so neither admin screen
 // can strip the other app's grants on save (see lib/permissions-trm.ts).
 app.use('/api/permissions-trm', permissionsTrmRouter)
+// Expe's own catalog + store (console › Utilisateurs › EXPE), same reason.
+app.use('/api/permissions-expe', permissionsExpeRouter)
 app.use('/api/notifications', notificationsRouter)
 // TRM's own subscriptions (Paramètres › Utilisateurs › Notifications of the TRM app)
 app.use('/api/abonnements', abonnementsRouter)
@@ -277,11 +283,13 @@ app.use('/api/retours-client-trm', retoursClientTrmRouter)
 // listing only that app's agents / automates (lib/agents/app-scope.ts).
 app.use('/api/agents-ia', exigerConsole(POINTS_TABLEAU_DE_BORD), createAgentsIaRouter(AGENTS_IA_ETM))
 app.use('/api/agents-ia-trm', exigerConsole(POINTS_TABLEAU_DE_BORD), createAgentsIaRouter(AGENTS_IA_TRM))
+app.use('/api/agents-ia-expe', exigerConsole(POINTS_TABLEAU_DE_BORD), createAgentsIaRouter(AGENTS_IA_EXPE))
 // Agents IA › Automates — deterministic scripts on the agents' engine,
 // lib/automates/ (ETM: Vidéosurveillance; TRM: the two pointage report emails).
 enregistrerTaches(tachesAutomates())
 app.use('/api/automates', exigerConsole(), createAutomatesRouter(AGENTS_IA_ETM))
 app.use('/api/automates-trm', exigerConsole(), createAutomatesRouter(AGENTS_IA_TRM))
+app.use('/api/automates-expe', exigerConsole(), createAutomatesRouter(AGENTS_IA_EXPE))
 // RH (Console Administration, then its Écrans grant): lib/rh-acces.ts, PostgreSQL `rh`.
 app.use('/api/rh', exigerConsole(), rhRouter)
 // The website (etsmalterre.fr customer space + QR sample page) — replaces the

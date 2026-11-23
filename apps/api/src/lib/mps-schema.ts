@@ -2183,6 +2183,33 @@ ${grantApi('USAGE, SELECT', 'SEQUENCE rappel_id_seq')}
     name: '0083_contact_envoi_etude_coloris',
     sql: `ALTER TABLE contact ADD COLUMN envoi_etude_coloris smallint NOT NULL DEFAULT 0 CHECK (envoi_etude_coloris IN (0, 1));`,
   },
+  {
+    // Expe (expe.intra.etsmalterre.com, repo expe, 2026-11-23): the shipping
+    // and transfer tracking app, a fourth membership (lib/utilisateur-apps.ts).
+    // Unlike the console it is an app of its own (decision Vincent 2026-11-23):
+    // its members, its Écrans and its Permissions, managed in the Console
+    // Administration › Utilisateurs › EXPE, so the `permission` table takes it
+    // too (lib/permissions-expe.ts). A session's app stays a company
+    // (session_app_check untouched: Expe enrols no poste). The admins and
+    // Laetitia, its main user, at first.
+    name: '0084_app_expe',
+    sql: `
+ALTER TABLE utilisateur_app
+  DROP CONSTRAINT utilisateur_app_app_check,
+  ADD CONSTRAINT utilisateur_app_app_check CHECK (app IN ('etm', 'trm', 'admin', 'expe'));
+ALTER TABLE permission
+  DROP CONSTRAINT permission_app_check,
+  ADD CONSTRAINT permission_app_check CHECK (app IN ('etm', 'trm', 'expe'));
+
+INSERT INTO utilisateur_app (idutilisateur, app)
+SELECT idutilisateur, 'expe' FROM utilisateur
+WHERE type_compte = 'personne'
+  AND (est_admin
+   OR translate(lower(trim(coalesce(prenom, '')) || '|' || trim(coalesce(nom, ''))), 'àâäéèêëîïôöùûüç', 'aaaeeeeiioouuuc') IN (
+        'laetitia|tellier'))
+ON CONFLICT DO NOTHING;
+`,
+  },
 ]
 
 export interface MigrationStatus {

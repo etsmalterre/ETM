@@ -22,14 +22,17 @@ import { mpsPg } from './mps-pg.js'
 import { oublierPermissions, type PermissionApp } from './permission-store.js'
 import { refusAppsDuType, type TypeCompte } from './types-compte.js'
 
-/** A membership: one of the two companies' ERPs, or the Console
- *  Administration (admin.intra…, 'admin'). Only the companies carry a
- *  permission store (PermissionApp): the console has no rights of its own,
- *  each of its sections keeps its company's. */
+/** A membership: one of the two companies' ERPs, Expe (expe.intra…, repo
+ *  expe: the shipping and transfer tracking app, 'expe' since migration
+ *  0084_app_expe), or the Console Administration (admin.intra…, 'admin').
+ *  The ERPs and Expe carry a permission store (PermissionApp): the console has
+ *  no rights of its own, each of its sections keeps its app's. */
 export type AppCode = PermissionApp | 'admin'
-export const APPS: readonly AppCode[] = ['etm', 'trm', 'admin']
-/** The companies — what « an account keeps one app » counts. */
-export const SOCIETES: readonly PermissionApp[] = ['etm', 'trm']
+export const APPS: readonly AppCode[] = ['etm', 'trm', 'expe', 'admin']
+/** A company: the app a station PC enrols for, the store of an ERP. Expe is
+ *  an app but no company (it tracks both companies' shipments). */
+export type Societe = 'etm' | 'trm'
+export const SOCIETES: readonly Societe[] = ['etm', 'trm']
 
 const CACHE_MS = 30_000
 let cache: { at: number; byUser: Map<number, AppCode[]> | null } | null = null
@@ -80,6 +83,14 @@ export async function membres(app: AppCode): Promise<Set<number> | null> {
   const out = new Set<number>()
   for (const [id, apps] of byUser) if (apps.includes(app)) out.add(id)
   return out
+}
+
+/** Whether an account may enter Expe: a member of 'expe'. Membership unknown
+ *  (migration 0004 missing): the admin only. */
+export async function estMembreExpe(userId: number | undefined, admin: boolean): Promise<boolean> {
+  if (!userId) return false
+  const apps = await appsDe(userId)
+  return apps ? apps.includes('expe') : admin
 }
 
 /** Whether an account may enter the Console Administration: a member of

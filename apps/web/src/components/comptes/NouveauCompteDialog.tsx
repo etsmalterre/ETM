@@ -94,13 +94,17 @@ export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: 
               value={type}
               onChange={(v) => setType(v === 2 || v === 3 || v === 4 ? v : 1)}
               hideEmpty
+              // Expe enrols no poste and runs no device (API lib/types-compte.ts):
+              // its screen creates people only.
               options={[
                 { id: 1, primary: 'Personne', description: 'Se connecte avec un identifiant et un mot de passe.' },
-                { id: 2, primary: 'Poste d’atelier', description: 'Un PC partagé (visitage…), enrôlé par un code. Ses écrans et ses droits sont ceux du compte. Une tablette ou un téléphone va sous « Appareils d’atelier ».' },
-                // Member of no company: both screens offer and list it (phones and
-                // pointeuses run at TRM, the lab tablet at ETM).
-                { id: 4, primary: 'Appareils d’atelier', description: 'Téléphones, pointeuses et tablette du labo, qui ont leur propre application. Aucun accès à l’ERP.' },
-                { id: 3, primary: 'Compte existant', description: 'Une personne qui a déjà un compte dans l’autre application.' },
+                ...(app === 'expe' ? [] : [
+                  { id: 2, primary: 'Poste d’atelier', description: 'Un PC partagé (visitage…), enrôlé par un code. Ses écrans et ses droits sont ceux du compte. Une tablette ou un téléphone va sous « Appareils d’atelier ».' },
+                  // Member of no company: both screens offer and list it (phones and
+                  // pointeuses run at TRM, the lab tablet at ETM).
+                  { id: 4, primary: 'Appareils d’atelier', description: 'Téléphones, pointeuses et tablette du labo, qui ont leur propre application. Aucun accès à l’ERP.' },
+                ]),
+                { id: 3, primary: 'Compte existant', description: 'Une personne qui a déjà un compte dans une autre application.' },
               ]}
             />
           </div>
@@ -118,7 +122,7 @@ export function NouveauCompteDialog({ open, app, comptes, onClose, onCreated }: 
               />
               <p className="text-[11px] text-muted-foreground pt-1">
                 Même identifiant, même mot de passe : il accédera aussi à {APP_NAMES[app]}. Donnez-lui
-                ensuite ses écrans et ses droits ici — ceux de l’autre application ne changent pas.
+                ensuite ses écrans et ses droits ici — ceux des autres applications ne changent pas.
               </p>
             </div>
           ) : (<>

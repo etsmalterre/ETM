@@ -4,13 +4,14 @@
 // each company has its own users — API lib/utilisateur-apps.ts): a refusal
 // with a way out. Else the app — plus, while an admin looks through another
 // account, a pill to come back. Name kept for main.tsx (ETM and TRM mount it
-// the same way, each with its `app`; the Console Administration, repo admin-malterre,
-// with app="admin": no poste enrolment there, and the company context is set
-// by each console section).
+// the same way, each with its `app`; Expe, repo expe, with app="expe": an app
+// of its own, without poste enrolment; the Console Administration, repo
+// admin-malterre, with app="admin": no poste enrolment there either, and the
+// app context is set by each console section).
 
 import { Loader2, LogOut, ShieldX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { APP_NAMES, AppCodeProvider, AppMembreProvider, useUser, type AppMembre } from '@/contexts/UserContext'
+import { APP_NAMES, AppCodeProvider, AppMembreProvider, estSociete, useUser, type AppMembre } from '@/contexts/UserContext'
 import { AuthCard, AuthLayout } from './AuthLayout'
 import { LoginScreen } from './LoginScreen'
 import { ForcedPasswordChange } from './ChangePasswordForm'
@@ -18,10 +19,10 @@ import { VoirCommeBandeau } from './VoirComme'
 
 export function UserPickerGate({ app, children }: { app: AppMembre; children: React.ReactNode }) {
   const { user, isLoading } = useUser()
-  // The ERP's company; the console has none of its own.
-  const societe = app === 'admin' ? null : app
+  // The app the screens below work for; the console has none of its own.
+  const code = app === 'admin' ? null : app
   const avecSociete = (node: React.ReactNode) =>
-    societe ? <AppCodeProvider value={societe}>{node}</AppCodeProvider> : node
+    code ? <AppCodeProvider value={code}>{node}</AppCodeProvider> : node
 
   if (isLoading) {
     return (
@@ -31,8 +32,9 @@ export function UserPickerGate({ app, children }: { app: AppMembre; children: Re
     )
   }
 
-  // The login screen reads the app too: a PC enrolled from it records which one.
-  if (!user) return avecSociete(<LoginScreen postes={!!societe} />)
+  // The login screen reads the app too: a PC enrolled from it records which
+  // one. A company's ERP only enrols a poste (API lib/types-compte.ts).
+  if (!user) return avecSociete(<LoginScreen postes={estSociete(code)} />)
   if (user.doitChangerMdp) return <ForcedPasswordChange />
 
   return (

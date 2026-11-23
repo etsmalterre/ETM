@@ -9,13 +9,15 @@
 //
 // Shared with TRM through `@etm`.
 
-// 'admin': the Console Administration (repo admin-malterre), same lockup.
-export type AppCode = 'etm' | 'trm' | 'admin'
+// 'admin': the Console Administration (repo admin-malterre), 'expe': Expe
+// (repo expe), same lockup.
+export type AppCode = 'etm' | 'trm' | 'admin' | 'expe'
 
 const APPS: Record<AppCode, { label: string; company: string }> = {
   etm: { label: 'ETM', company: 'Ets Malterre' },
   trm: { label: 'TRM', company: 'Tricotage Malterre' },
   admin: { label: 'ADM', company: 'Administration' },
+  expe: { label: 'EXP', company: 'Expéditions' },
 }
 
 // Dev servers show the DEV logo, so a dev tab is never mistaken for production.

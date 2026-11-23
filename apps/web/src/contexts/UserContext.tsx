@@ -31,18 +31,28 @@ export interface CurrentUser {
   apps?: AppMembre[]
 }
 
-/** Which company a bundle (or a console section) works for: ETM (ETS
- *  Malterre) or TRM (Tricotage Malterre) — each has its own permission store. */
-export type AppCode = 'etm' | 'trm'
+/** Which app a bundle (or a console section) works for: the ERP of a company,
+ *  ETM (ETS Malterre) or TRM (Tricotage Malterre), or Expe (expe.intra…, repo
+ *  expe: the shipping and transfer tracking app, since 2026-11-23) — each has
+ *  its own members and its own permission store. */
+export type AppCode = 'etm' | 'trm' | 'expe'
 
-/** A membership (API lib/utilisateur-apps.ts): a company's ERP, or the
+/** A company. Expe is an app but no company: it tracks both companies'
+ *  shipments, and enrols no station PC. */
+export type Societe = 'etm' | 'trm'
+export function estSociete(app: string | null | undefined): app is Societe {
+  return app === 'etm' || app === 'trm'
+}
+
+/** A membership (API lib/utilisateur-apps.ts): an app, or the
  *  Console Administration (admin.intra…, repo admin-malterre), which has no rights of
- *  its own — each of its sections keeps its company's. */
+ *  its own — each of its sections keeps its app's. */
 export type AppMembre = AppCode | 'admin'
 
 export const APP_NAMES: Record<AppMembre, string> = {
   etm: 'ETS Malterre',
   trm: 'Tricotage Malterre',
+  expe: 'Expéditions',
   admin: 'Administration',
 }
 
@@ -56,10 +66,13 @@ export function adminConsoleUrl(path = '/'): string {
   return `${env || dev || 'https://admin.intra.etsmalterre.com'}${path}`
 }
 
-/** A company's ERP, from the console (its screens link into the ERPs):
- *  VITE_ETM_URL / VITE_TRM_URL in dev, the production hosts otherwise. */
+/** An app's own site, from the console or from another app (their screens
+ *  link into each other): VITE_ETM_URL / VITE_TRM_URL / VITE_EXPE_URL in dev,
+ *  the production hosts otherwise. */
 export function erpUrl(app: AppCode, path = '/'): string {
-  const env = (app === 'trm' ? import.meta.env.VITE_TRM_URL : import.meta.env.VITE_ETM_URL) as string | undefined
+  const env = (app === 'trm' ? import.meta.env.VITE_TRM_URL
+    : app === 'expe' ? import.meta.env.VITE_EXPE_URL
+    : import.meta.env.VITE_ETM_URL) as string | undefined
   const base = env?.replace(/\/+$/, '') || `https://${app}.intra.etsmalterre.com`
   return `${base}${path}`
 }
@@ -81,8 +94,8 @@ export function useAppCode(): AppCode {
   return app
 }
 
-// The membership the gate checked: the ERP's company, or 'admin' in the
-// console (where AppCodeProvider is set per section, by the société chosen).
+// The membership the gate checked: the app, or 'admin' in the console (where
+// AppCodeProvider is set per section, by the app chosen in the header).
 const AppMembreContext = createContext<AppMembre | undefined>(undefined)
 export const AppMembreProvider = AppMembreContext.Provider
 

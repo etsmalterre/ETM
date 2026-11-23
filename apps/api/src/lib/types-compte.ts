@@ -37,8 +37,8 @@ export function appDeLAppareil(type: 'atelier' | 'pointeuse' | 'tirelle'): 'etm'
 }
 
 /** Why this account cannot hold `apps`, or null. An appareils account holds
- *  none; the others at least one company (to shut one out of both, deactivate
- *  it), a poste never the console. */
+ *  none; the others at least one app that is not the console (to shut one
+ *  out of all, deactivate it), a poste never the console nor Expe. */
 export function refusAppsDuType(type: TypeCompte, apps: readonly AppCode[]): string | null {
   if (type === 'appareils') {
     return apps.length ? 'Un compte d’appareils n’appartient à aucune application : ses appareils ont la leur.' : null
@@ -47,7 +47,12 @@ export function refusAppsDuType(type: TypeCompte, apps: readonly AppCode[]): str
   if (type === 'poste' && apps.includes('admin')) {
     return 'Un poste n’entre pas dans la console Administration.'
   }
-  // 'admin' alone is not enough: an account belongs to a company.
+  // Expe has no station enrolment (its login screen offers none, and a
+  // session's app is a company: routes/auth.ts POST /poste).
+  if (type === 'poste' && apps.includes('expe')) {
+    return 'Un poste n’entre pas dans Expéditions : l’application n’enrôle pas de poste.'
+  }
+  // 'admin' alone is not enough: an account belongs to an app (ETM, TRM or Expe).
   if (!apps.some((a) => a !== 'admin')) {
     return 'Un compte appartient au moins à une application. Pour lui retirer tout accès, désactivez le compte.'
   }

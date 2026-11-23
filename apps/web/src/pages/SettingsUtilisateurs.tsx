@@ -200,6 +200,8 @@ function isVincent(u: PermissionUser): boolean {
 /** Whether this app's screen lists an appareils account: under the company
  *  its devices work for, in both while it has none (API `appsAppareils`). */
 function listeAppareils(c: Compte, app: string): boolean {
+  // Expe runs no device: its list shows its members only.
+  if (app === 'expe') return false
   const apps = c.appsAppareils ?? []
   return apps.length === 0 || (apps as string[]).includes(app)
 }

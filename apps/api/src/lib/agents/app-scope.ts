@@ -1,9 +1,11 @@
-// Agents IA belongs to an APP, like a screen: ETM and TRM each have a menu
-// « Agents IA » (Agents + Automates) that lists only its own agents and
-// automates and checks its own permission store. One engine runs them all
-// (lib/agents/scheduler.ts); the app only decides which screen shows and pilots
-// a job. The routers are mounted twice (index.ts): /api/agents-ia +
-// /api/automates for ETM, /api/agents-ia-trm + /api/automates-trm for TRM.
+// Agents IA belongs to an APP, like a screen: ETM, TRM and Expe each have a
+// tab « Agents IA » and « Automates » in the console that lists only its own
+// agents and automates and checks its own permission store. One engine runs
+// them all (lib/agents/scheduler.ts); the app only decides which screen shows
+// and pilots a job. The routers are mounted once per app (index.ts):
+// /api/agents-ia + /api/automates for ETM, /api/agents-ia-trm +
+// /api/automates-trm for TRM, /api/agents-ia-expe + /api/automates-expe for
+// Expe (2026-11-23; no agent of its own yet).
 //
 // An agent or automate without `app` is ETM's. Moving one to the other app is a
 // one-word change in its catalog entry: its slug, state and runs stay put.
@@ -12,8 +14,10 @@ import type { Request, Response } from 'express'
 import { userHasPermission } from '../permissions.js'
 import { trmUserHasPermission } from '../permissions-trm.js'
 import { isKnownTrmPermissionKey } from '../permission-keys-trm.js'
+import { expeUserHasPermission } from '../permissions-expe.js'
+import { isKnownExpePermissionKey } from '../permission-keys-expe.js'
 
-export type AppIa = 'etm' | 'trm'
+export type AppIa = 'etm' | 'trm' | 'expe'
 
 /** The rights the two routers check. The two `dashboard_*` keys exist in
  *  ETM's catalog only (the Notifications widget's Superviseur points). */
@@ -33,6 +37,12 @@ export const AGENTS_IA_TRM: AgentsIaScope = {
   app: 'trm',
   aLeDroit: async (userId, isAdmin, droit) =>
     isKnownTrmPermissionKey(droit) ? trmUserHasPermission(userId, isAdmin, droit) : isAdmin,
+}
+
+export const AGENTS_IA_EXPE: AgentsIaScope = {
+  app: 'expe',
+  aLeDroit: async (userId, isAdmin, droit) =>
+    isKnownExpePermissionKey(droit) ? expeUserHasPermission(userId, isAdmin, droit) : isAdmin,
 }
 
 /** The scope of the mount serving this request (set by `avecScope`). */

@@ -88,13 +88,42 @@ A **second axis**, stored in the same per-user array as the action keys but with
 - **Paramètres is a menu of the axis** (`screen_settings`, screen `hide_settings_outils`) although the sidebar renders it apart (`settingsItem`; the web iterates `screenAccessMenus()` = `mainNavigation` + `settingsItem`). Utilisateurs stays `adminOnly` and is left out of the Écrans tree. `seed: false` on the manifest entry: the grandfathering scripts never hand Paramètres out, and the Écrans tab's « Tout » does not tick it — granted person by person. **Outils is where the curtain is also the lock**: `routes/import-sage.ts` checks `userCanOpenScreen` / `trmUserCanOpenScreen` (menu grant + no hide, admin bypass) — the same exception shape as TRM Pointage's `trmUserHasMenu`.
 - **TRM has the same axis over its own tree and its own store.** Manifest `lib/screen-keys-trm.ts` (`TRM_SCREEN_MENUS`, `trmMenuAccessKey`/`trmScreenHideKey`/`isTrmScreenAccessKey`) mirrors the sibling repo's `TRM/apps/web/src/config/navigation.ts`; keys land in `data/permissions-trm.json` via `/api/permissions-trm` (catalog also exposed at `GET /permissions-trm/screens`). Guard `check-screen-access-trm.ts` (`--nav <abs path>` to diff against a TRM worktree instead of the `../TRM` sibling), grandfathering `seed-screen-access-trm.ts --write` (**run on the server**, same reasons). Some key strings coincide with ETM's (`screen_clients`, `hide_clients_facturation`) — harmless, the two stores never meet, and each `PUT` filters against its own catalog. The TRM web mirrors the whole enforcement path (`navigation.ts` helpers, `useSubmenuFilter.ts`, `AppShell` guard, its own `navigation.test.ts`).
 
+## Expe — a third app, with its own rights (2026-11-23)
+
+`utilisateur_app.app` and `permission.app` take `expe` since migration `0084_app_expe`:
+the shipping and transfer tracking app (`expe.intra.etsmalterre.com`, repo `expe`, a client
+of this API like TRM). Decision Vincent 2026-11-23: **an app of its own, not a membership
+like the console**, with its members, its Écrans and its Permissions, managed in the
+Console Administration › Utilisateurs › EXPE. Seeded for the admins and Laetitia.
+
+- **Types**: API `PermissionApp` = `etm | trm | expe`, `Societe` = `etm | trm`
+  (`lib/utilisateur-apps.ts`: Expe is an app but no company). Web `AppCode` = the same three,
+  `Societe` and `estSociete()` for what only a company has (`contexts/UserContext.tsx`).
+- **No poste, no device**: a session's app stays a company (`session_app_check` untouched),
+  `refusAppsDuType` refuses a poste in Expe, its login screen offers no enrolment
+  (`UserPickerGate`: `postes` for a company only), « + Nouveau » in the EXPE tab creates
+  people only. An Expe-only person is allowed (Expe counts as an app, the console does not).
+- **Who enters**: the web gate (`UserPickerGate app="expe"`, in repo `expe`) and the API
+  (`lib/expe-acces.ts` `exigerExpe`: 401 without a session, 404 for a non-member). Mounted on
+  `/api/tickets-expe` today, to put on every `/api/expe/*` route.
+- **Rights**: catalog `lib/permission-keys-expe.ts` (today the two Agents IA keys), screens
+  `lib/screen-keys-expe.ts` (**empty** until Expe has a screen besides its home: add a row per
+  screen, mirrored by hand from `expe/apps/web/src/ecrans.ts`, the console reads the manifest),
+  store `lib/permissions-expe.ts`, routes `/api/permissions-expe` (mirror of `-trm`). Expe's
+  bundle reads `/permissions-expe/me` (`PermissionsProvider path`).
+- **Agents IA and Automates**: a third scope `AGENTS_IA_EXPE` (`lib/agents/app-scope.ts`),
+  mounts `/api/agents-ia-expe` and `/api/automates-expe` behind the console's gate. No agent
+  nor automate yet: `app: 'expe'` on a catalog entry puts it in the console's EXPE tab.
+- **Tickets**: `/api/tickets-expe`, product `expe` of the LIVA tracker
+  (`ISSUE_TRACKER_PRODUCT_SLUG_EXPE=expe`, in the host `.env` and `.env.production`).
+
 ## Console Administration — the third membership (2026-10-27)
 
 `utilisateur_app.app` takes `etm`, `trm` and, since migration `0038_console_admin`,
 `admin`: the gate of `admin.intra.etsmalterre.com` (repo `admin-malterre`). Seeded for Vincent and
-Isabelle (plus any `est_admin`). It carries **no permission store** (`PermissionApp` stays
-`etm | trm`; `AppCode` in `lib/utilisateur-apps.ts` is the membership): inside the console
-each section keeps its company's rights.
+Isabelle (plus any `est_admin`). It carries **no permission store** (`PermissionApp` is
+`etm | trm | expe`; `AppCode` in `lib/utilisateur-apps.ts` is the membership): inside the console
+each section keeps its app's rights.
 
 - **Who enters**: the web gate (`UserPickerGate app="admin"`, no poste enrolment there) and
   the API (`lib/console-acces.ts` `exigerConsole`): `/agents-ia[-trm]` (except

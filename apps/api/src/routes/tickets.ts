@@ -1,7 +1,7 @@
 // Ticket reporting proxy — LIVA issue tracker.
 //
-// One router factory mounted twice, factures.ts-style: the ETM and TRM web
-// apps are two distinct products in the tracker (the reporter's "Mes tickets"
+// One router factory mounted once per product, factures.ts-style: the ETM and
+// TRM web apps are two distinct products in the tracker (the reporter's "Mes tickets"
 // must not mix them), but everything except the product slug is identical —
 // same company API key, same session-derived reporter identity, same quirks.
 //
@@ -9,6 +9,8 @@
 //   /api/tickets-trm  → product ISSUE_TRACKER_PRODUCT_SLUG_TRM  (TRM web app)
 //   /api/tickets-admin → product ISSUE_TRACKER_PRODUCT_SLUG_ADMIN (Console
 //                        Administration, repo admin-malterre; slug admin-malterre)
+//   /api/tickets-expe → product ISSUE_TRACKER_PRODUCT_SLUG_EXPE (Expe, repo
+//                        expe; slug expe), its members only
 //
 // The browser only ever calls these same-origin routes; the tracker API key
 // and product slug live server-side in env and are injected here. Reporter
@@ -45,6 +47,7 @@
 //   ISSUE_TRACKER_PRODUCT_SLUG     — ETM product slug in the tracker
 //   ISSUE_TRACKER_PRODUCT_SLUG_TRM — TRM product slug in the tracker
 //   ISSUE_TRACKER_PRODUCT_SLUG_ADMIN — the console's (admin-malterre)
+//   ISSUE_TRACKER_PRODUCT_SLUG_EXPE — Expe's (expe)
 //
 // Missing key/slug → 503 (graceful, not a crash). Tracker timeout → 504,
 // unreachable → 502. A tracker 401 (bad key) is remapped to 502 so it can
@@ -492,3 +495,4 @@ function createTicketsRouter(slugEnvVar: string): RouterType {
 export const ticketsRouter: RouterType = createTicketsRouter('ISSUE_TRACKER_PRODUCT_SLUG')
 export const ticketsTrmRouter: RouterType = createTicketsRouter('ISSUE_TRACKER_PRODUCT_SLUG_TRM')
 export const ticketsAdminRouter: RouterType = createTicketsRouter('ISSUE_TRACKER_PRODUCT_SLUG_ADMIN')
+export const ticketsExpeRouter: RouterType = createTicketsRouter('ISSUE_TRACKER_PRODUCT_SLUG_EXPE')

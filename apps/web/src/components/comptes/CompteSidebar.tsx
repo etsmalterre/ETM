@@ -61,7 +61,7 @@ export interface Compte {
   apps: AppMembre[]
 }
 
-const APP_ORDER: AppMembre[] = ['etm', 'trm', 'admin']
+const APP_ORDER: AppMembre[] = ['etm', 'trm', 'expe', 'admin']
 
 interface SessionRow {
   ref: string
@@ -356,8 +356,8 @@ function CompteTab({ compte }: { compte: Compte }) {
           </p>
         ) : (
         <div className="space-y-3">
-          {/* A poste never enters the console (API lib/types-compte.ts). */}
-          {APP_ORDER.filter((a) => !(a === 'admin' && estPoste)).map((a) => (
+          {/* A poste never enters the console nor Expe (API lib/types-compte.ts). */}
+          {APP_ORDER.filter((a) => !((a === 'admin' || a === 'expe') && estPoste)).map((a) => (
             <SwitchRow
               key={a}
               label={a === 'admin' ? 'Console Administration' : `${APP_NAMES[a]} (${a.toUpperCase()})`}

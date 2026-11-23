@@ -40,4 +40,11 @@ describe('refusAppsDuType', () => {
     expect(refusAppsDuType('poste', ['trm', 'admin'])).toMatch(/console/)
     expect(refusAppsDuType('appareils', ['admin'])).toMatch(/aucune application/)
   })
+
+  it('Expe is an app of its own for a person, never for a poste', () => {
+    expect(refusAppsDuType('personne', ['expe'])).toBeNull()
+    expect(refusAppsDuType('personne', ['etm', 'expe', 'admin'])).toBeNull()
+    expect(refusAppsDuType('poste', ['etm', 'expe'])).toMatch(/Expéditions/)
+    expect(refusAppsDuType('appareils', ['expe'])).toMatch(/aucune application/)
+  })
 })
