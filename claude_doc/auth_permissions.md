@@ -105,10 +105,12 @@ Console Administration › Utilisateurs › EXPE. Seeded for the admins and Laet
   people only. An Expe-only person is allowed (Expe counts as an app, the console does not).
 - **Who enters**: the web gate (`UserPickerGate app="expe"`, in repo `expe`) and the API
   (`lib/expe-acces.ts` `exigerExpe`: 401 without a session, 404 for a non-member). Mounted on
-  `/api/tickets-expe` today, to put on every `/api/expe/*` route.
+  `/api/tickets-expe` and on the whole `/api/expe` mount (`routes/expe.ts`, `index.ts`): a
+  route added to that router is gated without anything more.
 - **Rights**: catalog `lib/permission-keys-expe.ts` (today the two Agents IA keys), screens
-  `lib/screen-keys-expe.ts` (**empty** until Expe has a screen besides its home: add a row per
-  screen, mirrored by hand from `expe/apps/web/src/ecrans.ts`, the console reads the manifest),
+  `lib/screen-keys-expe.ts` (one flat menu per screen, « Transports » the first; the home
+  is not listed, every member opens it: add a row per screen, mirrored by hand from
+  `expe/apps/web/src/ecrans.ts`, the console reads the manifest),
   store `lib/permissions-expe.ts`, routes `/api/permissions-expe` (mirror of `-trm`). Expe's
   bundle reads `/permissions-expe/me` (`PermissionsProvider path`).
 - **Agents IA and Automates**: a third scope `AGENTS_IA_EXPE` (`lib/agents/app-scope.ts`),

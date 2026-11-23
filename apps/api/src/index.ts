@@ -87,6 +87,7 @@ import { query, dbBackend, dbName } from './lib/hfsql-auto.js'
 import { attachUser } from './lib/auth.js'
 import { exigerConsole, POINTS_TABLEAU_DE_BORD } from './lib/console-acces.js'
 import { exigerExpe } from './lib/expe-acces.js'
+import { expeRouter } from './routes/expe.js'
 import { closeConnection } from './lib/hfsql-auto.js'
 import { probeFiniSourceTable, FINI_SOURCE_TABLE } from './lib/fini-sources.js'
 
@@ -156,6 +157,8 @@ app.use('/api/tickets-trm', ticketsTrmRouter)
 app.use('/api/tickets-admin', exigerConsole(), ticketsAdminRouter)
 // Expe's tickets (product expe, repo expe), its members only.
 app.use('/api/tickets-expe', exigerExpe(), ticketsExpeRouter)
+// Expe's own routes (the departures it tracks), its members only.
+app.use('/api/expe', exigerExpe(), expeRouter)
 app.use('/api/permissions', permissionsRouter)
 // TRM's own permission catalog + store (Paramètres > Utilisateurs of the
 // sister TRM app) — separate from /api/permissions so neither admin screen

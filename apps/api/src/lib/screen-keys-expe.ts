@@ -13,12 +13,13 @@
 // boundary: confidential data gets its own action key in
 // permission-keys-expe.ts, checked server side.
 //
-// EMPTY for now: Expe has no screen but its home, which every member opens
-// (being a member is the right to enter, lib/expe-acces.ts). Each screen of
-// docs/plan.md §6 (À faire partir, En route, Livrés, Sur place, Transporteurs)
-// gets its row here when it is built, mirrored by hand from Expe's ecrans.ts:
-// the Console Administration reads this manifest (GET /permissions-expe/screens)
-// to draw the Écrans tab, since it cannot import Expe's navigation.
+// Expe's home is not listed: every member opens it (being a member is the
+// right to enter, lib/expe-acces.ts). Each screen of docs/plan.md §6 (À faire
+// partir, En route, Livrés, Sur place, Transporteurs) gets its row here when it
+// is built, mirrored by hand from Expe's ecrans.ts: the Console Administration
+// reads this manifest (GET /permissions-expe/screens) to draw the Écrans tab,
+// since it cannot import Expe's navigation. Expe's menus are flat: a menu is
+// its one screen, so `screens` stays empty.
 
 export interface ExpeScreenDef {
   /** Route of the screen, e.g. '/transporteurs/fiche'. */
@@ -37,7 +38,9 @@ export interface ExpeMenuDef {
   seed?: false
 }
 
-export const EXPE_SCREEN_MENUS: readonly ExpeMenuDef[] = []
+export const EXPE_SCREEN_MENUS: readonly ExpeMenuDef[] = [
+  { id: 'transports', href: '/transports', label: 'Transports', screens: [] },
+]
 
 /** '/a-faire-partir' → 'a_faire_partir' */
 function slug(href: string): string {

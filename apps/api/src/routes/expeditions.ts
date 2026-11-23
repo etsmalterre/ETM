@@ -2554,6 +2554,22 @@ async function loadMagasinPickupAdresse(mid: number): Promise<DemandeTransportPd
   }
 }
 
+/** « Enlèvement chez » of a pickup place: the company for the factory
+ *  (magasin 0), else the sous-traitant holding the goods. One reader for the
+ *  demande de transport and for Expe's transports (lib/expe-transports.ts). */
+export async function loadEnlevementAdresse(mid: number): Promise<DemandeTransportPdfData['enlevement']> {
+  if (mid > 0) return loadMagasinPickupAdresse(mid)
+  return {
+    nom: company.legalName,
+    adresse1: company.address1,
+    adresse2: company.address2 || null,
+    adresse3: null,
+    cp: company.zip,
+    ville: company.city,
+    pays: company.country,
+  }
+}
+
 /** Build failure the caller turns into an HTTP status + French message. */
 type TransportBuildError = { status: number; error: string; message: string }
 
@@ -2658,18 +2674,7 @@ export async function buildDemandeTransportPdfData(
       },
     }
   }
-  const enlevement: DemandeTransportPdfData['enlevement'] =
-    mags[0] > 0
-      ? await loadMagasinPickupAdresse(mags[0])
-      : {
-          nom: company.legalName,
-          adresse1: company.address1,
-          adresse2: company.address2 || null,
-          adresse3: null,
-          cp: company.zip,
-          ville: company.city,
-          pays: company.country,
-        }
+  const enlevement = await loadEnlevementAdresse(mags[0])
 
   const now = new Date()
   const pad = (x: number) => String(x).padStart(2, '0')
