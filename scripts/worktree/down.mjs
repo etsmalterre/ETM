@@ -14,7 +14,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   killTree, killProcessesUnder, pidsUnder, mainCheckout, readRegistry, updateRegistry,
-  addPending, reapPending, entryProject,
+  addPending, reapPending, entryProject, PROJECT_KEYS,
 } from './lib.mjs'
 
 /** Synchronous sleep (no async in this short script). */
@@ -36,8 +36,8 @@ const target = (args[0] || '').trim()
 const projectArg = (args[1] || '').trim().toLowerCase() || null
 const remove = process.argv.includes('--remove')
 if (!target) {
-  console.error('Usage: node scripts/worktree/down.mjs <feature|slot> [ng|trm|admin] [--remove]')
-  console.error('  slot may be a bare number (NG), "trm:N" or "admin:N"; a paired feature name needs the project.')
+  console.error(`Usage: node scripts/worktree/down.mjs <feature|slot> [${PROJECT_KEYS.join('|')}] [--remove]`)
+  console.error('  slot may be a bare number (NG), "trm:N", "admin:N" or "expe:N"; a paired feature name needs the project.')
   process.exit(1)
 }
 
@@ -50,7 +50,7 @@ if (reg.slots[target]) {
   const hits = Object.keys(reg.slots).filter((k) => reg.slots[k].feature === target
     && (!projectArg || entryProject(reg.slots[k], k) === projectArg))
   if (hits.length > 1) {
-    console.error(`"${target}" names ${hits.length} slots (${hits.join(', ')}): pass the project (ng|trm|admin) or the slot key.`)
+    console.error(`"${target}" names ${hits.length} slots (${hits.join(', ')}): pass the project (${PROJECT_KEYS.join('|')}) or the slot key.`)
     process.exit(1)
   }
   slotKey = hits[0] ?? null

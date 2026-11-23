@@ -19,6 +19,8 @@ export const webPort = (n) => 3000 + n
 // console of ETM slot N sits on 310N beside its web 300N (the ERP derives the
 // console's dev address from its own port the same way).
 export const adminPort = (n) => 3100 + n
+// Expe (repo expe, 2026-11-23): same rule one range further, slot N on 320N.
+export const expePort = (n) => 3200 + n
 export const IS_WIN = process.platform === 'win32'
 
 // ── Projects ────────────────────────────────────────────────────────────────
@@ -99,12 +101,35 @@ export const PROJECTS = {
     defaultApiPort: 8080,
     // Take the slot of the NG API it targets (808N → 310N) when free.
     slotFromApi: true,
+    // Its own files' alias. Having one means « builds on ETM's sources through
+    // @etm »: a worktree of the same name in ETM is its pair (up.mjs targets
+    // that worktree's API and writes the override pair with this alias).
+    ownAlias: '@admin',
+  },
+  // Expe (expe.intra.etsmalterre.com, 2026-11-23): web only, a client of the
+  // MPS API, its own screens on ETM's design system through @etm. Same montage
+  // as the console, so the same rules: slot of the API it targets, pairing.
+  expe: {
+    key: 'expe',
+    label: 'EXPE',
+    dirName: 'expe',
+    hasApi: false,
+    webPkg: '@mps-expe/web',
+    webPort: (n) => 3200 + n,
+    webScript: (n) => `dev:${3200 + n}`,
+    defaultApiPort: 8080,
+    slotFromApi: true,
+    ownAlias: '@expe',
   },
 }
 
+/** « "ng", "trm", "admin" or "expe" », for the usage and error messages. */
+export const PROJECT_KEYS = Object.keys(PROJECTS)
+export const PROJECT_CHOICES = PROJECT_KEYS.map((k) => `"${k}"`).join(', ').replace(/, ([^,]*)$/, ' or $1')
+
 export function getProject(key) {
   const p = PROJECTS[(key || 'ng').toLowerCase()]
-  if (!p) throw new Error(`Unknown project "${key}". Use "ng", "trm" or "admin".`)
+  if (!p) throw new Error(`Unknown project "${key}". Use ${PROJECT_CHOICES}.`)
   return p
 }
 
@@ -134,6 +159,8 @@ export const DEV_WEB_ORIGINS = [
     ...SLOTS.map(webPort),
     adminPort(MAIN_SLOT),
     ...SLOTS.map(adminPort),
+    expePort(MAIN_SLOT),
+    ...SLOTS.map(expePort),
     ...SLOTS.map(PROJECTS.trm.webPort),
   ]),
 ].map((p) => `http://localhost:${p}`)

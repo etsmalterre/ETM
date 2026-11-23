@@ -1,5 +1,5 @@
 // Create a feature worktree on a free slot and spin up its dev server(s).
-//   node scripts/worktree/up.mjs <feature-name> [ng|trm|admin] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs]
+//   node scripts/worktree/up.mjs <feature-name> [ng|trm|admin|expe] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs]
 //
 // --restart reuses an EXISTING worktree + slot instead of creating anything:
 // it kills whatever is still alive, respawns the dev server(s) on the slot's
@@ -25,6 +25,7 @@ import {
   allocateSlot, getProject, projectMainCheckout, slotKey, updateRegistry,
   spawnDetached, isPortInUse, DEV_WEB_ORIGINS, git, reapPending, PROJECTS, mainCheckout,
   readRegistry, entryProject, parseSlotKey, pidAlive, killTree, dropPending, isMergedRemoteBranch,
+  PROJECT_KEYS, PROJECT_CHOICES,
   waitForDbHealth, checkCors, probeApiIdentity, resolveMainApiPort, tailLog, ensureDeps, ensureCorsOrigin,
   IS_WIN,
 } from './lib.mjs'
@@ -87,11 +88,11 @@ if (apiIdx !== -1) {
 const feature = (argv[0] || '').trim()
 const projectKey = (argv[1] || detectDefaultProject()).trim().toLowerCase()
 if (!/^[a-z0-9][a-z0-9-]*$/.test(feature)) {
-  console.error('Usage: node scripts/worktree/up.mjs <feature-name> [ng|trm|admin] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs|pointage|tirelle]  (feature kebab-case)')
+  console.error(`Usage: node scripts/worktree/up.mjs <feature-name> [${PROJECT_KEYS.join('|')}] [--api <port>] [--restart] [--terminal] [--app web|atelier|trs|pointage|tirelle]  (feature kebab-case)`)
   process.exit(1)
 }
-if (!['ng', 'trm', 'admin'].includes(projectKey)) {
-  console.error(`Unknown project "${projectKey}". Use "ng", "trm" or "admin".`)
+if (!PROJECT_KEYS.includes(projectKey)) {
+  console.error(`Unknown project "${projectKey}". Use ${PROJECT_CHOICES}.`)
   process.exit(1)
 }
 const proj = getProject(projectKey)
@@ -103,10 +104,11 @@ const main = projectMainCheckout(projectKey)
 const branch = `feat/${feature}`
 const wt = path.join(path.dirname(main), `${proj.dirName}-${feature}`)
 
-// Console worktree paired with an ETM worktree of the same name (the screens it
-// shows are ETM's): target that worktree's API unless --api says otherwise, and
-// (below, writeEtmOverride) point @etm / @ at its sources.
-const pairedEtm = projectKey === 'admin' ? path.join(path.dirname(main), `ETM-${feature}`) : null
+// Console or Expe worktree paired with an ETM worktree of the same name (the
+// console shows ETM's screens, Expe builds on ETM's design system and calls its
+// API): target that worktree's API unless --api says otherwise, and (below)
+// point @etm / @ at its sources. A project pairs when it has an `ownAlias`.
+const pairedEtm = proj.ownAlias ? path.join(path.dirname(main), `ETM-${feature}`) : null
 const hasPairedEtm = !!pairedEtm && fs.existsSync(path.join(pairedEtm, 'apps/web/src'))
 if (hasPairedEtm && !apiOverride) {
   const ng = Object.entries(readRegistry().slots ?? {}).find(
@@ -159,14 +161,14 @@ const TRM_APPS = ['apps/web', 'apps/atelier', 'apps/trs', 'apps/pointage']
 function writeTrmEnvLocal(wt, api, feature) {
   // The Console Administration served beside that API (NG slot N: API 808N,
   // console 310N): TRM's old Agents IA / Paramètres URLs redirect there; the
-  // console links back to the ETM web of the same slot (300N).
+  // console and Expe link back to the ETM web of the same slot (300N).
   const n = api >= 8080 && api <= 8086 ? api - 8080 : null
   const extra = n === null ? ''
-    : projectKey === 'admin' ? `VITE_ETM_URL=http://localhost:${3000 + n}\n`
+    : proj.ownAlias ? `VITE_ETM_URL=http://localhost:${3000 + n}\n`
     : `VITE_ADMIN_URL=http://localhost:${3100 + n}\n`
   const next = `VITE_API_URL=http://localhost:${api}/api\nVITE_WORKTREE_LABEL=${feature}\n${extra}`
   const changed = []
-  for (const app of projectKey === 'admin' ? ['apps/web'] : TRM_APPS) {
+  for (const app of proj.ownAlias ? ['apps/web'] : TRM_APPS) {
     if (!fs.existsSync(path.join(wt, app))) continue
     const envLocal = path.join(wt, app, '.env.development.local')
     const prev = fs.existsSync(envLocal) ? fs.readFileSync(envLocal, 'utf8') : ''
@@ -334,7 +336,7 @@ if (isRestart) {
   console.log(`Wrote ${ecrits.join(', ') || 'no .env.development.local'} (API → :${api}, tab label "${feature}").`)
 }
 
-// Paired console worktree: the gitignored override pair of admin-malterre's
+// Paired console or Expe worktree: the gitignored override pair of their
 // CLAUDE.md (vite reads ETM_WEB_SRC from .env.local, tsc reads tsconfig.local.json).
 // Written on create and on --restart, never removed here: /feature-complete drops
 // it once the ETM half has landed.
@@ -343,7 +345,7 @@ if (hasPairedEtm) {
   fs.writeFileSync(path.join(wt, 'apps/web/.env.local'), `ETM_WEB_SRC=${rel}\n`)
   fs.writeFileSync(path.join(wt, 'apps/web/tsconfig.local.json'), JSON.stringify({
     extends: './tsconfig.json',
-    compilerOptions: { paths: { '@admin/*': ['./src/*'], '@etm/*': [`${rel}/*`], '@/*': [`${rel}/*`] } },
+    compilerOptions: { paths: { [`${proj.ownAlias}/*`]: ['./src/*'], '@etm/*': [`${rel}/*`], '@/*': [`${rel}/*`] } },
   }, null, 2) + '\n')
   console.log(`Wrote apps/web/.env.local + tsconfig.local.json (@etm → ETM-${feature}).`)
 }

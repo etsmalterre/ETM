@@ -42,6 +42,15 @@ an NG slot and a TRM slot with the same number never collide:
 | Branch | `feat/<feature>` | `feat/<feature>` |
 | URL | `http://localhost:300N` | `http://localhost:517N` |
 
+**Expe** (repo `expe`, project `expe`, since 2026-11-23) follows the console's rules one port
+range further: `up.mjs <feature> expe` → worktree `../expe-<feature>`, slot `expe:N`, web
+`320N`, no API of its own. Like the console it has an `ownAlias` in `PROJECTS` (`@expe`,
+`@admin`), which is what makes a project pair: when `../ETM-<feature>` exists it takes that
+worktree's slot and API and gets the override pair (`apps/web/.env.local` with `ETM_WEB_SRC`,
+`tsconfig.local.json`). Its skills are its own repo's copies. A new web-only client of the API
+is a row in `PROJECTS` (`scripts/worktree/lib.mjs`) plus its port range in `DEV_WEB_ORIGINS`;
+a running API learns the new origins on its next `--restart` (or `/serve-main`).
+
 **TRM is web-only.** Its web dev server calls an MPS API cross-origin, so the TRM web ports
 (`5171–5176`) are in `DEV_WEB_ORIGINS` and in the MPS API's dev CORS. By default a TRM worktree
 targets the **slot-0 master** MPS API on `:8080` (start it with `/serve-main`); override with
@@ -168,8 +177,8 @@ one lingers.
 node scripts/worktree/status.mjs                       # what's running
 node scripts/worktree/up.mjs   <feature>               # create + start
 node scripts/worktree/up.mjs   <feature> --restart     # existing tree: kill + respawn on its slot
-node scripts/worktree/down.mjs <feature|slot> [ng|trm|admin]          # stop servers, free slot, keep tree
-node scripts/worktree/down.mjs <feature|slot> [ng|trm|admin] --remove # + remove worktree & branch
+node scripts/worktree/down.mjs <feature|slot> [ng|trm|admin|expe]          # stop servers, free slot, keep tree
+node scripts/worktree/down.mjs <feature|slot> [ng|trm|admin|expe] --remove # + remove worktree & branch
 # the project is required when the name matches several slots (a paired worktree)
 git worktree list                                      # ground truth from git
 ```

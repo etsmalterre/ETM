@@ -47,7 +47,7 @@ A worktree was created with `/new-feature-worktree` and is finally not needed. R
 3. **Tear down**, from the ETM main checkout (the worktree scripts live there, and they
    resolve a TRM worktree from the registry):
    ```bash
-   cd <ETM main checkout> && node scripts/worktree/down.mjs <name> <ng|trm|admin> --remove
+   cd <ETM main checkout> && node scripts/worktree/down.mjs <name> <ng|trm|admin|expe> --remove
    ```
    It stops the slot's API + web, frees the slot, deletes the worktree dir, the local branch
    and `origin/feat/<name>` if it was pushed, and inside Herdr closes the worktree's tabs.

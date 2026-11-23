@@ -21,7 +21,7 @@ const reg = readRegistry()
 const keys = Object.keys(reg.slots).sort()
 
 if (keys.length === 0) {
-  console.log('No active worktrees. All slots free (6 per project: ETM, TRM, admin).')
+  console.log(`No active worktrees. All slots free (6 per project: ${Object.values(PROJECTS).map((p) => p.label).join(', ')}).`)
   if (swept.stillBlocked.length) {
     console.log(`\n⏳ Pending removal (dir still open in a terminal — close it, then it auto-cleans):`)
     for (const e of swept.stillBlocked) console.log(`  ${e.worktree}`)
