@@ -34,3 +34,35 @@ export function queuedSummary(
   const dont = parts.length > 0 ? `, dont ${parts.join(' et ')}` : ''
   return `${count} à ajouter (${fmtKg(poids)} kg)${dont}`
 }
+
+/** One click on a selectable row (mps_designer §44): a plain click toggles the
+ *  row and becomes the anchor; Shift+click applies the inclusive range between
+ *  the anchor and the row, over `ids` = the SELECTABLE rows in the order they
+ *  are rendered. The range adds, or removes when the clicked end was already
+ *  ticked, and never moves the anchor. An anchor that left the list (search
+ *  narrowed, tab changed) makes the click a plain one. */
+export function clickSelection(
+  selected: ReadonlySet<number>,
+  ids: readonly number[],
+  anchor: number | null,
+  id: number,
+  shiftKey: boolean,
+): { selected: Set<number>; anchor: number | null } {
+  const next = new Set(selected)
+  if (shiftKey && anchor !== null && anchor !== id) {
+    const a = ids.indexOf(anchor)
+    const b = ids.indexOf(id)
+    if (a >= 0 && b >= 0) {
+      const [lo, hi] = a < b ? [a, b] : [b, a]
+      const deselect = selected.has(id)
+      for (let i = lo; i <= hi; i++) {
+        if (deselect) next.delete(ids[i])
+        else next.add(ids[i])
+      }
+      return { selected: next, anchor }
+    }
+  }
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  return { selected: next, anchor: id }
+}

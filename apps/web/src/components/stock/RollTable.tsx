@@ -10,10 +10,13 @@ import { cn } from '@/lib/utils'
 // poids, métrage, lot, the screen's own columns, the notes as hover icons
 // (components/stock/RollNoteIcons), the row's actions, and the roll's état as
 // the LAST column, at the far right. Born in Clients › Commandes (Affectation
-// drawer), shared with the Sous-traitants pieces drawer and the réception
-// recap. A screen adds COLUMNS, never a fork. Nothing is ever truncated: each
+// drawer), shared with the Sous-traitants pieces drawer, the réception recap
+// and Transferts (the bon's pieces and its picker, #1390). A screen adds
+// COLUMNS, never a fork. Nothing is ever truncated: each
 // column takes its content's width and the table scrolls sideways when the
-// panel is too narrow (decision Vincent 2026-11-04). Shift+click range
+// panel is too narrow (decision Vincent 2026-11-04). Every row has ONE height,
+// that of a row carrying a client tag (Vincent 2026-11-23, #1390): a list where
+// only some rows hold a tag or an action read ragged. Shift+click range
 // selection is the caller's onToggle (mps_designer §44).
 
 /** The tick of a selectable row (a span: the row itself is the click target). */
@@ -48,7 +51,11 @@ export interface RollTableSelection<T> {
   allTitle: string
 }
 
-/** A screen's own column, placed after Lot. */
+/** The height of every row: a row with a client tag (26 px + the cell padding + the rule). */
+const ROW_HEIGHT = 'h-[39px]'
+
+/** A screen's own column, placed after Lot (`columns`) or right after the
+ *  piece (`leadingColumns`). */
 export interface RollTableColumn<T> {
   key: string
   header: string
@@ -57,11 +64,14 @@ export interface RollTableColumn<T> {
 }
 
 export function RollTable<T extends RollTableRow>({
-  rolls, kind, selection, columns = [], numeroExtra, lotCell, notes, action, etat, onRowClick, rowClassName,
+  rolls, kind, selection, leadingColumns = [], columns = [], numeroExtra, lotCell, notes, action, etat, onRowClick, rowClassName,
 }: {
   rolls: T[]
   kind: 'ecru' | 'fini'
   selection?: RollTableSelection<T>
+  /** What identifies the piece beyond its numero, right after it (the
+   *  Référence and Coloris of a list that mixes articles: Transferts). */
+  leadingColumns?: RollTableColumn<T>[]
   columns?: RollTableColumn<T>[]
   /** The Lot cell when it is more than its text (a link to the lot's sheet). */
   lotCell?: (r: T) => ReactNode
@@ -99,6 +109,9 @@ export function RollTable<T extends RollTableRow>({
               </th>
             )}
             <th className={cn(th, 'text-left')}>Pièce</th>
+            {leadingColumns.map((c) => (
+              <th key={c.key} className={cn(th, c.align === 'right' ? 'text-right' : 'text-left')}>{c.header}</th>
+            ))}
             <th className={cn(th, 'text-right')}>Poids</th>
             {avecMetrage && <th className={cn(th, 'text-right')}>Métrage</th>}
             <th className={cn(th, 'pl-5 text-left')}>Lot</th>
@@ -119,7 +132,7 @@ export function RollTable<T extends RollTableRow>({
             return (
               <tr key={r.id}
                 onClick={choisissable ? (e) => selection!.onToggle(r.id, e.shiftKey) : onRowClick ? () => onRowClick(r) : undefined}
-                className={cn('border-b border-border/40 last:border-0',
+                className={cn(ROW_HEIGHT, 'border-b border-border/40 last:border-0',
                   cliquable && 'cursor-pointer select-none',
                   coche ? 'bg-accent/10' : cliquable && 'hover:bg-accent/5',
                   rowClassName?.(r))}>
@@ -141,6 +154,9 @@ export function RollTable<T extends RollTableRow>({
                     {numeroExtra?.(r)}
                   </span>
                 </td>
+                {leadingColumns.map((c) => (
+                  <td key={c.key} className={cn(td, c.align === 'right' && 'text-right')}>{c.cell(r)}</td>
+                ))}
                 <td className={cn(td, 'text-right tabular-nums')}>{Number(r.poids) > 0 ? `${fmtNum(Number(r.poids), 1)} kg` : '—'}</td>
                 {avecMetrage && <td className={cn(td, 'text-right tabular-nums')}>{Number(r.metrage) > 0 ? `${fmtNum(Number(r.metrage), 1)} Ml` : ''}</td>}
                 <td className={cn(td, 'pl-5 text-muted-foreground')}>{lotCell ? lotCell(r) : (r.lot || '—')}</td>

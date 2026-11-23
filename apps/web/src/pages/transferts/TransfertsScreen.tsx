@@ -48,11 +48,13 @@ import { postEmail } from '@/lib/email'
 import { cn } from '@/lib/utils'
 import { SmartSearchInput, type SearchChip } from '@/components/stock/SmartSearchInput'
 import { RollDefautsIcon, RollObservationsIcon } from '@/components/stock/RollNoteIcons'
+import { RollTable, type RollTableColumn, type RollTableRow } from '@/components/stock/RollTable'
+import { ClientReservationBadge } from '@/components/stock/ClientReservationBadge'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateStockCaches } from '@/lib/cache-sync'
-import { pruneSelection, queuedSummary } from '@/lib/transfert-picker'
+import { clickSelection, pruneSelection, queuedSummary } from '@/lib/transfert-picker'
 import { useHasPermission } from '@/contexts/PermissionsContext'
 
 // ── Types ──────────────────────────────────────────────
@@ -104,7 +106,14 @@ interface RouleauxLine {
   observations: string | null
   /** Écru: visitage defects; fini: the dyer's report. */
   defauts: string | null
+  /** Écru only (#1390): the dyer order the piece is affected to. */
+  affectation?: RollAffectation | null
+  /** #1390: the client order the piece is reserved to (screen only, never on the bon's PDF). */
+  client_nom?: string | null
+  commande_numero?: number | null
 }
+/** The dyer order an écru is affected to (commande 0 = its order line was deleted). */
+interface RollAffectation { commande: number; sst: number; sst_nom: string }
 interface FilLine {
   IDpiece_transfert: number
   type: 'fil'
@@ -146,9 +155,12 @@ interface AvailableRoll {
   observations: string | null
   defauts: string | null
   /** Écru only (#1121): the dyer order the piece is affected to. */
-  affectation?: { commande: number; sst: number; sst_nom: string } | null
+  affectation?: RollAffectation | null
   /** Écru only: affected to an order whose ennoblisseur is not this bon's destination. */
   affectee_ailleurs?: boolean
+  /** #1390: the client order the piece is reserved to. */
+  client_nom?: string | null
+  commande_numero?: number | null
 }
 interface AvailableFilLot {
   stock_id: number
@@ -186,6 +198,137 @@ const ETS_MALTERRE: MagasinLite = { id: 0, nom: 'Ets Malterre' }
  *  from the source stock and retires pieces already on the bon, so it names the
  *  manager rather than a single action. Same string in both render states. */
 const EDIT_BON_LABEL = 'Éditer le bon de transfert'
+
+// ── Roll tables (LIVA #1390) ───────────────────────────
+//
+// The bon's pieces and the picker both list rolls in the shared RollTable
+// (components/stock/RollTable, as Sous-traitants and Clients › Commandes),
+// with this screen's columns: Référence and Coloris right after the piece (a
+// bon mixes articles; two columns, as on the stock screens), then the dyer order
+// an écru is affected to and the client order the piece is reserved to.
+
+/** What a roll row of this screen carries beyond RollTable's own columns. */
+interface RollInfos {
+  reference: string
+  coloris: string
+  /** Écru: « MATEL · cde 8989 », the dyer order the piece is affected to. */
+  affectation: string | null
+  /** Écru: affected to an order at another ennoblisseur than the destination. */
+  affecteeAilleurs: boolean
+  clientNom: string | null
+  commandeNumero: number | null
+  secondChoix: boolean
+  /** #1297: read-only hover icons. */
+  observations: string | null
+  defauts: string | null
+}
+
+/** « REF - coloris », the way an article reads on every screen. */
+const articleLabel = (reference: string | null | undefined, coloris: string | null | undefined) =>
+  [reference, coloris].map((v) => (v ?? '').trim()).filter(Boolean).join(' - ') || '—'
+
+const affectationLabel = (a: RollAffectation | null | undefined) =>
+  a && a.commande > 0 ? `${a.sst_nom || 'Ets Malterre'} · cde ${a.commande}` : null
+
+/** Right after the piece: what article it is. */
+function rollLeadingColumns<T extends RollTableRow & RollInfos>(): RollTableColumn<T>[] {
+  return [
+    { key: 'reference', header: 'Référence', cell: (r) => r.reference || '—' },
+    { key: 'coloris', header: 'Coloris', cell: (r) => r.coloris || '—' },
+  ]
+}
+
+function rollColumns<T extends RollTableRow & RollInfos>(kind: 'ecru' | 'fini'): RollTableColumn<T>[] {
+  const cols: RollTableColumn<T>[] = []
+  // Only an écru is affected to a dyer order: a fini roll is what came back from it.
+  if (kind === 'ecru') {
+    cols.push({
+      key: 'ennoblisseur', header: 'Ennoblisseur', cell: (r) => (
+        <span className="inline-flex items-center gap-1.5">
+          {r.affectation}
+          {r.affecteeAilleurs && (
+            <Badge variant="outline" className="text-[10px] py-0" title="Affectée à une commande d'un autre ennoblisseur que la destination">Affectée ailleurs</Badge>
+          )}
+        </span>
+      ),
+    })
+  }
+  cols.push({ key: 'client', header: 'Client', cell: (r) => <ClientReservationBadge clientNom={r.clientNom} commandeNumero={r.commandeNumero} /> })
+  return cols
+}
+
+const rollNumeroExtra = (r: RollInfos) => (r.secondChoix ? <Badge variant="outline" className="text-[10px] py-0">2e choix</Badge> : null)
+const rollNotes = (r: RollInfos) => (
+  <>
+    <RollObservationsIcon text={r.observations} />
+    <RollDefautsIcon text={r.defauts} />
+  </>
+)
+
+function RollGroupTitle({ label, count }: { label: string; count: number }) {
+  return (
+    <p className="px-1 text-[10px] uppercase tracking-wide font-semibold text-primary/70">
+      {label} <span className="font-normal tabular-nums">· {count}</span>
+    </p>
+  )
+}
+
+/** A piece on the bon: `id` is its piece_transfert id (what « Retirer » takes). */
+type BonRoll = RollTableRow & RollInfos
+
+/** The bon's rolls, one table per kind (écru and fini ids live in two tables). */
+function BonRollTables({ lines, canRemove, onRemove, isRemoving }: {
+  lines: RouleauxLine[]
+  canRemove: boolean
+  onRemove: (pieceId: number) => void
+  isRemoving: boolean
+}) {
+  const groups = ([
+    { type: 'tm', kind: 'ecru', label: 'Tombé de métier' },
+    { type: 'fini', kind: 'fini', label: 'Fini' },
+  ] as const).map((g) => ({
+    ...g,
+    rolls: lines.filter((l) => l.type === g.type).map((l): BonRoll => ({
+      id: l.IDpiece_transfert,
+      numero: l.numero, lot: l.lot, poids: l.poids, metrage: l.metrage,
+      reference: l.reference, coloris: l.coloris_reference,
+      affectation: affectationLabel(l.affectation), affecteeAilleurs: false,
+      clientNom: l.client_nom ?? null, commandeNumero: l.commande_numero ?? null,
+      secondChoix: !!l.second_choix, observations: l.observations, defauts: l.defauts,
+    })),
+  })).filter((g) => g.rolls.length > 0)
+
+  return (
+    <>
+      {groups.map((g) => (
+        <div key={g.kind} className="space-y-1.5">
+          {groups.length > 1 && <RollGroupTitle label={g.label} count={g.rolls.length} />}
+          <RollTable
+            rolls={g.rolls}
+            kind={g.kind}
+            leadingColumns={rollLeadingColumns<BonRoll>()}
+            columns={rollColumns<BonRoll>(g.kind)}
+            numeroExtra={rollNumeroExtra}
+            notes={rollNotes}
+            // Always visible in edit mode: the only way to retire a piece, and
+            // a hover-reveal action is unreachable on the factory touchscreen.
+            action={canRemove ? (r) => (
+              <Button
+                variant="ghost" size="icon"
+                className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                title="Retirer du bon (retourne au magasin source)"
+                disabled={isRemoving}
+                onClick={(e) => { e.stopPropagation(); onRemove(r.id) }}
+              >
+                <Trash2 className="h-3 w-3" />
+              </Button>
+            ) : undefined}
+          />
+        </div>
+      ))}
+    </>
+  )
+}
 
 // ── Main Page ──────────────────────────────────────────
 
@@ -763,7 +906,7 @@ function LinesSection({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <div className="flex-1 min-h-0 overflow-auto space-y-2 p-1 scrollbar-transparent">
+      <div className={cn('flex-1 min-h-0 overflow-auto p-1 scrollbar-transparent', kind === 'rouleaux' ? 'space-y-3' : 'space-y-2')}>
         {lines.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
             {kind === 'rouleaux' ? <FiniRollIcon className="h-12 w-12 mb-3 opacity-40" /> : <BobineIcon className="h-12 w-12 mb-3 opacity-40" />}
@@ -777,6 +920,13 @@ function LinesSection({
               <p className="text-xs mt-1">Passez en mode édition pour en ajouter.</p>
             )}
           </div>
+        ) : kind === 'rouleaux' ? (
+          <BonRollTables
+            lines={lines as RouleauxLine[]}
+            canRemove={canMutatePieces}
+            onRemove={(pieceId) => removeMut.mutate(pieceId)}
+            isRemoving={removeMut.isPending}
+          />
         ) : (
           lines.map((line) => (
             <LineCard
@@ -840,7 +990,7 @@ function LineCard({
 }) {
   const isFil = line.type === 'fil'
   const Icon = isFil ? BobineIcon : line.type === 'tm' ? TmRollIcon : FiniRollIcon
-  const title = [line.reference, line.coloris_reference].filter(Boolean).join(' · ') || '—'
+  const title = articleLabel(line.reference, line.coloris_reference)
   const subtitle = isFil
     ? [`Lot ${line.lot || '—'}`, (line as FilLine).fournisseur_nom].filter(Boolean).join(' · ')
     : [`N° ${(line as RouleauxLine).numero || '—'}`, (line as RouleauxLine).lot ? `Lot ${(line as RouleauxLine).lot}` : ''].filter(Boolean).join(' · ')
@@ -899,22 +1049,16 @@ type PickerTab = 'ecru' | 'fini' | 'fil'
 
 /** A row of the picker list: either stock still available at the source, or a
  *  piece already on the bon (rendered ticked — unticking retires it). */
-interface PickerRow {
+interface PickerRow extends RollTableRow, RollInfos {
+  /** Same as `id` (what RollTable keys and ticks on): the stock row's id. */
   stockId: number
   onBon: boolean
   /** piece_transfert id, present only when `onBon` — that's what DELETE takes. */
   pieceId: number
+  /** Fil lots only (they stay cards): the composed card texts. */
   title: string
   subtitle: string
   poids: number
-  secondChoix: boolean
-  /** Rolls only (#1297): read-only hover icons next to the weight. */
-  observations: string | null
-  defauts: string | null
-  /** Écru: « MATEL · cde 8989 » — the order the piece is affected to, if any. */
-  affectation: string | null
-  /** Écru: affected to an order at another ennoblisseur than the destination. */
-  affecteeAilleurs: boolean
   /** The searchable columns, kept apart from the composed title/subtitle so a
    *  field-scoped chip can restrict itself to exactly one of them. */
   fields: Record<PickerSearchField, string>
@@ -929,13 +1073,16 @@ interface PickerRow {
 // does the actual narrowing (the available list is capped at 200 rows, so
 // filtering purely on the client would search inside an arbitrary window).
 
-type PickerSearchField = 'ref' | 'coloris' | 'numero' | 'lot' | 'fournisseur'
+type PickerSearchField = 'ref' | 'coloris' | 'numero' | 'lot' | 'fournisseur' | 'client' | 'commande'
 
 const ROULEAUX_SEARCH_FIELDS = [
   { key: 'ref', label: 'Référence' },
   { key: 'coloris', label: 'Coloris' },
   { key: 'numero', label: 'N° de pièce' },
   { key: 'lot', label: 'Lot' },
+  // #1390: the client order a piece is reserved to.
+  { key: 'client', label: 'Client' },
+  { key: 'commande', label: 'Commande client' },
 ] as const satisfies readonly { key: PickerSearchField; label: string }[]
 
 const FIL_SEARCH_FIELDS = [
@@ -946,8 +1093,12 @@ const FIL_SEARCH_FIELDS = [
 ] as const satisfies readonly { key: PickerSearchField; label: string }[]
 
 const EMPTY_FIELDS: Record<PickerSearchField, string> = {
-  ref: '', coloris: '', numero: '', lot: '', fournisseur: '',
+  ref: '', coloris: '', numero: '', lot: '', fournisseur: '', client: '', commande: '',
 }
+
+/** The client order numero is asked by its chip only, and exactly: a free
+ *  « 3911 » keeps meaning the piece / OF number (same rule as the API). */
+const FREE_TEXT_FIELDS = (Object.keys(EMPTY_FIELDS) as PickerSearchField[]).filter((f) => f !== 'commande')
 
 const normalizeTerm = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
 
@@ -962,9 +1113,13 @@ function matchesCriteria(
   terms: string[],
   chips: SearchChip<PickerSearchField>[],
 ): boolean {
-  const anyHay = normalizeTerm(Object.values(row.fields).join(' '))
+  const anyHay = normalizeTerm(FREE_TEXT_FIELDS.map((f) => row.fields[f]).join(' '))
   for (const t of terms) if (!anyHay.includes(normalizeTerm(t))) return false
   for (const chip of chips) {
+    if (chip.field === 'commande') {
+      if (row.fields.commande !== chip.value.trim()) return false
+      continue
+    }
     const hay = chip.field ? normalizeTerm(row.fields[chip.field] ?? '') : anyHay
     if (!hay.includes(normalizeTerm(chip.value))) return false
   }
@@ -1006,6 +1161,8 @@ function PickerDialog({
     () => ({ ecru: new Set(), fini: new Set(), fil: new Set() }),
   )
   const selected = selectedByTab[activeTab]
+  // §44: the Shift+click anchor, per tab like the selection it belongs to.
+  const anchorRef = useRef<Record<PickerTab, number | null>>({ ecru: null, fini: null, fil: null })
   const [addError, setAddError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -1057,20 +1214,30 @@ function PickerDialog({
       .map((l) => {
         const isFil = l.type === 'fil'
         const roll = l as RouleauxLine
+        const clientNom = isFil ? null : roll.client_nom ?? null
+        const commandeNumero = isFil ? null : roll.commande_numero ?? null
         return {
+          id: l.stock_id,
           stockId: l.stock_id,
           onBon: true,
           pieceId: l.IDpiece_transfert,
-          title: [l.reference, l.coloris_reference].filter(Boolean).join(' · ') || '—',
+          title: articleLabel(l.reference, l.coloris_reference),
           subtitle: isFil
             ? [`Lot ${l.lot || '—'}`, (l as FilLine).fournisseur_nom].filter(Boolean).join(' · ')
-            : [`N° ${roll.numero || '—'}`, roll.lot ? `Lot ${roll.lot}` : ''].filter(Boolean).join(' · '),
+            : '',
+          numero: isFil ? null : roll.numero,
+          lot: l.lot,
           poids: Number(l.poids) || 0,
+          metrage: isFil ? 0 : Number(roll.metrage) || 0,
+          reference: l.reference ?? '',
+          coloris: l.coloris_reference ?? '',
           secondChoix: !isFil && !!roll.second_choix,
           observations: isFil ? null : roll.observations,
           defauts: isFil ? null : roll.defauts,
-          affectation: null,
+          affectation: isFil ? null : affectationLabel(roll.affectation),
           affecteeAilleurs: false,
+          clientNom,
+          commandeNumero,
           fields: {
             ...EMPTY_FIELDS,
             ref: l.reference ?? '',
@@ -1078,6 +1245,8 @@ function PickerDialog({
             lot: l.lot ?? '',
             numero: isFil ? '' : roll.numero ?? '',
             fournisseur: isFil ? (l as FilLine).fournisseur_nom ?? '' : '',
+            client: clientNom ?? '',
+            commande: commandeNumero ? String(commandeNumero) : '',
           },
         }
       })
@@ -1088,22 +1257,30 @@ function PickerDialog({
     const isFil = kind === 'fils'
     const roll = c as AvailableRoll
     const filLot = c as AvailableFilLot
+    const clientNom = isFil ? null : roll.client_nom ?? null
+    const commandeNumero = isFil ? null : roll.commande_numero ?? null
     return {
+      id: c.stock_id,
       stockId: c.stock_id,
       onBon: false,
       pieceId: 0,
-      title: [c.reference, c.coloris_reference].filter(Boolean).join(' · ') || '—',
+      title: articleLabel(c.reference, c.coloris_reference),
       subtitle: isFil
         ? [`Lot ${filLot.lot || '—'}`, filLot.fournisseur_nom].filter(Boolean).join(' · ')
-        : [`N° ${roll.numero || '—'}`, roll.lot ? `Lot ${roll.lot}` : ''].filter(Boolean).join(' · '),
+        : '',
+      numero: isFil ? null : roll.numero,
+      lot: (isFil ? filLot.lot : roll.lot) ?? null,
       poids: Number(c.poids) || 0,
+      metrage: isFil ? 0 : Number(roll.metrage) || 0,
+      reference: c.reference ?? '',
+      coloris: c.coloris_reference ?? '',
       secondChoix: !isFil && !!roll.second_choix,
       observations: isFil ? null : roll.observations,
       defauts: isFil ? null : roll.defauts,
-      affectation: !isFil && roll.affectation
-        ? `${roll.affectation.sst_nom || 'Ets Malterre'} · cde ${roll.affectation.commande}`
-        : null,
+      affectation: isFil ? null : affectationLabel(roll.affectation),
       affecteeAilleurs: !isFil && !!roll.affectee_ailleurs,
+      clientNom,
+      commandeNumero,
       fields: {
         ...EMPTY_FIELDS,
         ref: c.reference ?? '',
@@ -1111,6 +1288,8 @@ function PickerDialog({
         lot: (isFil ? filLot.lot : roll.lot) ?? '',
         numero: isFil ? '' : roll.numero ?? '',
         fournisseur: isFil ? filLot.fournisseur_nom ?? '' : '',
+        client: clientNom ?? '',
+        commande: commandeNumero ? String(commandeNumero) : '',
       },
     }
   }).filter((r) => matchesCriteria(r, liveTerms, chips)), [candidates, kind, liveTerms, chips])
@@ -1161,6 +1340,7 @@ function PickerDialog({
       // the pre-transfer magasin and the transfer looked like it had failed.
       invalidateStockCaches(queryClient)
       setSelectedByTab({ ecru: new Set(), fini: new Set(), fil: new Set() })
+      anchorRef.current = { ecru: null, fini: null, fil: null }
       onMutationSuccess()
       // Valider closes the dialog — unless some pieces couldn't be applied, in
       // which case we stay open so the warning is actually read.
@@ -1178,14 +1358,14 @@ function PickerDialog({
     onError: (e: unknown) => setAddError(e instanceof Error ? e.message : 'Erreur'),
   })
 
-  const toggle = useCallback((id: number) => {
-    setSelectedByTab((prev) => {
-      const next = new Set(prev[activeTab])
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return { ...prev, [activeTab]: next }
-    })
-  }, [activeTab])
+  // Plain click toggles, Shift+click takes the range from the last plain click
+  // (§44) — over the rows that can be ADDED, in the order they are shown:
+  // a piece already on the bon is never swept into a range.
+  const toggle = useCallback((id: number, shiftKey = false) => {
+    const r = clickSelection(selectedByTab[activeTab], availableRows.map((x) => x.stockId), anchorRef.current[activeTab], id, shiftKey)
+    anchorRef.current[activeTab] = r.anchor
+    setSelectedByTab((prev) => ({ ...prev, [activeTab]: r.selected }))
+  }, [activeTab, availableRows, selectedByTab])
 
   // Operates on the rows actually on screen, not on `candidates`: the
   // client-side refine can hide rows the server let through, and ticking a row
@@ -1196,6 +1376,8 @@ function PickerDialog({
       const allSelected = availableRows.length > 0 && availableRows.every((r) => next.has(r.stockId))
       if (allSelected) availableRows.forEach((r) => next.delete(r.stockId))
       else availableRows.forEach((r) => next.add(r.stockId))
+      // « Tout » anchors on the last row (a Shift+click then narrows from the end), « Aucun » forgets it.
+      anchorRef.current[activeTab] = allSelected ? null : (availableRows[availableRows.length - 1]?.stockId ?? null)
       return { ...prev, [activeTab]: next }
     })
   }, [availableRows, activeTab])
@@ -1270,7 +1452,7 @@ function PickerDialog({
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-3xl h-[80vh] flex flex-col" onClose={onClose}>
+      <DialogContent className={cn('h-[80vh] flex flex-col', kind === 'rouleaux' ? 'max-w-5xl' : 'max-w-3xl')} onClose={onClose}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Pencil className="h-5 w-5 text-accent" />
@@ -1331,13 +1513,13 @@ function PickerDialog({
               chips={chips}
               onChipsChange={setChips}
               fields={searchFields}
-              placeholder={kind === 'fils' ? 'Lot, référence, coloris, fournisseur…' : 'N°, lot, référence, coloris…'}
+              placeholder={kind === 'fils' ? 'Lot, référence, coloris, fournisseur…' : 'N°, lot, référence, coloris, client…'}
             />
           </div>
 
           {/* Rows: what's already on the bon (ticked, at the top) then what can
               still be added from the source magasin. */}
-          <div className="flex-1 overflow-y-auto p-2 space-y-1.5 scrollbar-transparent">
+          <div className={cn('flex-1 overflow-y-auto scrollbar-transparent', kind === 'rouleaux' ? 'p-3 space-y-3' : 'p-2 space-y-1.5')}>
             {isLoading ? (
               <div className="flex items-center justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-accent" /></div>
             ) : rows.length === 0 ? (
@@ -1350,7 +1532,59 @@ function PickerDialog({
                 </p>
                 {hiddenScNote}
               </div>
-            ) : (<>
+            ) : kind === 'rouleaux' ? (<>
+              {/* Rolls: the shared roll table (#1390). What is on the bon first,
+                  each with its « Retirer », then what can join it, ticked to add. */}
+              {onBonRows.length > 0 && (
+                <div className="space-y-1.5">
+                  <RollGroupTitle label="Sur le bon" count={onBonRows.length} />
+                  <RollTable
+                    rolls={onBonRows}
+                    kind={activeTab === 'fini' ? 'fini' : 'ecru'}
+                    leadingColumns={rollLeadingColumns<PickerRow>()}
+                    columns={rollColumns<PickerRow>(activeTab === 'fini' ? 'fini' : 'ecru')}
+                    numeroExtra={rollNumeroExtra}
+                    notes={rollNotes}
+                    action={(r) => (
+                      <Button
+                        variant="ghost" size="icon"
+                        className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                        title="Retirer du bon (retourne au magasin source)"
+                        disabled={isRemovingPiece}
+                        onClick={(e) => { e.stopPropagation(); onRemovePiece(r.pieceId) }}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    )}
+                  />
+                </div>
+              )}
+              {availableRows.length > 0 && (
+                <div className="space-y-1.5">
+                  {onBonRows.length > 0 && <RollGroupTitle label={`Disponible chez ${transfert.source_nom || '—'}`} count={availableRows.length} />}
+                  <RollTable
+                    rolls={availableRows}
+                    kind={activeTab === 'fini' ? 'fini' : 'ecru'}
+                    selection={{
+                      selected,
+                      onToggle: toggle,
+                      onToggleAll: selectAllVisible,
+                      allTitle: 'Tout sélectionner',
+                    }}
+                    leadingColumns={rollLeadingColumns<PickerRow>()}
+                    columns={rollColumns<PickerRow>(activeTab === 'fini' ? 'fini' : 'ecru')}
+                    numeroExtra={rollNumeroExtra}
+                    notes={rollNotes}
+                  />
+                </div>
+              )}
+              {capped && (
+                <p className="text-[11px] text-muted-foreground text-center py-1.5">
+                  Les {available?.cap} plus récents sont affichés — affinez la recherche pour en voir d'autres.
+                </p>
+              )}
+              {hiddenScNote}
+            </>) : (<>
               {rows.map((r) => {
                 // Ticked means "on the bon" for existing pieces, "queued for the
                 // Ajouter button" for available ones.
@@ -1359,10 +1593,10 @@ function PickerDialog({
                 return (
                   <div
                     key={r.onBon ? `bon-${r.pieceId}` : `stock-${r.stockId}`}
-                    onClick={() => { if (r.onBon) onRemovePiece(r.pieceId); else toggle(r.stockId) }}
+                    onClick={(e) => { if (r.onBon) onRemovePiece(r.pieceId); else toggle(r.stockId, e.shiftKey) }}
                     title={r.onBon ? 'Sur le bon — décochez pour le retirer (retour au magasin source)' : undefined}
                     className={cn(
-                      'flex items-center gap-2.5 px-2.5 py-2 rounded-lg border bg-card shadow-sm cursor-pointer transition-colors',
+                      'flex items-center gap-2.5 px-2.5 py-2 rounded-lg border bg-card shadow-sm cursor-pointer select-none transition-colors',
                       isChecked ? 'border-accent ring-1 ring-accent bg-accent/[0.04]' : 'border-border/60 hover:border-accent/40',
                       busy && 'opacity-60 pointer-events-none',
                     )}
@@ -1370,28 +1604,17 @@ function PickerDialog({
                     <input
                       type="checkbox"
                       checked={isChecked}
-                      onChange={() => { if (r.onBon) onRemovePiece(r.pieceId); else toggle(r.stockId) }}
+                      onChange={(e) => { if (r.onBon) onRemovePiece(r.pieceId); else toggle(r.stockId, (e.nativeEvent as MouseEvent).shiftKey === true) }}
                       onClick={(e) => e.stopPropagation()}
                       className="h-4 w-4 rounded border-input text-accent focus:ring-2 focus:ring-ring cursor-pointer flex-shrink-0"
                     />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium truncate">{r.title}</p>
-                      <p className="text-[11px] text-muted-foreground truncate">
-                        {r.subtitle}
-                        {r.affectation && <span className="text-foreground/70"> · {r.affectation}</span>}
-                      </p>
+                      <p className="text-[11px] text-muted-foreground truncate">{r.subtitle}</p>
                     </div>
-                    {r.affecteeAilleurs && (
-                      <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0 border-amber-500/40 text-amber-800 bg-amber-500/10" title="Affectée à une commande d'un autre ennoblisseur que la destination">Affectée ailleurs</Badge>
-                    )}
                     {r.onBon && (
                       <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0 border-accent/40 text-accent">Sur le bon</Badge>
                     )}
-                    {r.secondChoix && (
-                      <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0">2e choix</Badge>
-                    )}
-                    <RollDefautsIcon text={r.defauts} />
-                    <RollObservationsIcon text={r.observations} />
                     <span className="text-sm tabular-nums flex-shrink-0">{fmtNum(r.poids, 1)} kg</span>
                   </div>
                 )
@@ -1406,10 +1629,13 @@ function PickerDialog({
           </div>
 
           {/* Bottom strip: select-all over the addable rows + queued summary */}
-          <div className="flex-shrink-0 border-t bg-zinc-200/50 px-2.5 py-2 flex items-center gap-2">
-            <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={selectAllVisible}>
-              <CheckSquare className="h-3.5 w-3.5 mr-1.5" />Tout sélectionner
-            </Button>
+          <div className="flex-shrink-0 border-t bg-zinc-200/50 px-2.5 py-2 flex items-center gap-2 min-h-[2.75rem]">
+            {/* Rolls tick everything from the table's header box. */}
+            {kind === 'fils' && (
+              <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-foreground" onClick={selectAllVisible}>
+                <CheckSquare className="h-3.5 w-3.5 mr-1.5" />Tout sélectionner
+              </Button>
+            )}
             <span className="ml-auto text-xs text-muted-foreground tabular-nums">
               {onBonRows.length} sur le bon · {queuedLabel}
             </span>

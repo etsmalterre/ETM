@@ -42,6 +42,7 @@ import { repairAliased } from './stock-fini.js'
 import { fetchDefectsByEcru, defautSummary } from './stock-ecru.js'
 import { consumedEcruIds, mergedComponentEcruIds } from '../lib/fini-sources.js'
 import { filEtmSql } from '../lib/fil-gere-etm.js'
+import { reservationsClient } from '../lib/reservations-client.js'
 import { esc, n, dateDigits as dateStr, IS_WINDOWS } from '../lib/sst-shared.js'
 import { BonTransfertPdf, type BonTransfertPdfData, type BtArticle, type BtPiece, type BtFilRow } from '../lib/pdf/BonTransfertPdf.js'
 import { sendMail } from '../lib/gmail.js'
@@ -262,6 +263,45 @@ interface RouleauxLine {
   observations: string | null
   /** Défauts (#1297) — écru: the visitage defects, fini: the dyer's report. */
   defauts: string | null
+  /** Écru only (#1390): the dyer order the piece is affected to (null when free). */
+  affectation: RollAffectation | null
+  /** #1390: the client order the piece is reserved to. SCREEN ONLY: the bon
+   *  goes to the sous-traitant, its PDF never names our client. */
+  client_nom: string | null
+  commande_numero: number | null
+}
+
+/** The dyer order an écru is affected to (`sst` 0 + `commande` 0 = a dangling
+ *  affectation, its order line was deleted). */
+interface RollAffectation { commande: number; sst: number; sst_nom: string }
+
+/** Dyer order + sous-traitant of some sst order lines (an écru's
+ *  IDref_commande_affectation). PK → PK join, one row per line. */
+async function loadAffectations(lineIds: number[]): Promise<Map<number, RollAffectation>> {
+  const out = new Map<number, RollAffectation>()
+  const ids = Array.from(new Set(lineIds.filter((x) => x > 0)))
+  if (ids.length === 0) return out
+  const rows: any[] = []
+  for (let i = 0; i < ids.length; i += 400) {
+    rows.push(...await query<any>(
+      `SELECT lcs.IDligne_commande_sous_traitant AS aff_line, cst.IDcommande_sous_traitant AS aff_cmd, cst.IDsous_traitant AS aff_sst ` +
+        `FROM ligne_commande_sous_traitant lcs ` +
+        `LEFT JOIN commande_sous_traitant cst ON cst.IDcommande_sous_traitant = lcs.IDcommande_sous_traitant ` +
+        `WHERE lcs.IDligne_commande_sous_traitant IN (${ids.slice(i, i + 400).join(',')})`,
+    ))
+  }
+  const sstNames = await resolveSstNames(rows.map((r) => Number(r.aff_sst) || 0))
+  for (const r of rows) {
+    const sst = Number(r.aff_sst) || 0
+    out.set(Number(r.aff_line), { commande: Number(r.aff_cmd) || 0, sst, sst_nom: sst > 0 ? (sstNames.get(sst) ?? '') : '' })
+  }
+  return out
+}
+
+/** An écru's affectation from its line pointer (a pointer to a deleted line = dangling). */
+function affectationOf(affLine: number, byLine: Map<number, RollAffectation>): RollAffectation | null {
+  if (affLine <= 0) return null
+  return byLine.get(affLine) ?? { commande: 0, sst: 0, sst_nom: '' }
 }
 
 interface FilLine {
@@ -291,15 +331,20 @@ async function loadRouleauxLines(bonId: number): Promise<RouleauxLine[]> {
   // Flat per-table queries + JS merge (JOIN + CONVERT collapses result sets).
   const [ecruRaw, finiRaw] = await Promise.all([
     ecruIds.length
-      ? query<any>(`SELECT IDstock_ecru, IDref_ecru, IDcolori_ecru, numero, lot, poids, metrage, second_choix, observations FROM stock_ecru WHERE IDstock_ecru IN (${ecruIds.join(',')})`)
+      ? query<any>(`SELECT IDstock_ecru, IDref_ecru, IDcolori_ecru, numero, lot, poids, metrage, second_choix, observations, IDref_commande_affectation, IDligne_commande_client FROM stock_ecru WHERE IDstock_ecru IN (${ecruIds.join(',')})`)
       : Promise.resolve([]),
     finiIds.length
-      ? query<any>(`SELECT IDstock_fini, IDref_fini, IDColoris, numero, lot, poids, metrage, second_choix, observations, observation_sst FROM stock_fini WHERE IDstock_fini IN (${finiIds.join(',')})`)
+      ? query<any>(`SELECT IDstock_fini, IDref_fini, IDColoris, numero, lot, poids, metrage, second_choix, observations, observation_sst, IDligne_commande_client FROM stock_fini WHERE IDstock_fini IN (${finiIds.join(',')})`)
       : Promise.resolve([]),
   ])
   const ecruFixed = await fixEncoding(ecruRaw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
   const finiFixed = await fixEncoding(finiRaw, 'stock_fini', 'IDstock_fini', ['numero', 'lot', 'observations', 'observation_sst'])
   const defectsByEcru = await fetchDefectsByEcru(ecruIds)
+  // #1390: who each piece is for — the dyer order of an écru, the client order of both.
+  const [affByLine, { clientByLcc, commandeNumByLcc }] = await Promise.all([
+    loadAffectations((ecruFixed as any[]).map((r) => Number(r.IDref_commande_affectation) || 0)),
+    reservationsClient([...(ecruFixed as any[]), ...(finiFixed as any[])].map((r) => Number(r.IDligne_commande_client) || 0)),
+  ])
   const ecruById = new Map((ecruFixed as any[]).map((r) => [Number(r.IDstock_ecru), r]))
   const finiById = new Map((finiFixed as any[]).map((r) => [Number(r.IDstock_fini), r]))
 
@@ -366,6 +411,9 @@ async function loadRouleauxLines(bonId: number): Promise<RouleauxLine[]> {
         second_choix: Number(r.second_choix) || 0,
         observations: textOrNull(r.observations),
         defauts: textOrNull(defautSummary(defectsByEcru.get(ecruId) ?? [])),
+        affectation: affectationOf(Number(r.IDref_commande_affectation) || 0, affByLine),
+        client_nom: clientByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
+        commande_numero: commandeNumByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
       })
     } else if (finiId > 0) {
       const r = finiById.get(finiId)
@@ -385,6 +433,9 @@ async function loadRouleauxLines(bonId: number): Promise<RouleauxLine[]> {
         second_choix: Number(r.second_choix) || 0,
         observations: textOrNull(r.observations),
         defauts: textOrNull(r.observation_sst),
+        affectation: null,
+        client_nom: clientByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
+        commande_numero: commandeNumByLcc.get(Number(r.IDligne_commande_client) || 0) ?? null,
       })
     }
   }
@@ -773,9 +824,16 @@ const AVAILABLE_CAP = 200
 // most-recent rows, so filtering after the fetch would only ever search inside
 // an arbitrary 200-row window of a magasin holding 30k+ rolls.
 
-type SearchField = 'ref' | 'coloris' | 'numero' | 'lot' | 'fournisseur'
+type SearchField = 'ref' | 'coloris' | 'numero' | 'lot' | 'fournisseur' | 'client' | 'commande'
 
-const SEARCH_FIELDS: readonly SearchField[] = ['ref', 'coloris', 'numero', 'lot', 'fournisseur']
+const SEARCH_FIELDS: readonly SearchField[] = ['ref', 'coloris', 'numero', 'lot', 'fournisseur', 'client', 'commande']
+
+/** Fields backed by an INTEGER column (#1390: the client order numero). A chip
+ *  on one is an exact match, and a FREE term never searches it: piece numbers
+ *  are « 3542/63 » and client orders run in the same thousands, so « 3911 »
+ *  typed loose would mix the pieces of OF 3911 with those reserved to order
+ *  3911. The order number is asked by its chip, on purpose. */
+const NUMERIC_SEARCH_FIELDS: ReadonlySet<SearchField> = new Set<SearchField>(['commande'])
 
 export interface SearchCriteria {
   /** Free terms — each must match at least one searchable column. */
@@ -824,7 +882,7 @@ export function likePattern(term: string): string {
 /** SQL predicate for the criteria over one stock type's columns ('' when the
  *  search is empty). Always returns a leading ' AND '. */
 function searchSql(crit: SearchCriteria, cols: SearchColumns): string {
-  const anyCols = Object.values(cols).flat()
+  const anyCols = (Object.keys(cols) as SearchField[]).filter((f) => !NUMERIC_SEARCH_FIELDS.has(f)).flatMap((f) => cols[f] ?? [])
   const parts: string[] = []
   for (const t of crit.terms) {
     if (anyCols.length === 0) continue
@@ -837,6 +895,11 @@ function searchSql(crit: SearchCriteria, cols: SearchColumns): string {
     // nothing is the honest answer — dropping the chip would silently WIDEN the
     // result set for a criterion the user believes they applied.
     if (!chipCols || chipCols.length === 0) return ' AND 1 = 0'
+    if (NUMERIC_SEARCH_FIELDS.has(chip.field)) {
+      if (!/^\d{1,9}$/.test(chip.value)) return ' AND 1 = 0'
+      parts.push(`(${chipCols.map((c) => `${c} = ${parseInt(chip.value, 10)}`).join(' OR ')})`)
+      continue
+    }
     const p = likePattern(chip.value)
     parts.push(`(${chipCols.map((c) => `${c} LIKE '${p}'`).join(' OR ')})`)
   }
@@ -847,11 +910,15 @@ function searchSql(crit: SearchCriteria, cols: SearchColumns): string {
 // searchable — the DISPLAYED coloris is still resolved after the fact
 // (polymorphic on ref_fini.avec_teinture for the fini side). Both joins are on
 // the target's PK, so they can never multiply rows.
+// Same for the client order a piece is reserved to (#1390): ligne_commande_client
+// → commande_client → client, each on its PK.
 const ECRU_SEARCH_COLS: SearchColumns = {
   ref: ['re.reference'], coloris: ['ce.reference'], numero: ['se.numero'], lot: ['se.lot'],
+  client: ['cl.nom'], commande: ['cc.numero'],
 }
 const FINI_SEARCH_COLS: SearchColumns = {
   ref: ['rf.reference'], coloris: ['rfc.reference', 'ce.reference'], numero: ['sf.numero'], lot: ['sf.lot'],
+  client: ['cl.nom'], commande: ['cc.numero'],
 }
 const FIL_SEARCH_COLS: SearchColumns = {
   ref: ['rf.reference'], coloris: ['cf.reference'], lot: ['sf.lot'], fournisseur: ['f.nom'],
@@ -873,6 +940,9 @@ interface AvailableRoll {
   affectation?: { commande: number; sst: number; sst_nom: string } | null
   /** Écru only: affected to an order whose ennoblisseur is NOT the bon's destination. */
   affectee_ailleurs?: boolean
+  /** #1390: the client order the piece is reserved to (null when free). */
+  client_nom: string | null
+  commande_numero: number | null
 }
 
 // ── Second choix (LIVA #1119) ──────────────────────────
@@ -902,15 +972,24 @@ interface AvailableRoll {
 // The affectation is also returned per row so the user always sees why a
 // piece is there (« Cde MATEL n° 8989 »).
 
+/** The client order a piece is reserved to (#1390), joined so it is searchable;
+ *  the DISPLAYED client is resolved after the fact (reservationsClient). */
+function clientJoins(piece: 'se' | 'sf'): string {
+  return `LEFT JOIN ligne_commande_client lcc ON lcc.IDligne_commande_client = ${piece}.IDligne_commande_client ` +
+    `LEFT JOIN commande_client cc ON cc.IDcommande_client = lcc.IDcommande_client ` +
+    `LEFT JOIN client cl ON cl.IDclient = cc.IDclient `
+}
 const ECRU_FROM =
   `FROM stock_ecru se LEFT JOIN ref_ecru re ON se.IDref_ecru = re.IDref_ecru ` +
   `LEFT JOIN colori_ecru ce ON se.IDcolori_ecru = ce.IDcolori_ecru ` +
   `LEFT JOIN ligne_commande_sous_traitant lcs ON lcs.IDligne_commande_sous_traitant = se.IDref_commande_affectation ` +
-  `LEFT JOIN commande_sous_traitant cst ON cst.IDcommande_sous_traitant = lcs.IDcommande_sous_traitant `
+  `LEFT JOIN commande_sous_traitant cst ON cst.IDcommande_sous_traitant = lcs.IDcommande_sous_traitant ` +
+  clientJoins('se')
 const FINI_FROM =
   `FROM stock_fini sf LEFT JOIN ref_fini rf ON sf.IDref_fini = rf.IDref_fini ` +
   `LEFT JOIN ref_fini_colori rfc ON sf.IDColoris = rfc.IDref_fini_colori ` +
-  `LEFT JOIN colori_ecru ce ON sf.IDColoris = ce.IDcolori_ecru `
+  `LEFT JOIN colori_ecru ce ON sf.IDColoris = ce.IDcolori_ecru ` +
+  clientJoins('sf')
 // ── Only ETM's own rolls (LIVA #1169) ──────────────────
 //
 // `stock_ecru` is partitioned by IDsociete and TRM's freshly visited rolls
@@ -987,16 +1066,18 @@ export async function loadAvailableEcru(sourceId: number, crit: SearchCriteria, 
   const raw = await query<any>(
     `SELECT TOP ${AVAILABLE_CAP} se.IDstock_ecru, se.numero, se.lot, se.poids, se.metrage, se.second_choix, se.observations, se.IDcolori_ecru, ` +
       `se.IDref_commande_affectation AS aff_line, cst.IDcommande_sous_traitant AS aff_cmd, cst.IDsous_traitant AS aff_sst, ` +
+      `se.IDligne_commande_client AS lcc_client, ` +
       `re.reference AS ref_label ` +
       ECRU_FROM + ecruWhere(sourceId, crit, merged) + ecruSc(opts) + ecruAff(opts) + ' ' +
       `ORDER BY se.IDstock_ecru DESC`,
   )
   let fixed = await fixEncoding(raw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot', 'observations'])
   fixed = await repairAliased(fixed, 'ref_ecru', 'IDref_ecru', { ref_label: 'reference' })
-  const [col, sstNames, defectsByEcru] = await Promise.all([
+  const [col, sstNames, defectsByEcru, { clientByLcc, commandeNumByLcc }] = await Promise.all([
     loadEcruColorisMap((fixed as any[]).map((r) => Number(r.IDcolori_ecru) || 0)),
     resolveSstNames((fixed as any[]).map((r) => Number(r.aff_sst) || 0)),
     fetchDefectsByEcru((fixed as any[]).map((r) => Number(r.IDstock_ecru) || 0)),
+    reservationsClient((fixed as any[]).map((r) => Number(r.lcc_client) || 0)),
   ])
   return (fixed as any[]).map((r) => {
     const affLine = Number(r.aff_line) || 0
@@ -1014,6 +1095,8 @@ export async function loadAvailableEcru(sourceId: number, crit: SearchCriteria, 
         ? { commande: Number(r.aff_cmd) || 0, sst: affSst, sst_nom: affSst > 0 ? (sstNames.get(affSst) ?? '') : '' }
         : null,
       affectee_ailleurs: affLine > 0 && view.destId !== undefined && affSst !== view.destId,
+      client_nom: clientByLcc.get(Number(r.lcc_client) || 0) ?? null,
+      commande_numero: commandeNumByLcc.get(Number(r.lcc_client) || 0) ?? null,
     }
   })
 }
@@ -1022,7 +1105,7 @@ export async function loadAvailableFini(sourceId: number, crit: SearchCriteria, 
   const sc = showSecondChoix ? '' : ' AND sf.second_choix = 0'
   const raw = await query<any>(
     `SELECT TOP ${AVAILABLE_CAP} sf.IDstock_fini, sf.numero, sf.lot, sf.poids, sf.metrage, sf.second_choix, sf.observations, sf.observation_sst, sf.IDColoris, ` +
-      `rf.reference AS ref_label, rf.avec_teinture ` +
+      `rf.reference AS ref_label, rf.avec_teinture, sf.IDligne_commande_client AS lcc_client ` +
       FINI_FROM + finiWhere(sourceId, crit) + sc + ' ' +
       `ORDER BY sf.IDstock_fini DESC`,
   )
@@ -1034,7 +1117,10 @@ export async function loadAvailableFini(sourceId: number, crit: SearchCriteria, 
     if ((Number(r.avec_teinture) || 0) === 0) washIds.push(Number(r.IDColoris) || 0)
     else dyeIds.push(Number(r.IDColoris) || 0)
   }
-  const [washCol, dyeCol] = await Promise.all([loadEcruColorisMap(washIds), loadFiniColorisMap(dyeIds)])
+  const [washCol, dyeCol, { clientByLcc, commandeNumByLcc }] = await Promise.all([
+    loadEcruColorisMap(washIds), loadFiniColorisMap(dyeIds),
+    reservationsClient((fixed as any[]).map((r) => Number(r.lcc_client) || 0)),
+  ])
   return (fixed as any[]).map((r) => {
     const colId = Number(r.IDColoris) || 0
     const avec = Number(r.avec_teinture) || 0
@@ -1047,6 +1133,8 @@ export async function loadAvailableFini(sourceId: number, crit: SearchCriteria, 
       second_choix: Number(r.second_choix) || 0,
       observations: textOrNull(r.observations),
       defauts: textOrNull(r.observation_sst),
+      client_nom: clientByLcc.get(Number(r.lcc_client) || 0) ?? null,
+      commande_numero: commandeNumByLcc.get(Number(r.lcc_client) || 0) ?? null,
     }
   })
 }

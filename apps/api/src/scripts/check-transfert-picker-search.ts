@@ -58,11 +58,11 @@ async function main() {
   const fail = (m: string) => { console.log(`✗ ${m}`); problems++ }
   const ok = (m: string) => console.log(`✓ ${m}`)
 
-  const magasin = await busiestEcruMagasin()
+  let magasin = await busiestEcruMagasin()
   console.log(`Magasin source retenu : ${magasin}\n`)
 
   // ── 1. The loaders still return rows with the new joins ──────────────
-  const ecru = await loadAvailableEcru(magasin, NONE)
+  let ecru = await loadAvailableEcru(magasin, NONE)
   if (ecru.length === 0) fail('loadAvailableEcru renvoie 0 rouleau — la jointure colori_ecru a cassé la requête')
   else ok(`écru : ${ecru.length} rouleaux (jointure colori_ecru OK)`)
 
@@ -80,15 +80,33 @@ async function main() {
   } else ok('fini : aucune ligne dupliquée par les jointures coloris')
 
   // ── The ticket's fixture: one reference carrying TWO coloris ──────────
-  const byRef = new Map<string, Set<string>>()
-  for (const r of ecru) {
-    const ref = r.reference.trim()
-    const col = r.coloris_reference.trim()
-    if (!ref || !col) continue
-    if (!byRef.has(ref)) byRef.set(ref, new Set())
-    byRef.get(ref)!.add(col)
+  const twoToneOf = (rows: typeof ecru) => {
+    const byRef = new Map<string, Set<string>>()
+    for (const r of rows) {
+      const ref = r.reference.trim()
+      const col = r.coloris_reference.trim()
+      if (!ref || !col) continue
+      if (!byRef.has(ref)) byRef.set(ref, new Set())
+      byRef.get(ref)!.add(col)
+    }
+    return [...byRef.entries()].find(([, cols]) => new Set([...cols].map(fold)).size >= 2)
   }
-  const twoTone = [...byRef.entries()].find(([, cols]) => new Set([...cols].map(fold)).size >= 2)
+  let twoTone = twoToneOf(ecru)
+  if (!twoTone) {
+    // The 200 most recent écru of the busiest magasin can all carry one coloris
+    // per reference (dev copy of 2026-11-23): look for the fixture in the other
+    // magasins before calling the scenario untestable.
+    const others = await query<any>(
+      `SELECT DISTINCT se.IDmagasin FROM stock_ecru se WHERE se.IDsociete = 1 AND (se.IDligne_expedition_ETM IS NULL OR se.IDligne_expedition_ETM = 0)`,
+    )
+    for (const o of others) {
+      const m = Number(o.IDmagasin) || 0
+      if (m === magasin) continue
+      const rows = await loadAvailableEcru(m, NONE)
+      const found = twoToneOf(rows)
+      if (found) { magasin = m; ecru = rows; twoTone = found; console.log(`… fixture #1093 prise au magasin ${m}`); break }
+    }
+  }
   if (!twoTone) {
     fail('aucune référence à deux coloris distincts dans ce magasin — le scénario du ticket est intestable ici')
     await closeConnection()
@@ -194,9 +212,16 @@ async function main() {
   // Use the magasin holding the most unshipped 2nd-choix écru (the factory in
   // practice: 125 of 886 on the dev copy) so the case is never vacuous.
   console.log('\n— #1119 · 2e choix —')
+  // The direct count follows the picker's pool as it stands today: ETM's own
+  // rolls (#1169), not donated nor merged (#1187), not dyed yet (#1121). It
+  // had kept the #1119 predicate and read 1 221 against 14 (2026-11-23).
+  const mergedSc = await mergedComponentEcruIds()
   const scRows = await query<any>(
-    `SELECT IDmagasin AS m, COUNT(*) AS n FROM stock_ecru ` +
-      `WHERE second_choix = 1 AND (IDligne_expedition_ETM IS NULL OR IDligne_expedition_ETM = 0) GROUP BY IDmagasin`,
+    `SELECT se.IDmagasin AS m, COUNT(*) AS n FROM stock_ecru se ` +
+      `WHERE se.second_choix = 1 AND se.IDsociete = 1 AND (se.IDcommande_donation IS NULL OR se.IDcommande_donation = 0) ` +
+      `AND (se.IDligne_expedition_ETM IS NULL OR se.IDligne_expedition_ETM = 0) ` +
+      `AND NOT EXISTS (SELECT 1 FROM stock_fini sfc WHERE sfc.IDstock_ecru = se.IDstock_ecru)` +
+      `${mergedSc.size > 0 ? ` AND se.IDstock_ecru NOT IN (${[...mergedSc].join(',')})` : ''} GROUP BY se.IDmagasin`,
   )
   const scMag = scRows.map((r: any) => ({ m: Number(r.m) || 0, n: Number(r.n) || 0 })).sort((a: any, b: any) => b.n - a.n)[0]
   if (!scMag || scMag.n === 0) {
@@ -324,6 +349,47 @@ async function main() {
     if (cases.length > 0 && offered === 0) {
       ok(`${donated.length} écru en donation et ${mergedRows.length} composants fusionnés cherchés par numéro : aucun proposé`)
     }
+  }
+
+  // ── 8. Client order of a piece (LIVA #1390) ──────────────
+  // Each roll carries the client order it is reserved to, and that order is
+  // searchable: the client by name (chip or free text), the order numero by
+  // its chip ONLY — a free « 3911 » must keep meaning the piece number.
+  for (const kind of ['ecru', 'fini'] as const) {
+    const tbl = kind === 'ecru' ? 'stock_ecru' : 'stock_fini'
+    const where = kind === 'ecru'
+      ? `s.IDsociete = 1 AND (s.IDcommande_donation IS NULL OR s.IDcommande_donation = 0) AND (s.IDligne_expedition_ETM IS NULL OR s.IDligne_expedition_ETM = 0)`
+      : `(s.IDligne_expedition IS NULL OR s.IDligne_expedition = 0) AND s.destockage = 0 AND s.IDetat_stock_fini = 3 AND (s.IDcommande_donation IS NULL OR s.IDcommande_donation = 0)`
+    const mags = await query<any>(`SELECT s.IDmagasin AS m, COUNT(*) AS n FROM ${tbl} s WHERE s.IDligne_commande_client > 0 AND ${where} GROUP BY s.IDmagasin`)
+    const top = mags.map((r: any) => ({ m: Number(r.m) || 0, n: Number(r.n) || 0 })).sort((a, b) => b.n - a.n)[0]
+    if (!top) { console.log(`… aucun ${kind} réservé à un client — contrôle #1390 ignoré`); continue }
+    const load = (crit: SearchCriteria) => kind === 'ecru'
+      ? loadAvailableEcru(top.m, crit, true, { destId: top.m === 0 ? 9 : 0, showAffectees: true })
+      : loadAvailableFini(top.m, crit, true)
+    const reserved = (await load(NONE)).find((r) => r.client_nom && r.commande_numero)
+    if (!reserved) { console.log(`… ${kind} : aucune pièce réservée dans les ${top.n} du magasin ${top.m} — contrôle #1390 ignoré`); continue }
+    const numero = reserved.commande_numero!
+    const mot = fold(reserved.client_nom!).split(/\s+/).sort((a, b) => b.length - a.length)[0]
+
+    const parCommande = await load({ terms: [], chips: [{ field: 'commande', value: String(numero) }] })
+    if (parCommande.length === 0) fail(`${kind} : la pastille « Commande client : ${numero} » ne renvoie rien`)
+    else if (parCommande.some((r) => r.commande_numero !== numero)) fail(`${kind} : la pastille « Commande client : ${numero} » renvoie des pièces d'une autre commande`)
+    else ok(`${kind} : pastille « Commande client : ${numero} » → ${parCommande.length} pièces, toutes de cette commande`)
+
+    const parClient = await load({ terms: [], chips: [{ field: 'client', value: mot }] })
+    if (parClient.length === 0) fail(`${kind} : la pastille « Client : ${mot} » ne renvoie rien`)
+    else if (parClient.some((r) => !fold(r.client_nom ?? '').includes(mot))) fail(`${kind} : la pastille « Client : ${mot} » renvoie des pièces d'un autre client`)
+    else ok(`${kind} : pastille « Client : ${mot} » → ${parClient.length} pièces, toutes de ce client`)
+
+    // The numero typed loose searches the piece columns, never the client order.
+    const libre = await load({ terms: [String(numero)], chips: [] })
+    const fuite = libre.filter((r) => r.commande_numero === numero
+      && ![r.numero, r.lot, r.reference, r.coloris_reference, r.client_nom ?? ''].some((v) => fold(v).includes(String(numero))))
+    if (fuite.length > 0) fail(`${kind} : « ${numero} » en texte libre a cherché le N° de commande client (${fuite.length} pièces)`)
+    else ok(`${kind} : « ${numero} » en texte libre ne cherche pas le N° de commande client`)
+
+    const invalide = await load({ terms: [], chips: [{ field: 'commande', value: 'abc' }] })
+    if (invalide.length > 0) fail(`${kind} : une pastille « Commande client » non numérique renvoie ${invalide.length} pièces`)
   }
 
   console.log(problems === 0 ? '\n✅ Recherche du picker de transfert conforme' : `\n❌ ${problems} problème(s)`)

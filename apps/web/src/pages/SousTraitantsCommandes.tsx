@@ -89,6 +89,7 @@ import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { lireReception, ouvertes, tricobotAttend, TricobotAvatar, useCompteursTricobot, useSaisiesTricobot, type CompteurTricobot, type SaisieTricobot } from '@/components/tricobot/SaisiesTricobot'
 import { TricobotPriseEnMain } from '@/components/tricobot/TricobotPriseEnMain'
 import { CaseACocher, RollTable } from '@/components/stock/RollTable'
+import { ClientReservationBadge } from '@/components/stock/ClientReservationBadge'
 import { ReservationsTricotage, type LectureTricotage } from '@/components/commandes/ReservationsTricotage'
 import { EtatPill } from '@/lib/etat-stock-fini'
 import { RollDefautsIcon, RollObservationsIcon } from '@/components/stock/RollNoteIcons'
@@ -4471,33 +4472,6 @@ function TricoteurReceptionDialog({
         </div>
       </DialogContent>
     </Dialog>
-  )
-}
-
-/** Client-reservation tag on a roll card. Carries the order number: a client
- *  often has several orders open and the name alone sent people looking on
- *  the wrong one (LIVA #1258). */
-function ClientReservationBadge({ clientNom, commandeNumero, misfit = false }: {
-  clientNom?: string | null
-  commandeNumero?: number | null
-  /** Reserved for another article/coloris than this dyer line makes (LIVA #1261). */
-  misfit?: boolean
-}) {
-  if (!clientNom) return null
-  const reserved = commandeNumero ? `Rouleau réservé à la commande N° ${commandeNumero} de ${clientNom}` : 'Rouleau réservé à ce client'
-  return (
-    <Badge
-      variant={misfit ? 'outline' : 'secondary'}
-      className={cn(
-        'text-xs py-1 px-2 gap-1 flex-shrink-0',
-        misfit && 'border-destructive/40 bg-destructive/10 text-destructive',
-      )}
-      title={misfit ? `${reserved}, pour une autre référence ou un autre coloris que cette teinture` : reserved}
-    >
-      {misfit ? <AlertTriangle className="h-3 w-3" /> : <Building2 className="h-3 w-3" />}
-      {clientNom}
-      {!!commandeNumero && <span className={cn('font-normal', misfit ? 'text-destructive/80' : 'text-muted-foreground')}>· N° {commandeNumero}</span>}
-    </Badge>
   )
 }
 
