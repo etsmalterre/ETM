@@ -21,6 +21,7 @@ import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { addCodeForAcceptedEtude } from '../lib/codes-sp.js'
+import { corpsMailSoumissionEtude } from '../lib/mail-soumission-etude.js'
 import { libelleAcceptation, usagesColorisFini } from '../lib/coloris-fini-suppression.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 
@@ -1689,29 +1690,20 @@ async function buildSoumissionEmailDefaults(soumId: number): Promise<{
     ? `Soumission N°${numero} — ${subjectContext}`
     : `Soumission N°${numero}`
 
-  const bodyLines = [
-    'Bonjour,',
-    '',
-    `Veuillez trouver ci-joint notre soumission N°${numero}${clientNom ? ` à destination de ${clientNom}` : ''}.`,
-    '',
-  ]
-  if (refFini || codeClient || ctx.refFiniColoriReference) {
-    bodyLines.push('Détails :')
-    if (refFini) bodyLines.push(`  • Référence fini : ${refFini}`)
-    if (codeClient) bodyLines.push(`  • Code client : ${codeClient}`)
-    if (ctx.refFiniColoriReference) bodyLines.push(`  • Code Malterre : ${ctx.refFiniColoriReference}`)
-    bodyLines.push('')
-  }
-  bodyLines.push(
-    "Merci de bien vouloir nous retourner vos commentaires après examen des échantillons joints.",
-    '',
-    'Cordialement,',
-  )
+  // The mail goes to the lab, which posts the sheet + samples to the client
+  // (LIVA #1389): text in lib/mail-soumission-etude.ts.
+  const body = corpsMailSoumissionEtude({
+    numero,
+    clientNom,
+    refFini,
+    codeClient,
+    codeMalterre: ctx.refFiniColoriReference,
+  })
 
   return {
     recipients: { selected, suggestions },
     subject,
-    body: bodyLines.join('\n'),
+    body,
     sousTraitantNom,
     numero,
   }
