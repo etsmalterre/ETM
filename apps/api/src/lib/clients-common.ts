@@ -356,10 +356,10 @@ export function registerContactAdresseRoutes(router: RouterType, scope: Permissi
       if (!(await requirePermission(req, res, 'crud_client_contacts', scope))) return
       const id = parseInt(req.params.id, 10)
       if (isNaN(id) || id <= 0) { res.status(400).json({ error: 'Invalid ID' }); return }
-      const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission } = req.body
+      const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission, envoi_etude_coloris } = req.body
       await query(
-        `INSERT INTO contact (IDclient, nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission, est_defaut, est_visible) ` +
-          `VALUES (${id}, ${sqlText(nom)}, ${sqlText(prenom)}, ${sqlText(tel)}, ${sqlText(mail)}, ${flag(envoi_bl)}, ${flag(envoi_facture)}, ${flag(envoi_commande)}, ${flag(envoi_soumission)}, 0, 1)`,
+        `INSERT INTO contact (IDclient, nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission, envoi_etude_coloris, est_defaut, est_visible) ` +
+          `VALUES (${id}, ${sqlText(nom)}, ${sqlText(prenom)}, ${sqlText(tel)}, ${sqlText(mail)}, ${flag(envoi_bl)}, ${flag(envoi_facture)}, ${flag(envoi_commande)}, ${flag(envoi_soumission)}, ${flag(envoi_etude_coloris)}, 0, 1)`,
       )
       res.status(201).json({ ok: true })
     } catch (err) {
@@ -373,10 +373,13 @@ export function registerContactAdresseRoutes(router: RouterType, scope: Permissi
       if (!(await requirePermission(req, res, 'crud_client_contacts', scope))) return
       const cid = parseInt(req.params.cid, 10)
       if (isNaN(cid)) { res.status(400).json({ error: 'Invalid ID' }); return }
-      const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission } = req.body
+      const { nom, prenom, tel, mail, envoi_bl, envoi_facture, envoi_commande, envoi_soumission, envoi_etude_coloris } = req.body
+      // « Soumission étude coloris » (#1388) is ETM's tick: TRM's form does not
+      // send it, and a save from there must not clear it.
+      const etudeColoris = envoi_etude_coloris === undefined ? '' : `, envoi_etude_coloris = ${flag(envoi_etude_coloris)}`
       await query(
         `UPDATE contact SET nom = ${sqlText(nom)}, prenom = ${sqlText(prenom)}, tel = ${sqlText(tel)}, mail = ${sqlText(mail)}, ` +
-          `envoi_bl = ${flag(envoi_bl)}, envoi_facture = ${flag(envoi_facture)}, envoi_commande = ${flag(envoi_commande)}, envoi_soumission = ${flag(envoi_soumission)} ` +
+          `envoi_bl = ${flag(envoi_bl)}, envoi_facture = ${flag(envoi_facture)}, envoi_commande = ${flag(envoi_commande)}, envoi_soumission = ${flag(envoi_soumission)}${etudeColoris} ` +
           `WHERE IDcontact = ${cid}`,
       )
       res.json({ ok: true })

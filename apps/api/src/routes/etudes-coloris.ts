@@ -24,6 +24,7 @@ import { addCodeForAcceptedEtude } from '../lib/codes-sp.js'
 import { corpsMailSoumissionEtude } from '../lib/mail-soumission-etude.js'
 import { libelleAcceptation, usagesColorisFini } from '../lib/coloris-fini-suppression.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
+import { destinatairesEtudeColoris } from '../lib/destinataires-etude-coloris.js'
 
 export const etudesColorisRouter: RouterType = Router()
 
@@ -1579,12 +1580,18 @@ async function buildSoumissionPdfData(soumId: number): Promise<SoumissionPdfData
   const dateLong =
     formatHfsqlDateLongFr(ctx.soumission.date_soum) || todayLongFr()
 
-  const clientAdresse = await loadDefaultAdresse('client', ctx.idClient)
+  // Who the samples are for: the client's contacts ticked « Soumission étude
+  // coloris » (#1388), printed above the address.
+  const [clientAdresse, destinataires] = await Promise.all([
+    loadDefaultAdresse('client', ctx.idClient),
+    destinatairesEtudeColoris(ctx.idClient),
+  ])
 
   return {
     numero: String(ctx.soumission.IDsoum_col),
     dateDocument: dateLong,
     clientNom: ctx.clientNom,
+    destinataires,
     clientAdresse,
     refFini: ctx.refFiniReference,
     codeClient: ctx.desigClient,
@@ -1615,7 +1622,7 @@ etudesColorisRouter.get('/soumissions/:soumId/pdf', async (req: Request, res: Re
     const buffer = await renderSoumissionPdfBuffer(data)
 
     res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `inline; filename="soumission-${data.numero}.pdf"`)
+    res.setHeader('Content-Disposition', `inline; filename="soumission-etude-coloris-${data.numero}.pdf"`)
     res.removeHeader('X-Frame-Options')
     res.removeHeader('Content-Security-Policy')
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
@@ -1687,14 +1694,17 @@ async function buildSoumissionEmailDefaults(soumId: number): Promise<{
   const codeClient = ctx.desigClient ?? ''
   const subjectContext = [refFini, codeClient].filter(Boolean).join(' · ')
   const subject = subjectContext
-    ? `Soumission N°${numero} — ${subjectContext}`
-    : `Soumission N°${numero}`
+    ? `Soumission étude coloris N°${numero} — ${subjectContext}`
+    : `Soumission étude coloris N°${numero}`
 
   // The mail goes to the lab, which posts the sheet + samples to the client
-  // (LIVA #1389): text in lib/mail-soumission-etude.ts.
+  // (LIVA #1389): text in lib/mail-soumission-etude.ts. « À l'attention de » =
+  // the client's contacts ticked « Soumission étude coloris » (#1388), the same
+  // people the sheet prints.
   const body = corpsMailSoumissionEtude({
     numero,
     clientNom,
+    destinataires: await destinatairesEtudeColoris(ctx.idClient),
     refFini,
     codeClient,
     codeMalterre: ctx.refFiniColoriReference,
@@ -1823,7 +1833,7 @@ etudesColorisRouter.post('/soumissions/:soumId/email', async (req: Request, res:
       if (!data) { res.status(404).json({ error: 'Soumission not found' }); return }
       const buffer = await renderSoumissionPdfBuffer(data)
       attachments.push({
-        filename: `soumission-${data.numero}.pdf`,
+        filename: `soumission-etude-coloris-${data.numero}.pdf`,
         content: buffer,
         contentType: 'application/pdf',
       })

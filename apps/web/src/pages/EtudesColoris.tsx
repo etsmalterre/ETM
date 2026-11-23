@@ -715,7 +715,7 @@ export function EtudesColoris() {
             apiFetch(`/etudes-coloris/soumissions/${emailSoumissionId}/email-defaults`)
           }
           pdfUrl={`${API_URL}/etudes-coloris/soumissions/${emailSoumissionId}/pdf`}
-          pdfAttachmentLabel={`soumission-${emailSoumissionId}.pdf`}
+          pdfAttachmentLabel={`soumission-etude-coloris-${emailSoumissionId}.pdf`}
           onSend={(p) =>
             postEmail(
               `${API_URL}/etudes-coloris/soumissions/${emailSoumissionId}/email`,

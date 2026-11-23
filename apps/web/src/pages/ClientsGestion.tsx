@@ -112,6 +112,7 @@ interface Contact {
   envoi_facture: boolean
   envoi_commande: boolean
   envoi_soumission: boolean
+  envoi_etude_coloris: boolean
 }
 
 interface Adresse {
@@ -1502,6 +1503,9 @@ const ENVOI_FLAGS = [
   { key: 'envoi_bl' as const, label: 'BL' },
   { key: 'envoi_facture' as const, label: 'Facture' },
   { key: 'envoi_soumission' as const, label: 'Soumission' },
+  // Who the samples of an étude coloris are for: printed in the sheet's
+  // « À l'attention de » (#1388). « Soumission » above is the LOT soumissions'.
+  { key: 'envoi_etude_coloris' as const, label: 'Soumission étude coloris' },
 ]
 
 // Hue-per-document category chips (mps_designer §36 style): one stable colour
@@ -1513,7 +1517,10 @@ const ENVOI_CHIP_CLASS: Record<(typeof ENVOI_FLAGS)[number]['key'], string> = {
   envoi_bl: 'bg-teal-500/10 text-teal-700 border-teal-500/25',
   envoi_facture: 'bg-orange-500/10 text-orange-700 border-orange-500/25',
   envoi_soumission: 'bg-amber-500/15 text-amber-800 border-amber-500/30',
+  envoi_etude_coloris: 'bg-violet-500/10 text-violet-700 border-violet-500/25',
 }
+
+const ENVOI_VIDE = { envoi_bl: false, envoi_facture: false, envoi_commande: false, envoi_soumission: false, envoi_etude_coloris: false }
 const chipClass = 'inline-flex items-center px-1.5 py-0 rounded text-[10px] font-medium border'
 // Espace client access is not a document flag: its own hue (navy) and a Globe icon.
 const espaceClientChipClass = 'gap-0.5 bg-primary/10 text-primary border-primary/25'
@@ -1531,7 +1538,7 @@ function ContactsTab({ contacts, isEditing, accesEditable, clientId, onMutationS
   contacts: Contact[]; isEditing: boolean; accesEditable: boolean; clientId: number; onMutationSuccess: () => void; onDirtyChange: (dirty: boolean) => void
 }) {
   const [editingId, setEditingId] = useState<number | null>(null)
-  const [form, setForm] = useState({ nom: '', prenom: '', tel: '', mail: '', envoi_bl: false, envoi_facture: false, envoi_commande: false, envoi_soumission: false })
+  const [form, setForm] = useState({ nom: '', prenom: '', tel: '', mail: '', ...ENVOI_VIDE })
   const [showForm, setShowForm] = useState(false)
   const { data: acces } = useAccesEspaceClient(clientId)
   const accesDe = (idcontact: number) => acces?.contacts.find((a) => a.idcontact === idcontact)
@@ -1547,10 +1554,10 @@ function ContactsTab({ contacts, isEditing, accesEditable, clientId, onMutationS
   const updateMut = useMutation({ mutationFn: (cid: number) => apiFetch(`/clients/${clientId}/contacts/${cid}`, { method: 'PUT', body: JSON.stringify(form) }), onSuccess: () => { onMutationSuccess(); setEditingId(null) } })
   const deleteMut = useMutation({ mutationFn: (cid: number) => apiFetch(`/clients/${clientId}/contacts/${cid}`, { method: 'DELETE' }), onSuccess: onMutationSuccess })
 
-  const resetForm = () => { setForm({ nom: '', prenom: '', tel: '', mail: '', envoi_bl: false, envoi_facture: false, envoi_commande: false, envoi_soumission: false }); setShowForm(false) }
+  const resetForm = () => { setForm({ nom: '', prenom: '', tel: '', mail: '', ...ENVOI_VIDE }); setShowForm(false) }
   const startEditContact = (c: Contact) => {
     setEditingId(c.IDcontact)
-    setForm({ nom: c.nom ?? '', prenom: c.prenom ?? '', tel: c.tel ?? '', mail: c.mail ?? '', envoi_bl: !!c.envoi_bl, envoi_facture: !!c.envoi_facture, envoi_commande: !!c.envoi_commande, envoi_soumission: !!c.envoi_soumission })
+    setForm({ nom: c.nom ?? '', prenom: c.prenom ?? '', tel: c.tel ?? '', mail: c.mail ?? '', envoi_bl: !!c.envoi_bl, envoi_facture: !!c.envoi_facture, envoi_commande: !!c.envoi_commande, envoi_soumission: !!c.envoi_soumission, envoi_etude_coloris: !!c.envoi_etude_coloris })
   }
 
   const contactForm = (
@@ -1565,7 +1572,7 @@ function ContactsTab({ contacts, isEditing, accesEditable, clientId, onMutationS
         <label className="text-xs font-medium text-muted-foreground">Envoi documents</label>
         <div className="grid grid-cols-2 gap-x-3 gap-y-1">
           {ENVOI_FLAGS.map(({ key, label }) => (
-            <label key={key} className="flex items-center gap-1.5 text-xs cursor-pointer">
+            <label key={key} className={cn('flex items-center gap-1.5 text-xs cursor-pointer', key === 'envoi_etude_coloris' && 'col-span-full')}>
               <input type="checkbox" checked={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.checked })} className="h-3.5 w-3.5 rounded border-input accent-accent" />
               {label}
             </label>

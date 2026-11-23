@@ -2173,6 +2173,16 @@ ${grantApi('USAGE, SELECT', 'SEQUENCE rappel_id_seq')}
     name: '0082_ligne_expedition_quantite',
     sql: `ALTER TABLE ligne_expedition ADD COLUMN quantite double precision NOT NULL DEFAULT 0;`,
   },
+  {
+    // Who, at the client, receives an étude coloris soumission (LIVA #1388,
+    // lib/destinataires-etude-coloris.ts). The sheet's « À l'attention de »
+    // block printed the client's address and no person: nothing said who the
+    // samples are for. A fifth « envoi » tick on the contact, beside
+    // `envoi_soumission` — which stays the LOT soumissions' (two different
+    // things, and often two different people).
+    name: '0083_contact_envoi_etude_coloris',
+    sql: `ALTER TABLE contact ADD COLUMN envoi_etude_coloris smallint NOT NULL DEFAULT 0 CHECK (envoi_etude_coloris IN (0, 1));`,
+  },
 ]
 
 export interface MigrationStatus {

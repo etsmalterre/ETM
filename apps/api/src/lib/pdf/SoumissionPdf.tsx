@@ -1,6 +1,7 @@
-// PDF document for a "Soumission" (proposal of coloris samples sent to a
-// client). Reuses MalterreDocument so the branding stays aligned with the
-// rest of the MPS documents.
+// PDF document for a « Soumission étude coloris » (proposal of coloris samples
+// sent to a client). Reuses MalterreDocument so the branding stays aligned with
+// the rest of the MPS documents. Named in full since #1388: « Soumission »
+// alone was also what the LOT soumissions are called (SoumissionLotPdf).
 //
 // The main area is a grid of up to four dashed placeholders where the
 // employee staples the physical samples before handing the paper off to
@@ -23,6 +24,9 @@ export interface SoumissionPdfData {
   numero: string
   dateDocument: string              // long-form French, e.g. "14 avril 2026"
   clientNom: string | null
+  /** People at the client the samples are for (« Prénom Nom »): the contacts
+   *  ticked « Soumission étude coloris » (lib/destinataires-etude-coloris.ts). */
+  destinataires?: readonly string[]
   clientAdresse: {
     nom: string | null
     adresse1: string | null
@@ -100,8 +104,12 @@ const styles = StyleSheet.create({
 
 // ── Helpers ──────────────────────────────────────────────
 
-function buildClientAddress(data: SoumissionPdfData): AddressBlockData {
+export function buildClientAddress(data: SoumissionPdfData): AddressBlockData {
   const a = data.clientAdresse
+  // The people the samples are for, as the block's strong line, above the
+  // company and its address (#1388). Nobody ticked = the address alone.
+  const personnes = (data.destinataires ?? []).map((p) => p.trim()).filter(Boolean)
+  const dejaNommee = new Set(personnes.map((p) => p.toLowerCase()))
   const lines: string[] = []
   if (a) {
     if (a.nom) lines.push(a.nom)
@@ -114,8 +122,10 @@ function buildClientAddress(data: SoumissionPdfData): AddressBlockData {
   }
   return {
     title: 'À l\'attention de',
-    name: '',
-    lines: lines.length > 0 ? lines : [data.clientNom || '—'],
+    name: personnes.join(', '),
+    // Until the tick existed the person was typed in the address itself
+    // (« Judy SUBRYAN » as its first line): never print her twice.
+    lines: lines.length > 0 ? lines.filter((l) => !dejaNommee.has(l.trim().toLowerCase())) : [data.clientNom || '—'],
     icon: 'user',
   }
 }
@@ -144,12 +154,12 @@ export function SoumissionPdf({ data }: { data: SoumissionPdfData }) {
 
   return (
     <MalterreDocument
-      documentType="Soumission"
+      documentType="Soumission étude coloris"
       reference={`N°${data.numero}`}
       documentDate={data.dateDocument || ''}
       topLeftAddress={clientAddress}
       topRightInfo={infoCard}
-      title={`Soumission ${data.numero}`}
+      title={`Soumission étude coloris ${data.numero}`}
     >
       <View style={styles.sampleGrid}>
         {samples.length === 0 ? (

@@ -6,9 +6,10 @@
 // whom — it used to ask the reader for « vos commentaires après examen des
 // échantillons », a sentence meant for the client, who never receives this mail.
 //
-// Who at the client: the people named in `destinataires`. Nothing on an étude
-// names one yet, so the sentence falls back to the address printed on the sheet
-// (the client's default address, « À l'attention de »).
+// Who at the client: the people named in `destinataires` — the client's
+// contacts ticked « Soumission étude coloris » (#1388,
+// lib/destinataires-etude-coloris.ts). Nobody ticked: the sentence falls back
+// to the address printed on the sheet (the client's default address).
 
 export interface MailSoumissionEtude {
   numero: string
