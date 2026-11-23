@@ -289,6 +289,7 @@ otherwise). The script stamps what it shipped and tells you to rerun for the new
 ```bash
 cd /c/dev/etsmalterre/ETM && node scripts/deploy/deploy-web.mjs --app etm     # --dry-run / --skip-build
 cd /c/dev/etsmalterre/ETM && node scripts/deploy/deploy-web.mjs --app admin   # Console Administration
+cd /c/dev/etsmalterre/ETM && node scripts/deploy/deploy-web.mjs --app expe    # Expe
 ```
 
 **Console Administration (`--app admin`, since 2026-10-27).** Repo `admin-malterre`
@@ -311,7 +312,16 @@ ETM web deploy that preflight flags this way, bump the console (patch or minor) 
 `/admin_deploy`. Before the FIRST console deploy only:
 - the API deployed first (migration `0038_console_admin` = the gate).
 
-Same script for every web bundle of the platform (`--app etm|trm|admin|atelier|trs`, one row per
+**Expe (`--app expe`, since 2026-11-23).** Repo `expe` (checkout `../expe`, next to ETM):
+its own screens, built against the ETM checkout for the design system (`@etm`), its own root
+version, both stamps like the console (`DEPLOYED_SHA`, `DEPLOYED_ETM_SHA`, `dist/etm-sources.txt`).
+nginx site `expe.malterre` (dist `/home/debian/mps_expe/dist`), Caddy `@expe`, smoke probe in
+`deploy-api.mjs`, tier in `preflight.mjs` (« expe is BEHIND » for its own commits, « expe is
+BEHIND ETM » for an ETM file it embeds; no doctrine in it). Its API routes (`/api/expe`) ship
+with the API, first. **From Expe's repo, `/expe_deploy` drives it end to end**
+(`expe/.claude/skills/expe_deploy`).
+
+Same script for every web bundle of the platform (`--app etm|trm|admin|expe|atelier|trs`, one row per
 app in its `APPS` table — a per-app difference is a row, never a fork). It: guards the
 checkout; `pnpm install` (the main checkout's `node_modules` lags whenever a landed
 feature added a dependency — seen 2026-07-23, `html-to-image`); builds

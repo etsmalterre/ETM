@@ -29,6 +29,7 @@ function mainCheckout(start) {
 const ETM = mainCheckout(here)
 const TRM = path.resolve(ETM, '..', 'TRM')
 const ADMIN = path.resolve(ETM, '..', 'admin-malterre')
+const EXPE = path.resolve(ETM, '..', 'expe')
 const API_HOST = 'debian@10.10.20.3'
 const WEB_HOST = 'debian@10.10.20.4'
 
@@ -68,7 +69,8 @@ const BLOCK = (s) => { blockers++; say('  \u001b[31m\u2718\u001b[0m ' + s) }
 const TODO  = (s) => { actions++;  say('  \u001b[33m\u2192\u001b[0m ' + s) }
 const OK    = (s) => say('  \u001b[32m\u2713\u001b[0m ' + s)
 
-for (const [name, repo] of [['ETM', ETM], ['TRM', TRM], ['admin', ADMIN]]) git(repo, ['fetch', '-q', 'origin'])
+const REPOS = [['ETM', ETM], ['TRM', TRM], ['admin', ADMIN], ['expe', EXPE]]
+for (const [, repo] of REPOS) git(repo, ['fetch', '-q', 'origin'])
 
 // Every web bundle the platform serves, each with its own dist dir, its own
 // stamp and its own source path. THIS TABLE IS THE WHOLE POINT: a tier missing
@@ -85,7 +87,9 @@ const WEB_TIERS = [
   { key: 'pointage', label: 'pointage', repo: TRM, dir: 'mps_pointage', src: 'apps/pointage', head: 'TRM' },
   { key: 'tirelle', label: 'tirelle', repo: ETM, dir: 'mps_tirelle', src: 'apps/tirelle', head: 'ETM' },
   // etm: the console's screens and doctrines are ETM's files (see the ETM check below).
-  { key: 'admin',   label: 'admin',   repo: ADMIN, dir: 'mps_admin',  src: 'apps/web',     head: 'ADMIN', etm: true },
+  { key: 'admin',   label: 'admin',   repo: ADMIN, dir: 'mps_admin',  src: 'apps/web',     head: 'ADMIN', etm: true, doctrines: true },
+  // Expe (repo expe, 2026-11-23): its own screens, on ETM's design system. No doctrine in it.
+  { key: 'expe',    label: 'expe',    repo: EXPE,  dir: 'mps_expe',   src: 'apps/web',     head: 'EXPE',  etm: true },
 ]
 
 const stamps = {
@@ -108,7 +112,7 @@ if (Object.values(stamps).every((v) => v === null)) {
   process.exit(2)
 }
 
-const heads = { ETM: git(ETM, ['rev-parse', 'origin/master']), TRM: git(TRM, ['rev-parse', 'origin/master']), ADMIN: git(ADMIN, ['rev-parse', 'origin/master']) }
+const heads = { ETM: git(ETM, ['rev-parse', 'origin/master']), TRM: git(TRM, ['rev-parse', 'origin/master']), ADMIN: git(ADMIN, ['rev-parse', 'origin/master']), EXPE: git(EXPE, ['rev-parse', 'origin/master']) }
 const short = (s) => (s && s !== 'none' ? s.slice(0, 7) : String(s))
 
 say('\n\u2500\u2500 MPS platform \u2500 what is live \u2500\u2500')
@@ -165,10 +169,11 @@ for (const t of WEB_TIERS) {
   if (t.etm) {
     // The ETM files this bundle shows, changed since the ETM it was built against.
     // Without the list (older build), every ETM web or doctrine change counts.
-    // A doctrine_*.md always counts: a new one joins the import.meta.glob.
+    // For a tier that embeds the doctrines (the console), a doctrine_*.md always
+    // counts: a new one joins the import.meta.glob.
     const shown = etmSources[t.key]
     const e = rangeFiles(ETM, etmStamps[t.key], '.').filter((x) => x.startsWith('<')
-      || /^claude_doc\/doctrine_[^/]+\.md$/.test(x)
+      || (t.doctrines && /^claude_doc\/doctrine_[^/]+\.md$/.test(x))
       || (shown ? shown.has(x) : x.startsWith('apps/web/src/')))
     if (e.length === 0) OK(`${t.label} is current with ETM (no shown ETM file changed since its ETM stamp)`)
     else {
@@ -183,7 +188,7 @@ for (const t of WEB_TIERS) {
 
 // 3. clean trees — a dist built from master PLUS an uncommitted edit ships unreviewed code
 say('\n\u2500\u2500 Working trees \u2500\u2500')
-for (const [name, repo] of [['ETM', ETM], ['TRM', TRM], ['admin', ADMIN]]) {
+for (const [name, repo] of REPOS) {
   // Since 2026-09-02 /feature-complete lands by pushing the branch to origin/master and
   // only best-effort fast-forwards the main checkout, so a checkout BEHIND origin is a
   // normal outcome (someone's uncommitted edit overlapped the landing). The build reads

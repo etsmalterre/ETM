@@ -22,7 +22,7 @@
 //               2026-10-06 this step was manual and got forgotten (0011_journal_activite
 //               missing, the Rapport d'activité agent's first runs failed). The rh and
 //               espace_client databases migrate themselves at API start-up.
-//   7. smoke    every client through its own nginx: mpsng, trm, atelier, trs, pointage, tirelle, admin
+//   7. smoke    every client through its own nginx: mpsng, trm, atelier, trs, pointage, tirelle, admin, expe
 //   8. stamp    DEPLOYED_SHA — last, its own call, only after 6 and 7
 //
 // One restart blips EVERY client (ETM, TRM, atelier, TRS, pointage) — which is why step 7
@@ -137,6 +137,7 @@ const probes = [
   ['https://pointage.intra.etsmalterre.com/api/health', ['200']],
   ['https://tirelle.intra.etsmalterre.com/api/health', ['200']],
   ['https://admin.intra.etsmalterre.com/api/health', ['200']],
+  ['https://expe.intra.etsmalterre.com/api/health', ['200']],
 ]
 let bad = 0
 for (const [url, want] of probes) {

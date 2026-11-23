@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deploy ONE web bundle of the MPS platform, end to end, in the only safe order:
 //
-//   node scripts/deploy/deploy-web.mjs --app <etm|trm|admin|atelier|trs|pointage|tirelle> [--dry-run] [--skip-build]
+//   node scripts/deploy/deploy-web.mjs --app <etm|trm|admin|expe|atelier|trs|pointage|tirelle> [--dry-run] [--skip-build]
 //
 //   1. guard   the app's main checkout is clean, on master, at origin/master
 //   2. build   `pnpm --filter <pkg> build` with VITE_API_URL=/api set IN THE CHILD ENV
@@ -23,7 +23,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
-  ADMIN, ETM, TRM, WEB_HOST, assertReachable, die, git, guardTree, httpBody, httpCode, ok,
+  ADMIN, ETM, EXPE, TRM, WEB_HOST, assertReachable, die, git, guardTree, httpBody, httpCode, ok,
   remoteScript, scp, short, stagingDir, step, tarCreate,
 } from './lib.mjs'
 
@@ -35,6 +35,9 @@ const APPS = {
   // Console Administration (repo admin-malterre, 2026-10-27): ETM's screens through @etm, its own root version.
   // etmStamp: also stamps DEPLOYED_ETM_SHA (the ETM it was built against), read by preflight.mjs.
   admin:   { repo: ADMIN, pkg: '@mps-admin/web', src: 'apps/web',     dir: 'mps_admin',   host: 'admin.intra.etsmalterre.com', versionFrom: 'root', etmStamp: true },
+  // Expe (repo expe, 2026-11-23): nginx site expe.malterre, Caddy @expe. Built against the ETM
+  // checkout like the console (design system through @etm), its own root version.
+  expe:    { repo: EXPE, pkg: '@mps-expe/web',   src: 'apps/web',     dir: 'mps_expe',    host: 'expe.intra.etsmalterre.com',  versionFrom: 'root', etmStamp: true },
   atelier: { repo: TRM, pkg: '@mps-trm/atelier', src: 'apps/atelier', dir: 'mps_atelier', host: 'atelier.intra.etsmalterre.com', versionFrom: 'app' },
   trs:     { repo: TRM, pkg: '@mps-trm/trs',     src: 'apps/trs',     dir: 'mps_trs',     host: 'trs.intra.etsmalterre.com',     versionFrom: 'app' },
   pointage: { repo: TRM, pkg: '@mps-trm/pointage', src: 'apps/pointage', dir: 'mps_pointage', host: 'pointage.intra.etsmalterre.com', versionFrom: 'app' },
@@ -64,8 +67,8 @@ const version = JSON.parse(fs.readFileSync(
 step(`guard — ${label} builds from ${app.repo}`)
 const sha = guardTree(app.repo, `${appKey} checkout`)
 let etmSha = null
-if (appKey === 'trm' || appKey === 'admin') {
-  // TRM's web and the console import shared screens from the ETM checkout via the @etm alias.
+if (appKey === 'trm' || app.etmStamp) {
+  // TRM's web, the console and Expe import ETM's files from the ETM checkout via the @etm alias.
   etmSha = guardTree(ETM, 'ETM checkout (shared screens)')
   // ETM_WEB_SRC (gitignored, so invisible to guardTree) repoints @etm at a worktree:
   // the bundle would ship unlanded ETM code under ETM master's stamp.
