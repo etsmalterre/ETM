@@ -76,6 +76,7 @@ import { mentionRouleauNonFacture, paragraphePointsASignaler, pointsASignaler, t
 import { rechercherExpeditionsDivers, rechercherExpeditionsFormelles, type RechercheEtat } from '../lib/expeditions-recherche.js'
 import { valeurStab } from '../lib/stabilites.js'
 import { loadRendementVenteEcru, loadRendementsVenteEcru, metrageEcruVendu } from '../lib/unite-ecru.js'
+import { grouperRouleaux, libelleArticle, lignesDetail, type LigneBrute, type PiecesAvis, type RouleauBrut } from '../lib/expe-pieces.js'
 
 export const expeditionsRouter: RouterType = Router()
 
@@ -1189,6 +1190,120 @@ expeditionsRouter.get('/formelle/:id/lignes/:lccId/rolls', async (req: Request, 
     res.status(500).json({ error: 'Internal server error' })
   }
 })
+
+// ════════════════════════════════════════════════════════
+//  EXPE — what an avis carries (read-only)
+// ════════════════════════════════════════════════════════
+
+/** The pieces of an avis for Expe's screen « Transports » (GET
+ *  /api/expe/avis/:kind/:id/pieces, lib/expe-pieces.ts): the rolls of an avis
+ *  d'expédition under the order line they ship, the cartons of an avis divers
+ *  with their articles. Same labels as the detail and the roll drawer above.
+ *  `lieu` (a magasin id, 0 = the factory) keeps the rolls sitting there only.
+ *  null when the avis does not exist. Reads only. */
+export async function loadPiecesAvis(kind: Kind, id: number, lieu: number | null): Promise<PiecesAvis | null> {
+  if (kind === 'divers') {
+    const head = await query<{ IDexpedition_divers: number }>(
+      `SELECT IDexpedition_divers FROM expedition_divers WHERE IDexpedition_divers = ${id}`,
+    )
+    if (head.length === 0) return null
+    const lignesRaw = await query<any>(
+      `SELECT IDligne_expedition_divers, detail_ligne FROM ligne_expedition_divers WHERE IDexpedition_divers = ${id} ORDER BY IDligne_expedition_divers`,
+    )
+    const lignesFixed = await fixEncoding(lignesRaw, 'ligne_expedition_divers', 'IDligne_expedition_divers', ['detail_ligne']) as any[]
+    const itemsByLigne = await loadDiversItems(lignesFixed.map((l) => Number(l.IDligne_expedition_divers) || 0))
+    const cartons = lignesFixed.map((l) => {
+      const idLigne = Number(l.IDligne_expedition_divers)
+      return {
+        id: idLigne,
+        detail: lignesDetail(stripRtf(l.detail_ligne)),
+        articles: (itemsByLigne.get(idLigne) ?? []).map((it) => ({
+          id: it.IDref_divers_expedie,
+          label: libelleArticle(it.designation, it.ref_designation, it.IDref_divers),
+          variations: [it.variation1_label, it.variation2_label].filter(Boolean).join(' · '),
+          quantite: it.quantite,
+          unite: it.unite,
+          unite_label: it.unite_label,
+        })),
+      }
+    })
+    return { kind, id, lignes: [], cartons }
+  }
+
+  const head = await query<{ IDexpedition: number }>(
+    `SELECT IDexpedition FROM expedition WHERE IDexpedition = ${id} AND IDsociete = 1`,
+  )
+  if (head.length === 0) return null
+  const leRows = await query<{ IDligne_expedition: number; IDligne_commande_client: number }>(
+    `SELECT IDligne_expedition, IDligne_commande_client FROM ligne_expedition WHERE IDexpedition = ${id}`,
+  )
+  const lccByLe = new Map<number, number>()
+  for (const r of leRows) {
+    const le = Number(r.IDligne_expedition) || 0
+    if (le > 0) lccByLe.set(le, Number(r.IDligne_commande_client) || 0)
+  }
+  if (lccByLe.size === 0) return { kind, id, lignes: [], cartons: [] }
+  const inLe = Array.from(lccByLe.keys()).join(',')
+  const lccIds = Array.from(new Set(Array.from(lccByLe.values()).filter((x) => x > 0)))
+
+  const [lccRows, finiRaw, ecruRaw] = await Promise.all([
+    lccIds.length > 0
+      ? query<any>(
+          `SELECT IDligne_commande_client, TYPE AS type_kind, IDreference, IDcolori ` +
+            `FROM ligne_commande_client WHERE IDligne_commande_client IN (${lccIds.join(',')})`,
+        )
+      : Promise.resolve([]),
+    query<any>(`SELECT IDstock_fini, IDligne_expedition AS le, numero, lot, poids, metrage, IDColoris, IDmagasin, second_choix FROM stock_fini WHERE IDligne_expedition IN (${inLe}) ORDER BY numero`),
+    query<any>(`SELECT IDstock_ecru, IDligne_expedition_ETM AS le, numero, lot, poids, metrage, IDcolori_ecru, IDmagasin, second_choix FROM stock_ecru WHERE IDligne_expedition_ETM IN (${inLe}) ORDER BY numero`),
+  ])
+  const lcc = new Map<number, { type: number; refId: number; coloriId: number }>()
+  for (const l of lccRows as any[]) {
+    lcc.set(Number(l.IDligne_commande_client), {
+      type: Number(l.type_kind) || 0, refId: Number(l.IDreference) || 0, coloriId: Number(l.IDcolori) || 0,
+    })
+  }
+  const maps = await resolveLineLabels(Array.from(lcc.values()).map((l) => ({ IDreference: l.refId, IDcolori: l.coloriId, type_kind: l.type })))
+  const fini = await fixEncoding(finiRaw, 'stock_fini', 'IDstock_fini', ['numero', 'lot']) as any[]
+  const ecru = await fixEncoding(ecruRaw, 'stock_ecru', 'IDstock_ecru', ['numero', 'lot']) as any[]
+
+  // A fini roll's coloris reads in the dyed catalogue, or in the écru one when
+  // its reference is sold undyed (ref_fini.avec_teinture = 0), as the roll drawer.
+  const teint = (r: any): boolean => {
+    const l = lcc.get(lccByLe.get(Number(r.le)) ?? 0)
+    return l?.type === 2 ? (maps.finiAvecTeinture.get(l.refId) ?? 0) !== 0 : true
+  }
+  const [colFini, colEcru] = await Promise.all([
+    resolveFiniColoris(fini.filter(teint).map((r) => Number(r.IDColoris)), 1),
+    resolveEcruColoris([...fini.filter((r) => !teint(r)).map((r) => Number(r.IDColoris)), ...ecru.map((r) => Number(r.IDcolori_ecru))]),
+  ])
+
+  const rouleaux: RouleauBrut[] = [
+    ...fini.map((r): RouleauBrut => ({
+      id: Number(r.IDstock_fini), kind: 'fini', idligne_expedition: Number(r.le), idmagasin: Number(r.IDmagasin) || 0,
+      numero: r.numero ?? null, lot: r.lot ?? null, poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
+      coloris_reference: (teint(r) ? colFini : colEcru).get(Number(r.IDColoris)) ?? null,
+      second_choix: (Number(r.second_choix) || 0) !== 0,
+    })),
+    ...ecru.map((r): RouleauBrut => ({
+      id: Number(r.IDstock_ecru), kind: 'ecru', idligne_expedition: Number(r.le), idmagasin: Number(r.IDmagasin) || 0,
+      numero: r.numero ?? null, lot: r.lot ?? null, poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
+      coloris_reference: colEcru.get(Number(r.IDcolori_ecru)) ?? null,
+      second_choix: (Number(r.second_choix) || 0) !== 0,
+    })),
+  ]
+  // The order lines in the order of the order, as the avis lists them in ETM.
+  const lignes: LigneBrute[] = Array.from(lccByLe.entries())
+    .sort((a, b) => a[1] - b[1] || a[0] - b[0])
+    .map(([le, idLcc]) => {
+      const l = lcc.get(idLcc)
+      return {
+        idligne_expedition: le,
+        ref_label: l ? resolveRefLabel(maps, l.refId, l.type) || null : null,
+        colori_reference: l ? resolveColorisLabel(maps, l.coloriId, l.type, l.refId) || null : null,
+      }
+    })
+  return { kind, id, lignes: grouperRouleaux(lignes, rouleaux, lieu), cartons: [] }
+}
 
 // Assign a roll to this shipment's line (lazily creating the ligne_expedition).
 expeditionsRouter.put('/formelle/:id/lignes/:lccId/rolls/:stockId', async (req: Request, res: Response) => {

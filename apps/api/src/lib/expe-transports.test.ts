@@ -10,7 +10,7 @@ function depart(id: number, plus: Partial<Depart> = {}): Depart {
     cle: `formelle-${id}`, kind: 'formelle', id, date: '2026-11-20', idclient: 7, client: 'Lemahieu',
     commande_numero: 4521, lieu: MATEL, idadresse: 12,
     destination: { nom: 'Lemahieu', adresse1: '', adresse2: '', adresse3: '', cp: '59280', ville: 'Armentières', pays: 'France', a_definir: false },
-    transporteur: '', nb_colis: 3, poids: 60, metrage: 300, facture: false, envoye_le: null, destinataires: 0, ...plus,
+    idtransporteur: 0, transporteur: '', idenvoi: null, numero_suivi: '', nb_colis: 3, poids: 60, metrage: 300, facture: false, envoye_le: null, destinataires: 0, ...plus,
   }
 }
 
@@ -41,6 +41,30 @@ describe('expe transports', () => {
     expect(cleGroupe(depart(1, { lieu: { id: null, nom: 'Lieu à préciser' } }))).toBeNull()
     const t = grouperEnTransports([depart(1, { idadresse: 0, destination: null }), depart(2, { idadresse: 0, destination: null })])
     expect(t).toHaveLength(2)
+  })
+
+  it('keeps together the avis recorded in one envoi, whatever the computed rule says', () => {
+    const t = grouperEnTransports([
+      depart(100, { idenvoi: 7, numero_suivi: 'JD0146' }),
+      // Another day and another address: left in the same truck all the same.
+      depart(101, { idenvoi: 7, numero_suivi: 'JD0146', date: '2026-11-19', idadresse: 13 }),
+      // Same day, client, address and place, but not in the envoi: apart.
+      depart(102),
+    ])
+    expect(t).toHaveLength(2)
+    const parti = t.find((x) => x.idenvoi === 7)!
+    expect(parti.avis.map((a) => a.id)).toEqual([100, 101])
+    expect(parti.numero_suivi).toBe('JD0146')
+    expect(t.find((x) => x.idenvoi === null)!.avis.map((a) => a.id)).toEqual([102])
+    // An avis that never groups by computation (no address) still follows its envoi.
+    expect(cleGroupe(depart(1, { idenvoi: 7, idadresse: 0, destination: null }))).toBe('envoi7_l9')
+  })
+
+  it('gives the carrier of a transport only when every avis names the same one', () => {
+    const [un] = grouperEnTransports([depart(100, { idtransporteur: 4, transporteur: 'DPD' }), depart(101, { idtransporteur: 4, transporteur: 'DPD' })])
+    expect(un).toMatchObject({ idtransporteur: 4, transporteur: 'DPD' })
+    const [deux] = grouperEnTransports([depart(100, { idtransporteur: 4, transporteur: 'DPD' }), depart(101)])
+    expect(deux.idtransporteur).toBe(0)
   })
 
   it('counts rolls and cartons apart when an avis divers travels with an avis', () => {

@@ -105,6 +105,13 @@ export function useEstConsole(): boolean {
   return useContext(AppMembreContext) === 'admin'
 }
 
+/** True inside an ERP (ETM, TRM): neither the console nor Expe. Never throws,
+ *  and a gate that provides no membership counts as an ERP (see useEstConsole). */
+export function useEstErp(): boolean {
+  const app = useContext(AppMembreContext)
+  return app === undefined || estSociete(app)
+}
+
 export function useAppMembre(): AppMembre {
   const app = useContext(AppMembreContext)
   if (!app) throw new Error('useAppMembre must be used below AuthGate')

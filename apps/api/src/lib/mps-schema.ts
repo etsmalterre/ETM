@@ -2223,6 +2223,39 @@ ON CONFLICT DO NOTHING;
 ALTER TABLE ligne_commande_client ADD COLUMN urgence_prevue smallint NOT NULL DEFAULT 0 CHECK (urgence_prevue IN (0, 1));
 ALTER TABLE lancement_ligne_client ADD COLUMN urgence_prevue smallint NOT NULL DEFAULT 0 CHECK (urgence_prevue IN (0, 1));`,
   },
+  {
+    // Expe (repo expe, docs/plan.md §5): the physical shipment, which no table
+    // knew. `envoi` = one pickup, with what only the shipment carries (its
+    // tracking number, for a start: the carrier stays on the avis).
+    // `envoi_document` = what it carries, a document leaving in ONE envoi only
+    // (hence the primary key). type_doc 'avis' = expedition.idexpedition,
+    // 'avis_divers' = expedition_divers.idexpedition_divers; the bons de
+    // transfert come with their step. Written by lib/expe-envoi.ts, read by
+    // lib/expe-departs.ts: the avis of one envoi are one transport.
+    name: '0086_expe_envoi',
+    sql: `
+CREATE TABLE envoi (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  numero_suivi text NOT NULL DEFAULT '',
+  cree_le timestamptz NOT NULL DEFAULT now(),
+  cree_par_id bigint NOT NULL DEFAULT 0,
+  cree_par text,
+  modifie_le timestamptz NOT NULL DEFAULT now(),
+  modifie_par_id bigint NOT NULL DEFAULT 0,
+  modifie_par text
+);
+CREATE TABLE envoi_document (
+  idenvoi bigint NOT NULL REFERENCES envoi (id) ON DELETE CASCADE,
+  type_doc text NOT NULL CHECK (type_doc IN ('avis', 'avis_divers')),
+  iddocument bigint NOT NULL,
+  PRIMARY KEY (type_doc, iddocument)
+);
+CREATE INDEX envoi_document_envoi ON envoi_document (idenvoi);
+${grantApi('SELECT, INSERT, UPDATE', 'envoi')}
+${grantApi('USAGE, SELECT', 'SEQUENCE envoi_id_seq')}
+${grantApi('SELECT, INSERT', 'envoi_document')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

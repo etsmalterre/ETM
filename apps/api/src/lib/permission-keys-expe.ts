@@ -18,6 +18,14 @@
 // migration. A name may coincide with an ERP's (the stores are separate).
 
 export const EXPE_PERMISSION_KEYS = [
+  // Transports: the button « Modifier » of the screen (PUT /api/expe/transports).
+  {
+    key: 'edit_transports',
+    label: 'Modifier un transport',
+    description:
+      'Autorise, dans Expéditions › Transports, à choisir le transporteur d’un transport (il est écrit sur ses avis) et à saisir son numéro de suivi. Sans ce droit l’écran est en lecture seule.',
+    category: 'Transports',
+  },
   // Agents IA: Expe's agents and automates, in the Console Administration.
   // Same keys as ETM's and TRM's, in Expe's store: reading needs only the
   // console (lib/console-acces.ts); every write of /api/agents-ia-expe and

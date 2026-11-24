@@ -14,6 +14,9 @@
 //   - avis divers (expedition_divers, ETM only, no stock link): cartons packed
 //     at the factory.
 //
+// What Expe itself records comes along (lib/expe-envoi.ts, tables `envoi` and
+// `envoi_document`): the envoi an avis left in, and its tracking number.
+//
 // The one dated fact that exists today besides the avis itself: its e-mail
 // (envoi_email, type_doc 14 avis / 16 avis divers, one row per recipient).
 // Measured the same day: 723 avis of 855 were mailed, 655 on the avis date,
@@ -63,7 +66,13 @@ export interface Depart {
   lieu: LieuDepart
   idadresse: number
   destination: Destination | null
+  /** The carrier written on the avis, 0 when none. */
+  idtransporteur: number
   transporteur: string
+  /** The envoi the avis was recorded in (lib/expe-envoi.ts), null when none. */
+  idenvoi: number | null
+  /** Tracking number of that envoi, '' when none. */
+  numero_suivi: string
   /** Rolls picked up here (avis), cartons (divers). */
   nb_colis: number
   poids: number
@@ -93,7 +102,10 @@ export interface AvisBrut {
   est_facture: number | null
   commande_numero: number | null
   client: string | null
+  idtransporteur: number | null
   transporteur: string | null
+  idenvoi: number | null
+  numero_suivi: string | null
   adr_nom: string | null
   adr_adresse1: string | null
   adr_adresse2: string | null
@@ -151,7 +163,10 @@ function communDe(a: AvisBrut) {
     commande_numero: a.commande_numero != null ? Number(a.commande_numero) : null,
     idadresse: num(a.idadresse),
     destination: destinationDe(a),
+    idtransporteur: num(a.idtransporteur),
     transporteur: txt(a.transporteur),
+    idenvoi: num(a.idenvoi) > 0 ? num(a.idenvoi) : null,
+    numero_suivi: txt(a.numero_suivi),
     facture: num(a.est_facture) === 1,
     envoye_le: horodatage(a.envoye_le),
     destinataires: num(a.destinataires),
@@ -218,7 +233,8 @@ export async function listerDeparts(jours: number): Promise<Depart[]> {
 
   const avis = await sql<AvisBrut[]>`
     SELECT e.idexpedition AS id, e.date::text AS date, e.idadresse, e.est_facture,
-           cc.idclient, cc.numero AS commande_numero, c.nom::text AS client, t.nom::text AS transporteur,
+           cc.idclient, cc.numero AS commande_numero, c.nom::text AS client,
+           e.idtransporteur, t.nom::text AS transporteur, en.id AS idenvoi, en.numero_suivi,
            a.nom::text AS adr_nom, a.adresse1::text AS adr_adresse1, a.adresse2::text AS adr_adresse2,
            a.adresse3::text AS adr_adresse3, a.cp::text AS adr_cp, a.ville::text AS adr_ville, a.pays::text AS adr_pays,
            m.envoye_le::text AS envoye_le, m.destinataires
@@ -227,6 +243,8 @@ export async function listerDeparts(jours: number): Promise<Depart[]> {
       LEFT JOIN client c ON c.idclient = cc.idclient
       LEFT JOIN transporteur t ON t.idtransporteur = e.idtransporteur
       LEFT JOIN adresse a ON a.idadresse = e.idadresse
+      LEFT JOIN envoi_document ed ON ed.type_doc = 'avis' AND ed.iddocument = e.idexpedition
+      LEFT JOIN envoi en ON en.id = ed.idenvoi
       LEFT JOIN LATERAL (
         SELECT min(x.date) AS envoye_le,
                (count(*) FILTER (WHERE x.date = (SELECT min(y.date) FROM envoi_email y
@@ -255,7 +273,7 @@ export async function listerDeparts(jours: number): Promise<Depart[]> {
   const divers = await sql<(AvisBrut & { ref_client: string | null; nb: number })[]>`
     SELECT d.idexpedition_divers AS id, d.date::text AS date, d.idadresse, d.est_facture, d.idclient,
            cc.numero AS commande_numero, c.nom::text AS client, d.ref_client::text AS ref_client,
-           t.nom::text AS transporteur,
+           d.idtransporteur, t.nom::text AS transporteur, en.id AS idenvoi, en.numero_suivi,
            a.nom::text AS adr_nom, a.adresse1::text AS adr_adresse1, a.adresse2::text AS adr_adresse2,
            a.adresse3::text AS adr_adresse3, a.cp::text AS adr_cp, a.ville::text AS adr_ville, a.pays::text AS adr_pays,
            m.envoye_le::text AS envoye_le, m.destinataires,
@@ -265,6 +283,8 @@ export async function listerDeparts(jours: number): Promise<Depart[]> {
       LEFT JOIN client c ON c.idclient = d.idclient AND d.idclient > 0
       LEFT JOIN transporteur t ON t.idtransporteur = d.idtransporteur
       LEFT JOIN adresse a ON a.idadresse = d.idadresse
+      LEFT JOIN envoi_document ed ON ed.type_doc = 'avis_divers' AND ed.iddocument = d.idexpedition_divers
+      LEFT JOIN envoi en ON en.id = ed.idenvoi
       LEFT JOIN LATERAL (
         SELECT min(x.date) AS envoye_le,
                (count(*) FILTER (WHERE x.date = (SELECT min(y.date) FROM envoi_email y

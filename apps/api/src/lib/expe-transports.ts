@@ -13,6 +13,10 @@
 // no registered client or no known place never groups: nothing says where it
 // goes or where it leaves from.
 //
+// What was RECORDED wins over what is computed: the avis of one envoi
+// (lib/expe-envoi.ts, created when a tracking number is saved) are one
+// transport, whatever their day or address, and never join a computed group.
+//
 // THE STATUS IS COMPUTED, never stored (docs/plan.md §3). Five steps were
 // decided; two have a source of fact today, so two are computed:
 //   en_preparation   an avis of the transport has not been e-mailed yet
@@ -63,6 +67,12 @@ export interface Transport {
   /** The carrier when every avis names the same one, '' otherwise (as the
    *  grouped demande de transport prints it). */
   transporteur: string
+  /** Its id under the same rule, 0 otherwise. */
+  idtransporteur: number
+  /** The envoi these avis were recorded in, null while the grouping is computed. */
+  idenvoi: number | null
+  /** Tracking number of that envoi, '' when none. */
+  numero_suivi: string
   avis: AvisTransporte[]
   nb_rouleaux: number
   nb_cartons: number
@@ -73,6 +83,9 @@ export interface Transport {
 
 /** The grouping key of a departure, or null when it travels alone. */
 export function cleGroupe(d: Depart): string | null {
+  // Recorded: the envoi, at the place the goods leave from (an avis whose rolls
+  // sit in two places is two pickups of the same envoi).
+  if (d.idenvoi) return `envoi${d.idenvoi}_l${d.lieu.id ?? 'x'}`
   if (!d.date || !(d.idclient > 0) || d.lieu.id === null) return null
   if (!(d.idadresse > 0) || d.destination?.a_definir) return null
   return `${d.date}_c${d.idclient}_a${d.idadresse}_l${d.lieu.id}`
@@ -91,6 +104,7 @@ function transportDe(cle: string, departs: Depart[]): Transport {
     }))
     .sort((a, b) => a.id - b.id)
   const transporteurs = new Set(departs.map((d) => d.transporteur).filter(Boolean))
+  const idsTransporteur = new Set(departs.map((d) => d.idtransporteur))
   const statut = statutDe(avis)
   const somme = (kind: Depart['kind']) => departs.filter((d) => d.kind === kind).reduce((n, d) => n + d.nb_colis, 0)
   return {
@@ -102,6 +116,9 @@ function transportDe(cle: string, departs: Depart[]): Transport {
     enlevement: null,
     destination: premier.destination,
     transporteur: transporteurs.size === 1 ? [...transporteurs][0] : '',
+    idtransporteur: idsTransporteur.size === 1 ? [...idsTransporteur][0] : 0,
+    idenvoi: premier.idenvoi,
+    numero_suivi: premier.numero_suivi,
     avis,
     nb_rouleaux: somme('formelle'),
     nb_cartons: somme('divers'),

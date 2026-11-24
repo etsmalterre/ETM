@@ -7,7 +7,7 @@ import {
 
 const avis = (id: number, plus: Partial<AvisBrut> = {}): AvisBrut => ({
   id, date: '2026-11-20', idadresse: 12, idclient: 7, est_facture: 0, commande_numero: 4521, client: ' Lemahieu ',
-  transporteur: null, adr_nom: 'Lemahieu', adr_adresse1: '12 rue du Fil', adr_adresse2: null, adr_adresse3: null,
+  idtransporteur: null, transporteur: null, idenvoi: null, numero_suivi: null, adr_nom: 'Lemahieu', adr_adresse1: '12 rue du Fil', adr_adresse2: null, adr_adresse3: null,
   adr_cp: '59280', adr_ville: 'Armentières', adr_pays: 'FRANCE', envoye_le: null, destinataires: 0, ...plus,
 })
 const rouleaux = (idexpedition: number, idmagasin: number, magasin: string | null, nb = 3) =>
@@ -71,6 +71,13 @@ describe('expe departures', () => {
   it('reads an avis divers as cartons leaving the factory, under its free-text client when it has no other', () => {
     const d = departDivers({ ...avis(652, { idclient: 0, client: null }), ref_client: ' Salon Texworld ', nb: 2 })
     expect(d).toMatchObject({ cle: 'divers-652', kind: 'divers', client: 'Salon Texworld', lieu: LIEU_USINE, nb_colis: 2, poids: 0 })
+  })
+
+  it('carries the carrier of the avis and the envoi it was recorded in', () => {
+    const [seul] = departsDesAvis([avis(100)], [])
+    expect(seul).toMatchObject({ idtransporteur: 0, transporteur: '', idenvoi: null, numero_suivi: '' })
+    const [parti] = departsDesAvis([avis(101, { idtransporteur: 4, transporteur: ' DPD ', idenvoi: 7, numero_suivi: ' JD0146 ' })], [])
+    expect(parti).toMatchObject({ idtransporteur: 4, transporteur: 'DPD', idenvoi: 7, numero_suivi: 'JD0146' })
   })
 
   it('sorts the most recent first, then by number', () => {
