@@ -72,8 +72,18 @@ export interface LigneRespect {
   premiereReception: string | null
   /** Working days late (0 = on time). For an open line not received, late so far. */
   retard: number
+  /** The same gap, signed: negative = received before the promise (`retard` is the same, clamped at 0). Read by the
+   *  espace partenaire, which also tells a partner when it is early (lib/espace-partenaire-indicateurs.ts). */
+  ecart: number
   /** Nothing received yet and the promised day has passed. */
   enRetardOuvert: boolean
+}
+
+/** Working days from the promise to `fin` (the first lot received, or today while nothing came back), in the
+ *  partner's calendar: `ecart` signed (negative = early), `retard` the same clamped at 0. Pure. */
+export function ecartDelai(promis: string, fin: string, fermetures: readonly Periode[] = []): { retard: number; ecart: number } {
+  const ecart = joursOuvresEntre(promis, fin, fermetures)
+  return { retard: Math.max(0, ecart), ecart }
 }
 
 export interface SyntheseQualite {
@@ -205,9 +215,9 @@ export async function qualiteService(idsousTraitant: number, depuis: string, auj
     const base = { idcommande: Number(l.cmd), idligne: Number(l.id), reference: (l.reference ?? '').trim(), delaiPromis: promis, commandeLe: l.commande }
     const duree = (fin: string) => (l.commande ? Math.max(0, jo(l.commande, fin)) : null)
     if (l.recu) {
-      lignes.push({ ...base, dureeJours: duree(l.recu), premiereReception: l.recu, retard: Math.max(0, jo(promis, l.recu)), enRetardOuvert: false })
+      lignes.push({ ...base, dureeJours: duree(l.recu), premiereReception: l.recu, ...ecartDelai(promis, l.recu, fermes), enRetardOuvert: false })
     } else if (!l.termine && !Number(l.soldee) && promis < aujourdhui) {
-      lignes.push({ ...base, dureeJours: duree(aujourdhui), premiereReception: null, retard: Math.max(0, jo(promis, aujourdhui)), enRetardOuvert: true })
+      lignes.push({ ...base, dureeJours: duree(aujourdhui), premiereReception: null, ...ecartDelai(promis, aujourdhui, fermes), enRetardOuvert: true })
     }
   }
   lignes.sort((a, b) => (b.premiereReception ?? '9999').localeCompare(a.premiereReception ?? '9999') || b.idligne - a.idligne)
