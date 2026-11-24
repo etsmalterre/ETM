@@ -86,9 +86,9 @@ import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { appliquerDateLignes, codeDepartLigne, DEPARTS_LIGNE, departLigne, EXPEDITION_DEFAUT, expeditions, fixerExpedition, type Expedition } from '../lib/mode-expedition.js'
 import { commandesEnPreparation, estEnPreparation, mettreEnPreparation, refuseSiEnPreparation, validation, validerCommande } from '../lib/preparation-commande.js'
 import { enregistrerReport, estUnReport, IMPUTABLES, reportsLigne } from '../lib/report-ligne-client.js'
-import { ETAPES_LANCEMENT, URGENCE_PREVUE_MAX_J, datesLancement, fixerDateLancement, historiqueLancement, leverAuLancement, versDatePg, type EtapeLancement, type Lancement } from '../lib/lancement-ligne.js'
+import { ETAPES_LANCEMENT, URGENCE_PREVUE_MAX_J, datesLancement, fixerDateLancement, fixerUrgenceSansDate, historiqueLancement, leverAuLancement, urgencesSansDate, versDatePg, type EtapeLancement, type Lancement } from '../lib/lancement-ligne.js'
 import { besoinsParStade, type StadesLigne } from '../lib/besoin-stades.js'
-import { aujourdhuiYmd, dateSouhaiteeUrgence, delaiAuPlusTot, FIL_ESTIME_JOURS, partenairesParDefaut, type DelaiAuPlusTot, type EtapePressee, type UrgenceEtape } from '../lib/delai-au-plus-tot.js'
+import { aujourdhuiYmd, dateSouhaiteeUrgence, delaiAuPlusTot, ennoblissementApresTricotage, etapeALancer, FIL_ESTIME_JOURS, partenairesParDefaut, type DelaiAuPlusTot, type EtapePressee, type UrgenceEtape } from '../lib/delai-au-plus-tot.js'
 import { demanderUrgence, enAttenteDeReponse, refusUrgenceNouvelleLigne, URGENCE_ENNOBLISSEUR_MIN_J, UrgenceRefusee, urgencesLignes } from '../lib/urgence-sst.js'
 import { ajouterJoursOuvres, joursOuvresEntre } from '../lib/jours-ouvres.js'
 
@@ -293,9 +293,10 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
         : undefined,
     }
   }))
-  const [etudes, lancements, exps] = await Promise.all([
+  const [etudes, lancements, sansDate, exps] = await Promise.all([
     etudesParId(lignes.map((l) => Number(l.IDetude_col) || 0)),
     datesLancement(lignes.map((l) => Number(l.IDligne_commande_client) || 0)),
+    urgencesSansDate(lignes.map((l) => Number(l.IDligne_commande_client) || 0)),
     expeditions(lignes.map((l) => Number(l.IDcommande_client) || 0)),
   ])
   // A launch date planned too late is red now, unless it is planned « en urgence » and that holds the
@@ -318,10 +319,22 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
     const etat = f ? statutLigneClient(f, '').etat : null
     return etat === 'tricotage' || etat === 'ennoblisseur'
   })
-  const auPlusTot = enProd.length === 0 ? new Map<number, DelaiAuPlusTot | null>() : await auPlusTotLignes(enProd.map((l) => ({
-    id: Number(l.IDligne_commande_client) || 0, typeKind: Number(l.type_kind) || 0, refId: Number(l.IDreference) || 0,
-    coloriId: Number(l.IDcolori) || 0, unite: Number(l.unite) || 0, quantite: Number(l.quantite) || 0,
-  })))
+  const auPlusTot = new Map<number, DelaiAuPlusTot | null>()
+  if (enProd.length > 0) {
+    const calculs = await calculsAuPlusTot(enProd.map((l) => ({
+      id: Number(l.IDligne_commande_client) || 0, typeKind: Number(l.type_kind) || 0, refId: Number(l.IDreference) || 0,
+      coloriId: Number(l.IDcolori) || 0, unite: Number(l.unite) || 0, quantite: Number(l.quantite) || 0,
+    })))
+    for (const l of enProd) {
+      const lid = Number(l.IDligne_commande_client) || 0
+      const c = calculs.get(lid)
+      // …with the urgency planned for the dyeing that follows a knitting in progress (LIVA #1396).
+      if (c) auPlusTot.set(lid, auPlusTotDeLaLigne(c, {
+        today: aujourdhui, delai: typeof l.date_livraison === 'string' ? l.date_livraison : null,
+        urgencePrevue: sansDate.has(lid) && statutLigneClient(faits.get(lid)!, '').etat === 'tricotage',
+      }))
+    }
+  }
   const parCommande = new Map<number, LigneUrgence[]>()
   for (const l of lignes) {
     const f = faits.get(Number(l.IDligne_commande_client))
@@ -1839,9 +1852,10 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       return f ? [{ etat: statutLigneClient(f, '').etat, typeKind: Number(l.type_kind) || 0 }] : []
     }))
 
-    const [etudes, lancements, exps] = await Promise.all([
+    const [etudes, lancements, sansDate, exps] = await Promise.all([
       etudesParId(lignesFixed.map((l) => Number(l.IDetude_col) || 0)),
       datesLancement(lignesFixed.map((l) => Number(l.IDligne_commande_client) || 0)),
+      urgencesSansDate(lignesFixed.map((l) => Number(l.IDligne_commande_client) || 0)),
       expeditions([id]),
     ])
     const expedition = exps.get(id) ?? EXPEDITION_DEFAUT
@@ -1895,18 +1909,29 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
       // and the urgency that launch is planned with (lib/lancement-ligne.ts). On the launch day and after,
       // the plan still tells the launch dialog to open « en urgence ».
       const lancement = lancements.get(Number(l.IDligne_commande_client))
-      const planifie = calcul && statut?.etat === 'a_lancer' && lancement
-        ? lancementPlanifie(calcul, { today, lance: lancement.date, etape: lancement.etape, delai: dateLigne })
+      // The dyeing planned « en urgence » without a launch date (LIVA #1396): it follows the knitting.
+      const prevueSansDate = !lancement && sansDate.has(Number(l.IDligne_commande_client))
+      const planifie = calcul && statut?.etat === 'a_lancer' && (lancement || prevueSansDate)
+        ? lancementPlanifie(calcul, { today, lance: lancement?.date ?? null, etape: lancement ? lancement.etape : 'ennoblissement', delai: dateLigne })
         : null
       const aVenir = !!lancement && lancement.date > today
       const preteSiLance = planifie && aVenir ? (planifie.standard?.date ?? null) : null
-      const urgencePrevue = lancement?.urgencePrevue ? (planifie?.urgence ?? null) : null
+      // « En tricotage »: the urgency the dyeing that follows can be planned with (the Ennoblissement
+      // tab offers it), null when the line is in time or its dyeing does not follow that knitting.
+      const apresTricotage = calcul && statut?.etat === 'tricotage' && !soldee
+        ? urgenceApresTricotage(calcul, { today, delai: dateLigne })
+        : null
+      const urgencePrevue = lancement?.urgencePrevue ? (planifie?.urgence ?? null)
+        : prevueSansDate ? (statut?.etat === 'tricotage' ? apresTricotage : (planifie?.urgence ?? null))
+          : null
       // The timeline of a line held by a launch date to come: from that date, with its planned urgency
       // while it holds the client's date (the hover of the line's date).
       const frisePlanifiee = planifie && aVenir ? (urgencePrevue?.tient ? planifie.avecUrgence : planifie.standard) : null
       // The earliest date from where the matter is now (the hover of the line's date, and its colour: a
       // partner's délai that leaves no margin is red, LIVA #1364).
-      const auPlusTotLigne = calcul ? calcul.calc(today, undefined, dateLigne) : null
+      const auPlusTotLigne = calcul
+        ? auPlusTotDeLaLigne(calcul, { today, delai: dateLigne, urgencePrevue: prevueSansDate && statut?.etat === 'tricotage', dateRetenue: dateLigne })
+        : null
       return {
         IDligne_commande_client: Number(l.IDligne_commande_client),
         IDcommande_client: Number(l.IDcommande_client),
@@ -1928,13 +1953,18 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         mode_livraison: departLigne(l.mode_livraison),
         // The launch date of the next step (lib/lancement-ligne.ts): holds a line « à lancer » until then.
         date_lancement: lancement?.date ?? null,
-        etape_lancement: lancement?.etape ?? null,
+        etape_lancement: lancement ? lancement.etape : prevueSansDate ? 'ennoblissement' as const : null,
         /** the earliest ready date if launched on date_lancement (YYYYMMDD), null without a date to come */
         prete_si_lance_le: preteSiLance,
         /** the launch is planned « en urgence »: the date to ask of the partner (YYYYMMDD), the working
          *  days that leaves it against its standard, and whether the client's date then holds; null =
          *  none planned, or none needed any more */
         urgence_prevue: urgencePrevue,
+        /** « en tricotage »: the urgency its dyeing can be planned with, without a launch date (`prevue`
+         *  = it is); null when there is none to plan and none planned */
+        urgence_apres_tricotage: statut?.etat === 'tricotage' && !soldee && (apresTricotage || prevueSansDate)
+          ? { prevue: prevueSansDate, urgence: apresTricotage }
+          : null,
         /** the timeline from the launch date (the wait, then the steps), null without a date to come */
         au_plus_tot_planifie: frisePlanifiee
           ? { ...frisePlanifiee, marge: margeJours(frisePlanifiee, dateLigne), en_cours: commandeEnCours }
@@ -5083,6 +5113,54 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/tricotage/:sstLineId/affe
   }
 })
 
+// « Prévoir une urgence » on a line « en tricotage » (LIVA #1396): the dyeing that follows the knitting
+// is planned « en urgence », without a launch date. Offered where it is the answer — the same rules as
+// with a launch date (below), the end of the knitting standing for the launch.
+const urgencePrevueBody = z.object({ active: z.boolean() })
+
+commandesClientRouter.put('/:id/lignes/:ligneId/urgence-prevue', async (req: Request, res: Response) => {
+  try {
+    if (!(await requireEditCommandes(req, res))) return
+    const commandeId = parseInt(req.params.id, 10)
+    const ligneId = parseInt(req.params.ligneId, 10)
+    if (isNaN(commandeId) || isNaN(ligneId)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    if (await refuseSiEnPreparation(res, commandeId, 'de prévoir une urgence')) return
+    const parsed = urgencePrevueBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const ctx = await loadClientLineContext(commandeId, ligneId)
+    if (!ctx || ctx.kind === 'none') { res.status(404).json({ error: 'Line not found or does not belong to commande' }); return }
+    if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
+    if (parsed.data.active) {
+      const l = { id: ligneId, typeKind: ctx.typeKind, refId: ctx.refId, coloriId: ctx.coloriId, unite: ctx.unite, quantite: ctx.quantite }
+      const [faits, calculs, [row]] = await Promise.all([
+        faitsLignesClient([{ ...l, soldee: false }]),
+        calculsAuPlusTot([l]),
+        mpsPg()<{ d: string | null }[]>`
+          SELECT to_char(date_livraison, 'YYYYMMDD') AS d FROM ligne_commande_client WHERE idligne_commande_client = ${ligneId}`,
+      ])
+      const f = faits.get(ligneId)
+      const c = calculs.get(ligneId)
+      const enTricotage = !!f && statutLigneClient(f, '').etat === 'tricotage'
+      const u = enTricotage && c ? urgenceApresTricotage(c, { today: aujourdhuiYmd(), delai: row?.d ?? null }) : null
+      const refus = !enTricotage ? 'La ligne n’est pas en tricotage : planifiez son lancement.'
+        : !u ? 'Aucune urgence à prévoir pour cette ligne.'
+          : u.trop_loin ? `Fin du tricotage à plus de ${URGENCE_PREVUE_MAX_J} jours ouvrés : trop tôt pour prévoir une urgence.`
+            : u.trop_court ? `L’urgence laisserait ${u.jours} jours ouvrés à l’ennoblisseur, il lui en faut au moins ${URGENCE_ENNOBLISSEUR_MIN_J} : reportez le délai.`
+              : !u.tient ? 'Même en urgence, la ligne ne serait pas prête à sa date.'
+                : null
+      if (refus) { res.status(409).json({ error: 'urgence_prevue_impossible', message: refus }); return }
+    }
+    await fixerUrgenceSansDate({
+      ligneId, active: parsed.data.active,
+      parId: req.userId ?? 0, par: req.userId ? await nomUtilisateur(req.userId) : null,
+    })
+    res.json({ prevue: (await urgencesSansDate([ligneId])).has(ligneId) })
+  } catch (err) {
+    console.error('Error planning an urgency on a line:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // ── Lancement: the launch date of the line's next step (lib/lancement-ligne.ts) ──
 // Doctrine des délais §5 (decision Vincent 2026-10-28): the only way to hold a line « à lancer » on
 // purpose. Before the date the line is neutral, from it red. Every change is kept with its why.
@@ -5447,6 +5525,8 @@ const ETAPE_PRESSEE: Partial<Record<EtapeLancement, EtapePressee>> = { tricotage
  *  what it asks of it (working days against its standard), and whether the client's date then holds. */
 interface UrgencePrevue {
   souhaitee: string; jours: number; standard: number
+  /** YYYYMMDD the day the step starts: the launch date, or the end of the knitting it follows */
+  du: string
   /** it would ask a dyer under its floor (lib/urgence-sst.ts URGENCE_ENNOBLISSEUR_MIN_J): never asked */
   trop_court: boolean
   /** the client's date holds with it, and it can be asked */
@@ -5464,15 +5544,17 @@ interface LancementPlanifie {
   avecUrgence: DelaiAuPlusTot | null
 }
 
-function lancementPlanifie(c: CalculLigne, p: { today: string; lance: string; etape: EtapeLancement | null; delai: string | null }): LancementPlanifie {
-  const depart = apresAujourdhui(p.lance, p.today)
-  const attente = { attenteDepuis: p.today }
+/** `lance` null = no launch date (LIVA #1396): the timeline is today's, and the step is the one still
+ *  to launch wherever it sits in it — the dyeing after a knitting in progress, or now. */
+function lancementPlanifie(c: CalculLigne, p: { today: string; lance: string | null; etape: EtapeLancement | null; delai: string | null }): LancementPlanifie {
+  const depart = p.lance ? apresAujourdhui(p.lance, p.today) : p.today
+  const attente = p.lance ? { attenteDepuis: p.today } : {}
   const standard = c.calc(depart, attente)
   const vide = { standard, urgence: null, avecUrgence: null }
   const etape = p.etape ? ETAPE_PRESSEE[p.etape] : undefined
   if (!standard || !etape || !p.delai || !/^\d{8}$/.test(p.delai) || standard.date <= p.delai) return vide
   // The step the launch date holds, still at the partner's standard (not matter already at a partner).
-  const pas = standard.etapes.find((e) => e.libelle === etape && e.partenaire === undefined && !e.estime)
+  const pas = etapeALancer(standard, etape)
   const souhaitee = dateSouhaiteeUrgence({ etape, kind: c.kind, delaiClient: p.delai, sansControle: c.sansControle, ...c.partenaires })
   if (!pas || !souhaitee || souhaitee <= pas.du || souhaitee >= pas.au) return vide
   const avecUrgence = c.calc(depart, { ...attente, urgencePrevue: { etape, souhaitee } })
@@ -5482,8 +5564,26 @@ function lancementPlanifie(c: CalculLigne, p: { today: string; lance: string; et
   return {
     standard,
     avecUrgence,
-    urgence: { souhaitee, jours, standard: pas.jours, trop_court: tropCourt, tient: !tropCourt && !!avecUrgence && avecUrgence.date <= p.delai },
+    urgence: { souhaitee, jours, standard: pas.jours, du: pas.du, trop_court: tropCourt, tient: !tropCourt && !!avecUrgence && avecUrgence.date <= p.delai },
   }
+}
+
+/** « Prévoir une urgence » on a line « en tricotage » (LIVA #1396, Vincent 2026-11-24): no launch date
+ *  to hold, the dyeing starts when the knitting ends. The urgency its dyer can be planned with, from
+ *  today's timeline — null when the line is in time, or when its dyeing does not follow a knitting
+ *  already launched. `trop_loin`: the knitting ends too far away for an urgency to be the answer. */
+function urgenceApresTricotage(c: CalculLigne, p: { today: string; delai: string | null }): (UrgencePrevue & { trop_loin: boolean }) | null {
+  const plan = lancementPlanifie(c, { today: p.today, lance: null, etape: 'ennoblissement', delai: p.delai })
+  if (!plan.urgence || !ennoblissementApresTricotage(plan.standard)) return null
+  return { ...plan.urgence, trop_loin: joursOuvresEntre(p.today, plan.urgence.du) > URGENCE_PREVUE_MAX_J }
+}
+
+/** A line's earliest date from where its matter is now. `urgencePrevue`: its dyeing is planned « en
+ *  urgence » after the knitting in progress (lib/lancement-ligne.ts urgencesSansDate) — while that plan
+ *  holds the client's date `delai`, the dyeing ends on the date we will ask, so the line reads in time. */
+function auPlusTotDeLaLigne(c: CalculLigne, p: { today: string; delai: string | null; urgencePrevue: boolean; dateRetenue?: string | null }): DelaiAuPlusTot | null {
+  const u = p.urgencePrevue ? urgenceApresTricotage(c, p) : null
+  return c.calc(p.today, u?.tient ? { urgencePrevue: { etape: 'Ennoblissement', souhaitee: u.souhaitee } } : undefined, p.dateRetenue ?? null)
 }
 
 /** The lines held by a launch date (order list): what launching that day gives, and its planned urgency. */

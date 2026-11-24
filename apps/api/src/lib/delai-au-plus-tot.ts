@@ -338,6 +338,24 @@ export function dateSouhaiteeUrgence(p: {
   return dernierOuvre(retourTricot, p.tricoteur.fermetures)
 }
 
+/** The step of a timeline a planned urgency would shorten: the partner's step `etape`, still to launch
+ *  and at its standard (matter already at a partner has its délai, not a standard to press). Null
+ *  when the timeline has none. Pure. */
+export function etapeALancer(a: DelaiAuPlusTot | null | undefined, etape: EtapePressee): EtapeDelai | null {
+  return a?.etapes.find((e) => e.libelle === etape && e.partenaire === undefined && !e.estime) ?? null
+}
+
+/** The dyeing of a line « en tricotage » (LIVA #1396): the Ennoblissement step still to launch, when it
+ *  comes right after a knitting already launched at a knitter — it starts the day that knitting ends
+ *  (`du`), which is what « Prévoir une urgence » counts from when there is no launch date. Null when
+ *  the deciding matter is elsewhere (yarn still to knit, écru already in stock or at the dyer). Pure. */
+export function ennoblissementApresTricotage(a: DelaiAuPlusTot | null | undefined): EtapeDelai | null {
+  const pas = etapeALancer(a, 'Ennoblissement')
+  if (!a || !pas) return null
+  const avant = a.etapes[a.etapes.indexOf(pas) - 1]
+  return avant && avant.libelle === 'Tricotage' && avant.partenaire !== undefined ? pas : null
+}
+
 // ── Partners (I/O) ──────────────────────────────────────────
 
 /** v1 partners: Tricotage Malterre knits, MATEL dyes (the line's own partners later). */

@@ -8,6 +8,11 @@
 // 2026-11-23) answers it in the plan itself: launched that day « en urgence », the partner is asked
 // with the order for the date the API computes. A plan, not a promise — offered only for a close
 // launch, and the line is neutral until then.
+//
+// …and without a launch date (LIVA #1396, Vincent 2026-11-24): a line « en tricotage » has no launch
+// to hold, its dyeing starts when the knitting ends. The Ennoblissement tab then offers « Prévoir une
+// urgence » alone (UrgencePrevueBouton), where « Planifier » would sit — same rules, the end of the
+// knitting standing for the launch date.
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CalendarClock, Loader2, Save } from 'lucide-react'
@@ -28,6 +33,15 @@ export interface UrgencePrevue {
   souhaitee: string; jours: number; standard: number; tient: boolean
   /** it would leave a dyer less than its floor (API URGENCE_ENNOBLISSEUR_MIN_J): never offered */
   trop_court?: boolean
+  /** YYYYMMDD the day the step starts: the launch date, or the end of the knitting it follows */
+  du?: string
+}
+
+/** A line « en tricotage »: the urgency its dyeing can be planned with, without a launch date (API
+ *  urgence_apres_tricotage). `prevue` = it is planned; `urgence` null = the line is in time. */
+export interface UrgenceApresTricotage {
+  prevue: boolean
+  urgence: (UrgencePrevue & { trop_loin: boolean }) | null
 }
 
 /** The line's launch date (the API also returns its history, kept in the journal, not shown here). */
@@ -57,6 +71,127 @@ export const texteTropTard = (lance: string, prete: string, delai: string) =>
 /** What a planned urgency asks: « Retour ennoblisseur souhaité le 11/12 : 12 j ouvrés au lieu de 15 ». */
 export const texteUrgencePrevue = (u: Pick<UrgencePrevue, 'souhaitee' | 'jours' | 'standard'>, etape: EtapeLancement | null) =>
   `Retour ${(etape && PARTENAIRE[etape]) || 'partenaire'} souhaité le ${jjmm(u.souhaitee)} : ${u.jours} j ouvrés au lieu de ${u.standard}`
+
+/** The date that will be asked and how many working days it takes off the partner's standard, nothing
+ *  else (Vincent 2026-11-23). */
+function DateDemandee({ urgence, actif }: { urgence: Pick<UrgencePrevue, 'souhaitee' | 'jours' | 'standard'>; actif: boolean }) {
+  return (
+    <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <span>Date demandée</span>
+      <span className={cn('text-sm font-semibold tabular-nums', actif && 'text-foreground')}>{jjmm(urgence.souhaitee)}</span>
+      {/* The urgency's navy (mps_designer §47), never red nor amber: nothing to do here. */}
+      <span title={`${urgence.jours} j ouvrés au lieu de ${urgence.standard}`}
+        className={cn('rounded-full px-1.5 py-px text-[10px] font-semibold tabular-nums', actif ? 'bg-primary/10 text-primary' : 'bg-zinc-100')}>
+        −{urgence.standard - urgence.jours} j
+      </span>
+    </p>
+  )
+}
+
+/** Beside the line card's status pill, an urgency planned WITHOUT a launch date (LIVA #1396): the siren
+ *  and its two words, neutral — nobody was asked yet (mps_designer §47). */
+export function UrgencePrevueLabel({ urgence, etape }: { urgence: UrgencePrevue; etape: EtapeLancement | null }) {
+  return (
+    <span title={`${etape === 'ennoblissement' ? 'Ennoblissement' : 'Lancement'} prévu en urgence. ${texteUrgencePrevue(urgence, etape)}, demandé avec la commande.`}
+      className="inline-flex items-center gap-1 text-[11px] font-medium whitespace-nowrap text-muted-foreground">
+      <UrgenceIcon /><span>urgence prévue</span>
+    </span>
+  )
+}
+
+/** Why the dyeing after the knitting cannot be planned « en urgence » (or no longer holds), null when it can. */
+function refusApresTricotage(u: UrgenceApresTricotage['urgence'], prevue: boolean): string | null {
+  if (!u) return 'La ligne tient sa date sans urgence'
+  if (u.trop_court) return `Trop court pour une urgence (${u.jours} j ouvrés pour l’ennoblisseur) : reportez le délai`
+  if (!u.tient) return 'Même en urgence, la ligne ne serait pas prête à sa date : reportez le délai'
+  // Too far only stops a NEW plan: one already made still holds the date.
+  return u.trop_loin && !prevue ? 'Fin du tricotage trop lointaine pour prévoir une urgence' : null
+}
+
+/** « Prévoir une urgence » / « Urgence prévue » where « Planifier » sits, in the Ennoblissement tab of a
+ *  line « en tricotage » (LIVA #1396): no launch date to type, the dyeing starts when the knitting
+ *  ends. Greyed with its reason when an urgency is not the answer; red once planned and no longer
+ *  enough (the hover says what to do, the click is where to give it up). */
+export function UrgencePrevueBouton({ commandeId, ligneId, plan }: { commandeId: number; ligneId: number; plan: UrgenceApresTricotage }) {
+  const peutModifier = useHasPermission('edit_commandes_client')
+  const [ouvert, setOuvert] = useState(false)
+  if (!plan.prevue && !peutModifier) return null
+  const u = plan.urgence
+  const refus = refusApresTricotage(u, plan.prevue)
+  const titre = refus
+    ? `${plan.prevue ? 'Urgence prévue. ' : ''}${refus}.`
+    : `${plan.prevue ? 'Ennoblissement prévu en urgence' : 'Ennoblir en urgence dès la fin du tricotage'}. ${texteUrgencePrevue(u!, 'ennoblissement')}, demandé avec la commande.`
+  return (
+    <>
+      <span title={titre} className="inline-flex">
+        <Button variant="outline" size="sm" disabled={!peutModifier || (!plan.prevue && !!refus)} onClick={() => setOuvert(true)}
+          className={cn('h-7 px-2.5 text-xs bg-white', plan.prevue && u && refus && 'border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700')}>
+          <UrgenceIcon className="h-3.5 w-3.5 mr-1.5" />
+          {plan.prevue ? 'Urgence prévue' : 'Prévoir une urgence'}
+        </Button>
+      </span>
+      {ouvert && <UrgencePrevueDialog commandeId={commandeId} ligneId={ligneId} plan={plan} refus={refus} onClose={() => setOuvert(false)} />}
+    </>
+  )
+}
+
+function UrgencePrevueDialog({ commandeId, ligneId, plan, refus, onClose }: {
+  commandeId: number; ligneId: number; plan: UrgenceApresTricotage; refus: string | null; onClose: () => void
+}) {
+  const queryClient = useQueryClient()
+  const mut = useMutation({
+    mutationFn: (active: boolean) => apiFetch(`/commandes-client/${commandeId}/lignes/${ligneId}/urgence-prevue`, { method: 'PUT', body: JSON.stringify({ active }) }),
+    onSuccess: () => {
+      // The line's colour, the order's liseré and the list's counters follow the plan.
+      invalidateCommandeClientCaches(queryClient)
+      onClose()
+    },
+  })
+  const u = plan.urgence
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o && !mut.isPending) onClose() }}>
+      <DialogContent className="max-w-sm" onClose={mut.isPending ? undefined : onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <UrgenceIcon className="h-5 w-5" />
+            {plan.prevue ? 'Urgence prévue' : 'Prévoir une urgence'}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          {refus ? (
+            <p className={cn('text-xs font-medium', u ? 'text-amber-700' : 'text-muted-foreground')}>{refus}.</p>
+          ) : u && (
+            <>
+              {u.du && <p className="text-xs text-muted-foreground tabular-nums">Ennoblissement dès la fin du tricotage, le {jjmm(u.du)}.</p>}
+              <div className="rounded-lg border border-border/60 bg-white px-3 py-2.5 shadow-sm">
+                <DateDemandee urgence={u} actif />
+              </div>
+            </>
+          )}
+          {mut.error && (
+            <p className="flex items-center gap-1.5 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 flex-shrink-0" />{(mut.error as any).body?.message ?? 'L’enregistrement a échoué'}
+            </p>
+          )}
+        </div>
+        <DialogFooter className="mt-4">
+          {plan.prevue && (
+            <Button variant="ghost" className="mr-auto text-destructive hover:text-destructive" disabled={mut.isPending} onClick={() => mut.mutate(false)}>
+              Retirer l’urgence
+            </Button>
+          )}
+          <Button variant="outline" onClick={onClose} disabled={mut.isPending}>{plan.prevue ? 'Fermer' : 'Annuler'}</Button>
+          {!plan.prevue && (
+            <Button onClick={() => mut.mutate(true)} disabled={!!refus || mut.isPending}>
+              {mut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}
+              Prévoir
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 /** Next to the line card's status pill, read only: « 📅 Ennoblir le 16/11 » (Vincent 2026-10-28, was a
  *  « Lancement » stat). The pill says « Planifiée » before the date; from it the line is « À lancer »
@@ -205,17 +340,7 @@ function LancementDialog({ commandeId, ligneId, etape, proposee, onClose }: {
                       <UrgenceIcon className={cn('h-3.5 w-3.5', !enUrgence && 'text-muted-foreground')} />
                       <span>Prévoir une urgence</span>
                     </div>
-                    {/* The date that will be asked and how many working days it takes off the partner's
-                        standard, nothing else (Vincent 2026-11-23). */}
-                    <p className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                      <span>Date demandée</span>
-                      <span className={cn('text-sm font-semibold tabular-nums', enUrgence && 'text-foreground')}>{jjmm(urgence.souhaitee)}</span>
-                      {/* The urgency's navy (mps_designer §47), never red nor amber: nothing to do here. */}
-                      <span title={`${urgence.jours} j ouvrés au lieu de ${urgence.standard}`}
-                        className={cn('rounded-full px-1.5 py-px text-[10px] font-semibold tabular-nums', enUrgence ? 'bg-primary/10 text-primary' : 'bg-zinc-100')}>
-                        −{urgence.standard - urgence.jours} j
-                      </span>
-                    </p>
+                    <div className="mt-1"><DateDemandee urgence={urgence} actif={enUrgence} /></div>
                   </div>
                   <button
                     type="button" role="switch" aria-checked={enUrgence} disabled={mut.isPending} title="Prévoir une urgence"

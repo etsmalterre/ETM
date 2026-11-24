@@ -90,7 +90,7 @@ import { AffecteGauge, ChoixQuantite, RepartitionCommande, COULEURS_AUTRES_LIGNE
 import { ReservationsTricotage, type LectureTricotage } from '@/components/commandes/ReservationsTricotage'
 import { EcruLigneZone, PieceEcruLigne, PiecesEcruCarte, lieuxAEnnoblir, matiereEcruQueryKey, useMatiereEcru, type LieuEnnoblisseur } from '@/components/commandes/EcruLigneZone'
 import { BoutonsCommande, ZoneLigne } from '@/components/commandes/ZonesLigne'
-import { GESTES_TROP_TARD, LancementLabel, PlanifierBouton, type EtapeLancement, type UrgencePrevue } from '@/components/commandes/LancementLigne'
+import { GESTES_TROP_TARD, LancementLabel, PlanifierBouton, UrgencePrevueBouton, UrgencePrevueLabel, type EtapeLancement, type UrgenceApresTricotage, type UrgencePrevue } from '@/components/commandes/LancementLigne'
 import { LotsFilPicker, couvertureFils, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
 import { RappelButton } from '@/components/rappels/RappelButton'
 
@@ -173,6 +173,9 @@ interface LigneCommande {
   /** the launch is planned « en urgence » (API lib/lancement-ligne.ts): the date to ask of the partner and
    *  whether the client's date then holds; null = none planned, or none needed any more */
   urgence_prevue?: UrgencePrevue | null
+  /** « en tricotage »: the urgency its dyeing can be planned with, without a launch date (LIVA #1396);
+   *  null when there is none to plan and none planned */
+  urgence_apres_tricotage?: UrgenceApresTricotage | null
   /** the timeline from the launch date still to come (the wait, then the steps, with the planned urgency
    *  while it holds); null without one */
   au_plus_tot_planifie?: AuPlusTot | null
@@ -2419,7 +2422,8 @@ function lancementTropTard(l: LigneCommande): { preteLe: string; delai: string }
  *  otherwise); off else. The user may still change or untick it. */
 function urgenceDuPlan(l: LigneCommande, etape: EtapeLancement): UrgenceSaisie {
   const u = l.etape_lancement === etape ? l.urgence_prevue : null
-  return u ? { active: true, date: hfsqlDateToInput(u.souhaitee) } : URGENCE_VIDE
+  // A date the dyer could not be asked (under its floor) is never proposed: the API would refuse it.
+  return u && !u.trop_court ? { active: true, date: hfsqlDateToInput(u.souhaitee) } : URGENCE_VIDE
 }
 
 function departCommande(lignes: LigneCommande[]): string | null {
@@ -2498,6 +2502,11 @@ function LineCard({
           {canAffect && !linesLocked && (line.statut?.etat === 'planifiee' || line.statut?.etat === 'a_lancer') && (
             <LancementLabel date={line.date_lancement} etape={line.etape_lancement} rouge={line.statut?.etat === 'a_lancer' && line.urgence === 'rouge'}
               tropTard={tropTard} urgence={urgencePrevue} />
+          )}
+          {/* Planned « en urgence » without a launch date (LIVA #1396): the dyeing that follows the
+              knitting in progress — and still on the line once the écru is knitted, until its order. */}
+          {canAffect && !linesLocked && !line.date_lancement && urgencePrevue && (line.statut?.etat === 'tricotage' || line.statut?.etat === 'a_lancer') && (
+            <UrgencePrevueLabel urgence={urgencePrevue} etape={line.etape_lancement} />
           )}
           {/* A divers line has nothing to launch (#1362): « À lancer » there only meant « not shipped yet ». */}
           {line.statut && !(line.type === 3 && line.statut.etat === 'a_lancer') && <StatutLignePill statut={line.statut} />}
@@ -2833,6 +2842,11 @@ function AffectationDrawer({
     enPreparation ? { ...l, actif: false, titre: 'Commande en préparation : validez-la (pied de page) avant de passer commande' } : l
   const planifier = (etape: EtapeLancement) => {
     if (enPreparation) return null
+    // « En tricotage »: no launch to hold, the dyeing starts when the knitting ends — only its urgency
+    // can be planned (LIVA #1396, API urgence_apres_tricotage).
+    if (etape === 'ennoblissement' && !soldee && ligne.statut?.etat === 'tricotage' && ligne.urgence_apres_tricotage) {
+      return <UrgencePrevueBouton commandeId={commandeId} ligneId={ligne.IDligne_commande_client} plan={ligne.urgence_apres_tricotage} />
+    }
     // Once something is launched the date no longer acts (and launching from the line removes it).
     if (soldee || (ligne.statut?.etat !== 'a_lancer' && ligne.statut?.etat !== 'planifiee')) return null
     const ici = !!ligne.date_lancement && (ligne.etape_lancement === etape || !ligne.etape_lancement)

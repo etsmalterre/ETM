@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dateSouhaiteeUrgence, delaiAuPlusTot, ETAPE_ATTENTE, type EntreeDelai } from './delai-au-plus-tot.js'
+import { dateSouhaiteeUrgence, delaiAuPlusTot, ennoblissementApresTricotage, ETAPE_ATTENTE, type EntreeDelai } from './delai-au-plus-tot.js'
 import { STANDARDS_DEFAUT } from './delais-standards.js'
 import { ajouterJoursOuvres } from './jours-ouvres.js'
 
@@ -221,6 +221,50 @@ describe('délai au plus tôt (doctrine des délais §5 ter)', () => {
       expect(delaiAuPlusTot(ligne({ urgencePrevue: { etape: 'Tricotage', souhaitee: '20261201' } }))).toEqual(std)
       // …nor one before the step starts: nothing to ask.
       expect(delaiAuPlusTot(ligne({ urgencePrevue: { etape: 'Ennoblissement', souhaitee: '20261125' } }))).toEqual(std)
+    })
+  })
+
+  // Order 3911, line 040A - bleu 1721 (LIVA #1396, Tuesday 24/11): « Prête le » Friday 11/12, knitting
+  // at TRM due Wednesday 25/11, no écru yet — the dyeing follows the knitting, there is no launch date.
+  describe('the dyeing after a knitting in progress, planned « en urgence » without a launch date', () => {
+    const partenaires = { tricoteur: base({}).tricoteur, ennoblisseur: base({}).ennoblisseur }
+    const ligne = (p: Partial<EntreeDelai> = {}) => base({
+      tricotage: 1000, enCours: true, aujourdhui: '20261124',
+      tricotageLance: { partenaire: 'Tricotage Malterre', delai: '20261125' }, ...p,
+    })
+    it('at the dyer’s standard the line is 8 working days late, its dyeing starting when the knitting ends', () => {
+      const d = delaiAuPlusTot(ligne())!
+      expect(d.etapes.map((x) => [x.libelle, x.du, x.au, x.jours])).toEqual([
+        ['Tricotage', '20261124', '20261125', 1],
+        ['Ennoblissement', '20261125', '20261216', 15],
+        ['Contrôle qualité', '20261216', '20261223', 5],
+      ])
+      expect(ennoblissementApresTricotage(d)).toMatchObject({ libelle: 'Ennoblissement', du: '20261125' })
+    })
+    it('the date to ask leaves the dyer 7 working days and holds the client’s date', () => {
+      const souhaitee = dateSouhaiteeUrgence({ kind: 'fini', etape: 'Ennoblissement', delaiClient: '20261211', ...partenaires })!
+      expect(souhaitee).toBe('20261204')
+      const d = delaiAuPlusTot(ligne({ urgencePrevue: { etape: 'Ennoblissement', souhaitee } }))!
+      expect(d.etapes[1]).toEqual({ libelle: 'Ennoblissement', du: '20261125', au: '20261204', jours: 7, urgencePrevue: true })
+      expect(d.date).toBe('20261211')
+      // The step is still the one to press: planned, nobody was asked.
+      expect(ennoblissementApresTricotage(d)).not.toBeNull()
+    })
+    it('a knitting one day late leaves the dyer 6 days: the same date to ask, a day less', () => {
+      const d = delaiAuPlusTot(ligne({ aujourdhui: '20261126', urgencePrevue: { etape: 'Ennoblissement', souhaitee: '20261204' } }))!
+      expect(d.etapes[1]).toMatchObject({ du: '20261126', au: '20261204', jours: 6 })
+    })
+    it('not offered when the dyeing does not follow a launched knitting', () => {
+      // Écru already knitted, to dye now: a launch, not the end of a knitting.
+      expect(ennoblissementApresTricotage(delaiAuPlusTot(base({ ecru: 1000, enCours: true })))).toBeNull()
+      // Yarn reserved but no knitting order yet: the knitting itself is still to launch.
+      expect(ennoblissementApresTricotage(delaiAuPlusTot(base({ fil: 1000, enCours: true })))).toBeNull()
+      // Écru already at the dyer on its order: a délai, not a standard to press.
+      expect(ennoblissementApresTricotage(delaiAuPlusTot(base({
+        ecru: 1000, enCours: true, ecruChezEnnoblisseur: [{ quantite: 1000, partenaire: 'MATEL', delai: '20261201' }],
+      })))).toBeNull()
+      // An écru line has no dyer.
+      expect(ennoblissementApresTricotage(delaiAuPlusTot(ligne({ kind: 'ecru' })))).toBeNull()
     })
   })
 })

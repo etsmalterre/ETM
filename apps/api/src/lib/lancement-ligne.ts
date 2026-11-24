@@ -29,6 +29,13 @@
 // launch dialog opens with « Commande urgente » on. Only for a launch close enough
 // (URGENCE_PREVUE_MAX_J): a delay known weeks ahead is solved by launching earlier, not by pressing
 // the partner. The flag goes with the date (removed, launched).
+//
+// …and WITHOUT a launch date (LIVA #1396, Vincent 2026-11-24): a line « en tricotage » whose dyeing,
+// at the dyer's standard, ends after the client's date. There is no launch to hold — the dyeing starts
+// when the knitting ends — so the plan is the flag alone: `urgence_prevue = 1`, `etape_lancement =
+// 'ennoblissement'`, `date_lancement` NULL. Same rules (date to ask computed, neutral with the siren
+// while it holds the client's date, « Commande urgente » on when the dyer's order is created, which
+// ends it), the « close enough » being the END OF THE KNITTING at most URGENCE_PREVUE_MAX_J away.
 
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
@@ -49,7 +56,7 @@ export interface Lancement {
 
 export interface ChangementLancement {
   id: number
-  /** YYYYMMDD, null = date removed */
+  /** YYYYMMDD, null = date removed — or, with `urgence_prevue`, an urgency planned without a date */
   date: string | null
   etape: EtapeLancement | null
   saisi_le: Date
@@ -89,6 +96,17 @@ export async function datesLancement(ligneIds: readonly number[]): Promise<Map<n
   return out
 }
 
+/** The lines whose dyeing is planned « en urgence » without a launch date: it follows a knitting in
+ *  progress (LIVA #1396). */
+export async function urgencesSansDate(ligneIds: readonly number[]): Promise<Set<number>> {
+  const ids = [...new Set(ligneIds.filter((x) => x > 0))]
+  if (ids.length === 0) return new Set()
+  const rows = await mpsPg().unsafe<{ id: number }[]>(
+    `SELECT idligne_commande_client AS id FROM ligne_commande_client
+      WHERE idligne_commande_client = ANY($1::bigint[]) AND urgence_prevue = 1 AND date_lancement IS NULL`, [ids as any])
+  return new Set(rows.map((r) => Number(r.id)))
+}
+
 /** Every change of a line's launch date, newest first. */
 export async function historiqueLancement(ligneId: number): Promise<ChangementLancement[]> {
   const rows = await mpsPg()<{ id: number; d: string | null; etape: string | null; saisi_le: Date; saisi_par: string | null; motif: string | null; urgence: number | null }[]>`
@@ -118,14 +136,35 @@ export async function fixerDateLancement(p: { ligneId: number; date: string | nu
   })
 }
 
+/** Plans (or gives up) the urgency of a dyeing that follows a knitting in progress: the flag without a
+ *  launch date, and its journal row. Planning it replaces a launch date the line still carried (one
+ *  plan per line); giving it up touches nothing else. */
+export async function fixerUrgenceSansDate(p: { ligneId: number; active: boolean; parId: number; par: string | null }): Promise<void> {
+  await mpsPg().begin(async (t) => {
+    const tx = t as unknown as Sql
+    if (p.active) {
+      await tx`UPDATE ligne_commande_client SET date_lancement = NULL, etape_lancement = 'ennoblissement', urgence_prevue = 1
+                WHERE idligne_commande_client = ${p.ligneId}`
+    } else {
+      const maj = await tx`UPDATE ligne_commande_client SET etape_lancement = NULL, urgence_prevue = 0
+                WHERE idligne_commande_client = ${p.ligneId} AND urgence_prevue = 1 AND date_lancement IS NULL`
+      if (maj.count === 0) return
+    }
+    await tx`
+      INSERT INTO lancement_ligne_client (idligne_commande_client, date_lancement, etape, urgence_prevue, saisi_par_id, saisi_par)
+      VALUES (${p.ligneId}, NULL, 'ennoblissement', ${p.active ? 1 : 0}, ${p.parId}, ${p.par})`
+  })
+}
+
 /** An order of `etape` was just created from the line: the wait for that step is over, its date goes
- *  (journaled « lancée »). A date held by another step stays; a date without a step (before 0040) goes. */
+ *  (journaled « lancée »), and so does an urgency planned without a date. A date held by another step
+ *  stays; a date without a step (before 0040) goes. */
 export async function leverAuLancement(p: { ligneId: number; etape: EtapeLancement; parId: number; par: string | null }): Promise<void> {
   await mpsPg().begin(async (t) => {
     const tx = t as unknown as Sql
     const [row] = await tx<{ etape: string | null }[]>`
       SELECT etape_lancement AS etape FROM ligne_commande_client
-       WHERE idligne_commande_client = ${p.ligneId} AND date_lancement IS NOT NULL FOR UPDATE`
+       WHERE idligne_commande_client = ${p.ligneId} AND (date_lancement IS NOT NULL OR urgence_prevue = 1) FOR UPDATE`
     if (!row || (row.etape !== null && row.etape !== p.etape)) return
     await tx`UPDATE ligne_commande_client SET date_lancement = NULL, etape_lancement = NULL, urgence_prevue = 0
               WHERE idligne_commande_client = ${p.ligneId}`

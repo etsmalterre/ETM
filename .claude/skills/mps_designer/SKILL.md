@@ -4709,7 +4709,7 @@ so that an order that was pressed is recognised at a glance on every screen of e
   **bottom-right corner** (last element of the card's footer row, after the amount chip) — NOT
   beside the status pill, where it competed with it; `h-5 w-5` as a dialog title icon; muted
   (`text-muted-foreground`) in a switch row while the switch is off.
-- **An urgency only PLANNED wears the siren too, with the words « urgence prévue »** (2026-11-23, « Prévoir une urgence » in « Planifier », `LancementLigne.tsx`): on the line card's launch label, on the step it shortens in the date's hover, on the « Planifié le … » button. Always those two words beside it: nobody was asked yet, and the bare siren alone means « asked ».
+- **An urgency only PLANNED wears the siren too, with the words « urgence prévue »** (2026-11-23, « Prévoir une urgence » in « Planifier », `LancementLigne.tsx`): on the line card's launch label, on the step it shortens in the date's hover, on the « Planifié le … » button. Always those two words beside it: nobody was asked yet, and the bare siren alone means « asked ». Without a launch date (a line « en tricotage », LIVA #1396) the same sign: `UrgencePrevueLabel` beside the status pill, and in the Ennoblissement tab the outline button « Prévoir une urgence » / « Urgence prévue » (`UrgencePrevueBouton`) where « Planifier » sits — greyed with its reason in the hover when an urgency is not the answer, red once planned and no longer enough.
 - **The mark stays once the partner has answered**, until the line is delivered: the order was
   pressed, the workshop and the office should keep seeing it. Only « Retirer l'urgence » removes it.
 - **Asking**: the §35 pill « Commande urgente » when an order is prepared (`UrgenceChoix`: off by
