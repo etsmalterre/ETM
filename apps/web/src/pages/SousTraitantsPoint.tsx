@@ -5,20 +5,21 @@
 // line, corrects it, then sends it — now, or scheduled for 8:00 (the API's HEURE_ENVOI).
 //
 // Fiche layout: left the points, center the six numbered sections (MATEL
-// answers « 2) … 5) … » by number, so the numbering never moves), right the
-// sending (recipients, greeting, Word file) + a live preview, and the status
-// pill that sends.
+// answers « 2) … 5) … » by number, so the numbering never moves) as ONE table,
+// a band per section and a row per line, so the whole point fits on a screen
+// (Vincent 2026-11-24; it was a card per line), right what happened to the
+// point, and the status pill that sends.
 //
-// Every line says why it is there (`pourquoi`) and carries the Tricobot
-// button: the remark lands in the automate's « Retours » (Agents IA ›
-// Automates), tied to the line — read before each new version of the rules
-// (decision Vincent 2026-10-05: automates are not scored, their users'
-// remarks are). Edits and removals are kept too, so the point never forgets
-// what the automate first proposed.
+// Every line says why it is there (`pourquoi`). Removing, adding or correcting
+// a line IS the feedback to Tricobot (kept against what the automate first
+// proposed), with an optional why that lands in the automate's « Retours »
+// (Console › Automates), tied to the line — read before each new version of
+// the rules (decision Vincent 2026-10-05: automates are not scored, their
+// users' remarks are). There is no « Tricobot s’est trompé ? » button on an
+// untouched line (removed 2026-11-24: never used alone in 509 lines).
 //
 // No global « Modifier » cycle: a point is a working draft, edited line by
-// line (a dialog to add or correct one, like « Retirer » and « Tricobot s’est
-// trompé ? »), until it is sent.
+// line (a dialog to add, correct or remove one), until it is sent.
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -36,6 +37,7 @@ import {
   History,
   Info,
   Loader2,
+  MessageSquare,
   Pencil,
   Plus,
   RefreshCw,
@@ -51,9 +53,9 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { PopoverSelect } from '@/components/ui/popover-select'
 import { MasterDetailLayout } from '@/components/layout/MasterDetailLayout'
-import { TricobotBouton, TricobotCorrection, TricobotRetourDialog } from '@/components/tricobot/TricobotRetour'
 import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { useAutoSelectFirst } from '@/hooks/useAutoSelectFirst'
+import { useElementSize } from '@/hooks/useElementSize'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { postEmail, type EmailDefaults } from '@/lib/email'
 import { apiFetch, API_URL } from '@/lib/api'
@@ -511,21 +513,29 @@ function PointSuivant({ point, prochainJour, suivantId, onOuvrir }: {
   )
 }
 
-// ── Center: the six sections ───────────────────────────
+// ── Center: the six sections, one table ────────────────
+// A band per section, a row per line. The « pourquoi » column leaves when the
+// panel is too narrow for it (compact layout): an info icon carries it then.
+// The widths give the coloris ~300 px in a 1920 window (the longest of a real
+// point), so nothing that goes to the dyer is cut. The row's gestures sit at
+// its right end, always visible (Vincent 2026-11-24: not on hover), four fixed
+// slots: Tricobot's why, back to his line, correct, remove.
+
+const GRILLE_LARGE = 'grid-cols-[2.75rem_4.75rem_minmax(0,1.2fr)_3rem_minmax(0,1fr)_6rem]'
+const GRILLE_ETROITE = 'grid-cols-[2.75rem_4.75rem_minmax(0,1fr)_3rem_11.5rem]'
+const LARGEUR_POURQUOI = 720
+const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
+
+const sujetDe = (l: PointLigne) => [l.commande, l.reference].filter(Boolean).join(' · ')
 
 function DetailMain({ point, sections, isLoading, hasSelection, onChanged, bandeau }: {
   point: Point | null; sections: SectionMeta[]; isLoading: boolean; hasSelection: boolean; onChanged: (p: Point) => void; bandeau?: ReactNode
 }) {
   const [ajoutSection, setAjoutSection] = useState<Section | null>(null)
   const [editionId, setEditionId] = useState<number | null>(null)
-  const [retourPour, setRetourPour] = useState<PointLigne | null>(null)
-  useEffect(() => { setAjoutSection(null); setEditionId(null) }, [point?.id])
-
-  const retourMut = useMutation({
-    mutationFn: ({ ligne, texte }: { ligne: PointLigne; texte: string }) =>
-      apiFetch<{ point: Point }>(`/points-sst/${point!.id}/lignes/${ligne.id}/retour`, { method: 'POST', body: JSON.stringify({ texte }) }),
-    onSuccess: (r) => { onChanged(r.point); setRetourPour(null) },
-  })
+  const [pourquoi, setPourquoi] = useState<{ ligne: PointLigne; retirer: boolean } | null>(null)
+  const [tableRef, taille] = useElementSize<HTMLDivElement>()
+  useEffect(() => { setAjoutSection(null); setEditionId(null); setPourquoi(null) }, [point?.id])
 
   if (!hasSelection) {
     return (
@@ -539,57 +549,55 @@ function DetailMain({ point, sections, isLoading, hasSelection, onChanged, bande
 
   const modifiable = point.statut !== 'envoye'
   const edition = editionId !== null ? point.lignes.find((l) => l.id === editionId) ?? null : null
+  const large = taille.w === 0 || taille.w >= LARGEUR_POURQUOI
   return (
-    <div className="flex-1 min-h-0 overflow-auto space-y-4 p-1 scrollbar-transparent">
+    <div className="flex-1 min-h-0 overflow-auto space-y-3 p-1 scrollbar-transparent">
       {bandeau}
       {point.erreurEnvoi && (
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive flex items-center gap-2">
           <AlertCircle className="h-4 w-4 flex-shrink-0" />L’envoi programmé a échoué : {point.erreurEnvoi}
         </div>
       )}
-      {sections.map((s) => {
-        const lignes = point.lignes.filter((l) => l.section === s.n)
-        const actives = lignes.filter((l) => !l.retiree).length
-        return (
-          <div key={s.n} className="card-premium p-4">
-            <div className="flex items-start gap-2">
-              <span className="h-6 w-6 rounded-md bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center flex-shrink-0">{s.n}</span>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">{s.court}</p>
-                <p className="text-xs text-muted-foreground">{s.titre}</p>
+      <div ref={tableRef} className="rounded-lg border border-border/60 bg-white shadow-sm overflow-hidden">
+        {sections.map((s) => {
+          const lignes = point.lignes.filter((l) => l.section === s.n)
+          const actives = lignes.filter((l) => !l.retiree).length
+          return (
+            <div key={s.n}>
+              <div className="flex items-center gap-2 px-3 py-1 bg-zinc-200/60 border-b border-border/60">
+                <span className="h-5 w-5 rounded bg-primary text-primary-foreground text-[11px] font-bold flex items-center justify-center flex-shrink-0">{s.n}</span>
+                <span className="text-sm font-semibold flex-shrink-0">{s.court}</span>
+                <span className="text-xs text-muted-foreground truncate min-w-0 flex-1" title={s.titre}>{s.titre}</span>
+                <span className="text-xs font-semibold tabular-nums text-muted-foreground flex-shrink-0" title={`${actives} ligne${actives > 1 ? 's' : ''} envoyée${actives > 1 ? 's' : ''}`}>{actives}</span>
+                {modifiable && (
+                  <Button variant="ghost" size="icon" className="h-6 w-6 flex-shrink-0 text-accent hover:text-accent hover:bg-accent/10" title="Ajouter une ligne" onClick={() => setAjoutSection(s.n)}>
+                    <Plus className="h-3.5 w-3.5" />
+                  </Button>
+                )}
               </div>
-              <Badge variant="secondary" className="text-xs flex-shrink-0">{actives}</Badge>
-            </div>
-            <div className="mt-3 space-y-2">
               {lignes.length === 0 && (
-                <p className="text-sm text-muted-foreground italic">Rien à demander{s.n === 6 ? ' — la question est posée quand même.' : ' : la section part vide (« — »).'}</p>
+                <p className="px-3 py-1 border-b border-border/40 text-xs text-muted-foreground italic">
+                  Rien à demander{s.n === 6 ? ' — la question est posée quand même.' : ' : la section part vide (« — »).'}
+                </p>
               )}
               {lignes.map((l) => (
-                <LigneCard
+                <LigneRow
                   key={l.id}
                   pointId={point.id}
                   ligne={l}
                   avecDate={s.n === 1}
+                  large={large}
                   modifiable={modifiable}
                   onEditer={() => setEditionId(l.id)}
-                  onRetour={() => setRetourPour(l)}
+                  onRetirer={() => setPourquoi({ ligne: l, retirer: true })}
+                  onPourquoi={() => setPourquoi({ ligne: l, retirer: false })}
                   onChanged={onChanged}
                 />
               ))}
-              {modifiable && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setAjoutSection(s.n)}
-                  className="w-full text-muted-foreground hover:text-accent hover:bg-accent/5 border border-dashed border-border/60 hover:border-accent/40"
-                >
-                  <Plus className="h-3.5 w-3.5 mr-1.5" />Ajouter une ligne
-                </Button>
-              )}
             </div>
-          </div>
-        )
-      })}
+          )
+        })}
+      </div>
       <LigneDialog
         open={ajoutSection !== null || edition !== null}
         pointId={point.id}
@@ -599,104 +607,114 @@ function DetailMain({ point, sections, isLoading, hasSelection, onChanged, bande
         onClose={() => { setAjoutSection(null); setEditionId(null) }}
         onSaved={onChanged}
       />
-      <TricobotRetourDialog
-        open={retourPour !== null}
-        sujet={retourPour ? [retourPour.commande, retourPour.reference].filter(Boolean).join(' · ') || 'cette ligne' : null}
-        titre="Je me suis trompé sur cette ligne ?"
-        texte="Dis-moi ce qui n’allait pas : elle n’avait rien à faire là, elle n’est pas dans la bonne section, il manquait une remarque… Je lis tout avant ma prochaine version."
-        placeholder="Ex. : cette commande est en reprise, il fallait demander le délai, pas les métrages."
-        isPending={retourMut.isPending}
-        onClose={() => setRetourPour(null)}
-        onConfirm={async (texte) => { await retourMut.mutateAsync({ ligne: retourPour!, texte }) }}
-      />
+      <PourquoiDialog cible={pourquoi} pointId={point.id} onClose={() => setPourquoi(null)} onChanged={onChanged} />
     </div>
   )
 }
 
-function LigneCard({ pointId, ligne: l, avecDate, modifiable, onEditer, onRetour, onChanged }: {
-  pointId: number; ligne: PointLigne; avecDate: boolean; modifiable: boolean
-  onEditer: () => void; onRetour: () => void; onChanged: (p: Point) => void
+function LigneRow({ pointId, ligne: l, avecDate, large, modifiable, onEditer, onRetirer, onPourquoi, onChanged }: {
+  pointId: number; ligne: PointLigne; avecDate: boolean; large: boolean; modifiable: boolean
+  onEditer: () => void; onRetirer: () => void; onPourquoi: () => void; onChanged: (p: Point) => void
 }) {
   const [erreur, setErreur] = useState<string | null>(null)
-  const [aRetirer, setARetirer] = useState<PointLigne | null>(null)
   const act = useMutation({
-    mutationFn: (quoi: 'retirer' | 'restaurer' | 'annuler-retour') =>
+    mutationFn: (quoi: 'supprimer' | 'restaurer') =>
       apiFetch<{ point: Point }>(
-        quoi === 'retirer' ? `/points-sst/${pointId}/lignes/${l.id}`
-          : quoi === 'restaurer' ? `/points-sst/${pointId}/lignes/${l.id}/restaurer`
-          : `/points-sst/${pointId}/lignes/${l.id}/retour`,
+        quoi === 'supprimer' ? `/points-sst/${pointId}/lignes/${l.id}` : `/points-sst/${pointId}/lignes/${l.id}/restaurer`,
         { method: quoi === 'restaurer' ? 'POST' : 'DELETE' },
       ),
     onSuccess: (r) => { setErreur(null); onChanged(r.point) },
     onError: (e) => setErreur(erreurDe(e)),
   })
-  const edge = l.retiree ? 'border-l-border' : l.origine === 'manuel' ? 'border-l-teal-500/60' : l.modifiee ? 'border-l-accent/70' : 'border-l-amber-400/60'
+  const manuel = l.origine === 'manuel'
+  // A line a person touched is feedback to Tricobot: it can carry a why.
+  const touchee = l.retiree || l.modifiee || manuel
+  const edge = l.retiree ? 'border-l-border' : manuel ? 'border-l-teal-500/60' : l.modifiee ? 'border-l-accent/70' : 'border-l-transparent'
   const autoTexte = l.auto ? [l.auto.commande, l.auto.reference, [l.auto.coloris, l.auto.commentaire].filter(Boolean).join(' - '), l.auto.datePrevue ? jjmmaaaa(l.auto.datePrevue) : ''].filter(Boolean).join(' · ') : ''
+  const raison = l.pourquoi || (manuel && l.modifiePar ? `Ajoutée par ${l.modifiePar}` : '')
+  // The person's why, once given, is what the column shows: it says more than the rule's.
+  const remarque = l.retour ? `« ${l.retour.texte} »${l.retour.par ? ` — ${l.retour.par}` : ''}` : ''
+  const bulle = [raison, remarque].filter(Boolean).join('\n')
+  const barre = l.retiree && 'line-through'
+  const etat = manuel ? <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0 bg-teal-500/10 text-teal-700 border-teal-500/25">ajoutée</Badge>
+    : l.retiree ? <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0 text-muted-foreground">retirée</Badge>
+    : l.modifiee ? <Badge variant="outline" className="text-[10px] py-0 flex-shrink-0 bg-accent/10 text-accent border-accent/25" title={autoTexte ? `Tricobot proposait : ${autoTexte}` : undefined}>corrigée</Badge>
+    : null
   return (
-    <div className={cn('group rounded-lg border-l-4 border border-border/60 bg-zinc-100/80 p-3', edge, l.retiree && 'opacity-60')}>
-      <div className="flex items-center gap-3 min-w-0">
-        <span className={cn('text-sm font-semibold tabular-nums text-primary w-12 flex-shrink-0', l.retiree && 'line-through')}>{l.commande || '—'}</span>
-        <span className={cn('text-sm w-20 flex-shrink-0 truncate', l.retiree && 'line-through')} title={l.reference}>{l.reference}</span>
-        <span className={cn('text-sm min-w-0 flex-1 truncate', l.retiree && 'line-through')} title={[l.coloris, l.commentaire].filter(Boolean).join(' - ')}>
+    <>
+      <div className={cn(
+        'grid items-center gap-x-3 px-2 py-0.5 min-h-[1.75rem] border-b border-border/40 border-l-4 text-sm transition-colors hover:bg-accent/5',
+        large ? GRILLE_LARGE : GRILLE_ETROITE, edge, l.retiree && 'text-muted-foreground',
+      )}>
+        <span className={cn('font-semibold tabular-nums', !l.retiree && 'text-primary', barre)}>{l.commande || '—'}</span>
+        <span className={cn('truncate', barre)} title={l.reference}>{l.reference}</span>
+        <span className={cn('truncate', barre)} title={[l.coloris, l.commentaire].filter(Boolean).join(' - ')}>
           {l.coloris}
           {l.commentaire && <span className="font-semibold">{l.coloris ? ' - ' : ''}{l.commentaire}</span>}
         </span>
-        {avecDate && <span className="text-sm tabular-nums text-muted-foreground flex-shrink-0">{l.datePrevue ? jjmmaaaa(l.datePrevue) : ''}</span>}
-        <div className="flex items-center gap-1 flex-shrink-0">
-          {l.origine === 'manuel' && <Badge variant="outline" className="text-[10px] py-0 bg-teal-500/10 text-teal-700 border-teal-500/25">ajoutée</Badge>}
-          {l.modifiee && !l.retiree && <Badge variant="outline" className="text-[10px] py-0 bg-accent/10 text-accent border-accent/25">corrigée</Badge>}
-          {l.retiree && <Badge variant="outline" className="text-[10px] py-0 text-muted-foreground">retirée</Badge>}
-          {modifiable && (
-            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-              {(l.retiree || l.modifiee) && l.origine === 'auto' ? (
-                <Button variant="ghost" size="icon" className="h-6 w-6" title="Revenir à la ligne de Tricobot" onClick={() => act.mutate('restaurer')} disabled={act.isPending}>
-                  <RotateCcw className="h-3 w-3" />
-                </Button>
-              ) : null}
-              {!l.retiree && (
-                <Button variant="ghost" size="icon" className="h-6 w-6" title="Corriger la ligne" onClick={onEditer}>
-                  <Pencil className="h-3 w-3" />
-                </Button>
-              )}
-              {!l.retiree && (
-                <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive" title={l.origine === 'manuel' ? 'Supprimer la ligne' : 'Retirer la ligne du point'}
-                  onClick={() => (l.origine === 'manuel' ? act.mutate('retirer') : setARetirer(l))} disabled={act.isPending}>
-                  <Trash2 className="h-3 w-3" />
-                </Button>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="flex items-start gap-2 mt-1.5">
-        <div className="min-w-0 flex-1 space-y-0.5">
-          {l.pourquoi && (
-            <p className="text-[11px] text-muted-foreground flex items-start gap-1.5">
-              <Info className="h-3 w-3 flex-shrink-0 mt-0.5 opacity-60" />{l.pourquoi}
-            </p>
-          )}
-          {l.modifiee && autoTexte && (
-            <p className="text-[11px] text-muted-foreground italic">Tricobot proposait : {autoTexte}</p>
-          )}
-          {l.origine === 'manuel' && l.modifiePar && <p className="text-[11px] text-muted-foreground italic">Ajoutée par {l.modifiePar}</p>}
-          {erreur && <p className="text-[11px] text-destructive">{erreur}</p>}
-        </div>
-        {!l.retour && (
-          <div className="flex-shrink-0">
-            <TricobotBouton onClick={onRetour} label={l.origine === 'manuel' ? 'Tricobot l’a oubliée ?' : 'Tricobot s’est trompé ?'} />
+        <span className={cn('tabular-nums text-muted-foreground', barre)} title={avecDate && l.datePrevue ? `Sortie prévue le ${jjmmaaaa(l.datePrevue)}` : undefined}>
+          {avecDate && l.datePrevue ? jjmm(l.datePrevue) : ''}
+        </span>
+        {large && (
+          <div className="flex items-center gap-2 min-w-0">
+            <span className={cn('min-w-0 flex-1 text-[11px] leading-snug line-clamp-2', remarque ? 'text-foreground' : 'text-muted-foreground', !remarque && manuel && !l.pourquoi && 'italic')} title={bulle}>
+              {remarque || raison}
+            </span>
+            {etat}
           </div>
         )}
+        {/* Fixed slots, so each gesture stays in its own column down the table. */}
+        <div className="flex items-center justify-end">
+          {!large && bulle && <span title={bulle} className="flex-shrink-0 mr-1"><Info className="h-3.5 w-3.5 text-muted-foreground/60" /></span>}
+          {!large && etat && <span className="flex-shrink-0 mr-1 inline-flex">{etat}</span>}
+          <span className="h-6 w-6 flex-shrink-0">
+            {touchee && (
+              <button type="button" onClick={onPourquoi}
+                title={remarque || 'Dire pourquoi à Tricobot'}
+                className={cn(
+                  'h-6 w-6 rounded-md inline-flex items-center justify-center transition hover:bg-accent/15',
+                  !l.retour && 'opacity-40 grayscale hover:opacity-100 hover:grayscale-0',
+                )}>
+                <TricobotMascot className="h-4 w-4" />
+              </button>
+            )}
+          </span>
+          {modifiable && (
+            <>
+              <span className="h-6 w-6 flex-shrink-0">
+                {(l.retiree || l.modifiee) && !manuel && (
+                  <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-foreground" title="Revenir à la ligne de Tricobot" onClick={() => act.mutate('restaurer')} disabled={act.isPending}>
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+              </span>
+              <span className="h-6 w-6 flex-shrink-0">
+                {!l.retiree && (
+                  <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-foreground" title="Corriger la ligne" onClick={onEditer}>
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+              </span>
+              <span className="h-6 w-6 flex-shrink-0">
+                {!l.retiree && (
+                  <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive/70 hover:text-destructive" title={manuel ? 'Supprimer la ligne' : 'Retirer la ligne du point'}
+                    onClick={() => (manuel ? act.mutate('supprimer') : onRetirer())} disabled={act.isPending}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+              </span>
+            </>
+          )}
+        </div>
       </div>
-      {l.retour && (
-        <TricobotCorrection className="mt-2" commentaire={l.retour.texte} par={l.retour.par} onAnnuler={() => act.mutate('annuler-retour')} disabled={act.isPending} />
-      )}
-      <RetirerDialog ligne={aRetirer} pointId={pointId} onClose={() => setARetirer(null)} onChanged={onChanged} />
-    </div>
+      {erreur && <p className="px-3 py-1 border-b border-border/40 text-[11px] text-destructive">{erreur}</p>}
+    </>
   )
 }
 
-/** Adding or correcting a line — a dialog, like « Retirer » and « Tricobot s’est
- *  trompé ? », so the form never pushes the section's other lines around. */
+/** Adding or correcting a line — a dialog, like « Retirer », so the form never
+ *  pushes the section's other lines around. Its optional why is the remark to
+ *  Tricobot: written, changed or (emptied) taken back from here. */
 function LigneDialog({ open, pointId, section, sections, ligne, onClose, onSaved }: {
   open: boolean; pointId: number; section: Section; sections: SectionMeta[]; ligne: PointLigne | null
   onClose: () => void; onSaved: (p: Point) => void
@@ -720,24 +738,21 @@ function LigneDialog({ open, pointId, section, sections, ligne, onClose, onSaved
     setErreur(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, ligne?.id, section])
-  // Tricobot speaks on a line he missed (new) or wrote (auto); a person's own line is theirs.
-  const tricobot = !ligne || ligne.origine === 'auto'
+  // What Tricobot got wrong: a line he wrote (auto), or one he missed (new, or added by hand).
+  const corrige = ligne?.origine === 'auto'
   const save = useMutation({
     mutationFn: async () => {
       const body = JSON.stringify({ ...f, datePrevue: f.datePrevue || null })
       const r: { id?: number; point: Point } = ligne
         ? await apiFetch<{ point: Point }>(`/points-sst/${pointId}/lignes/${ligne.id}`, { method: 'PATCH', body })
         : await apiFetch<{ id: number; point: Point }>(`/points-sst/${pointId}/lignes`, { method: 'POST', body })
-      // The why, when given, is Tricobot feedback on the line he missed or got wrong.
-      if (!tricobot || !pourquoi.trim() || pourquoi.trim() === ligne?.retour?.texte) return r
-      const lid = ligne?.id ?? r.id!
-      return apiFetch<{ point: Point }>(`/points-sst/${pointId}/lignes/${lid}/retour`, { method: 'POST', body: JSON.stringify({ texte: pourquoi.trim() }) })
+      return (await enregistrerPourquoi(pointId, ligne?.id ?? r.id!, pourquoi, ligne?.retour?.texte ?? '')) ?? r
     },
     onSuccess: (r) => { onSaved(r.point); onClose() },
     onError: (e) => setErreur(erreurDe(e)),
   })
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF((p) => ({ ...p, [k]: e.target.value }))
-  const sujet = ligne ? [ligne.commande, ligne.reference].filter(Boolean).join(' · ') : ''
+  const sujet = ligne ? sujetDe(ligne) : ''
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
       <DialogContent className="max-w-2xl max-h-[90dvh] overflow-y-auto" onClose={onClose}>
@@ -752,7 +767,7 @@ function LigneDialog({ open, pointId, section, sections, ligne, onClose, onSaved
         <TricobotBulle titre="J’ai oublié une ligne ?"
           texte="Écris-la ici, elle partira avec le point. J’en tiendrai compte lors de ma prochaine mise à jour — dis-moi pourquoi en bas si tu peux." />
       )}
-      {ligne && tricobot && (
+      {corrige && (
         <TricobotBulle titre="Je me suis trompé sur cette ligne ?"
           texte="Corrige-la ici, elle partira corrigée. J’en tiendrai compte lors de ma prochaine mise à jour — dis-moi pourquoi en bas si tu peux." />
       )}
@@ -773,12 +788,10 @@ function LigneDialog({ open, pointId, section, sections, ligne, onClose, onSaved
           />
         </Labeled>
       </div>
-      {tricobot && (
-        <Labeled label={ligne ? 'Qu’est-ce qui n’allait pas ? (facultatif — pour Tricobot)' : 'Pourquoi fallait-il la demander ? (facultatif — pour Tricobot)'}>
-          <textarea rows={2} className={textareaClass} value={pourquoi} onChange={(e) => setPourquoi(e.target.value)}
-            placeholder={ligne ? 'Ex. : c’est une reprise, il fallait demander le délai, pas les métrages.' : 'Ex. : la 8982 est repartie en reprise, on attend un nouveau délai.'} />
-        </Labeled>
-      )}
+      <Labeled label={corrige ? 'Qu’est-ce qui n’allait pas ? (facultatif — pour Tricobot)' : 'Pourquoi fallait-il la demander ? (facultatif — pour Tricobot)'}>
+        <textarea rows={2} className={textareaClass} value={pourquoi} onChange={(e) => setPourquoi(e.target.value)}
+          placeholder={corrige ? 'Ex. : c’est une reprise, il fallait demander le délai, pas les métrages.' : 'Ex. : la 8982 est repartie en reprise, on attend un nouveau délai.'} />
+      </Labeled>
       {erreur && <p className="text-sm text-destructive flex items-center gap-1.5"><AlertCircle className="h-4 w-4" />{erreur}</p>}
         </div>
         <DialogFooter className="mt-4">
@@ -805,43 +818,73 @@ function TricobotBulle({ titre, texte }: { titre: string; texte: string }) {
   )
 }
 
-/** Removing one of Tricobot's lines: he asks why (optional) before it goes. */
-function RetirerDialog({ ligne, pointId, onClose, onChanged }: {
-  ligne: PointLigne | null; pointId: number; onClose: () => void; onChanged: (p: Point) => void
+/** The why of a line a person touched — Tricobot's remark. Written, changed, or
+ *  (emptied) taken back; null when there is nothing to do. */
+async function enregistrerPourquoi(pointId: number, ligneId: number, saisi: string, ancien: string): Promise<{ point: Point } | null> {
+  const texte = saisi.trim()
+  if (texte === ancien) return null
+  const url = `/points-sst/${pointId}/lignes/${ligneId}/retour`
+  return texte
+    ? apiFetch<{ point: Point }>(url, { method: 'POST', body: JSON.stringify({ texte }) })
+    : apiFetch<{ point: Point }>(url, { method: 'DELETE' })
+}
+
+/** Removing one of Tricobot's lines (he asks why, optional, before it goes), or
+ *  saying why afterwards on a line already removed, corrected or added. */
+function PourquoiDialog({ cible, pointId, onClose, onChanged }: {
+  cible: { ligne: PointLigne; retirer: boolean } | null; pointId: number; onClose: () => void; onChanged: (p: Point) => void
 }) {
+  const ligne = cible?.ligne ?? null
+  const retirer = cible?.retirer ?? false
   const [pourquoi, setPourquoi] = useState('')
   const [erreur, setErreur] = useState<string | null>(null)
-  useEffect(() => { if (ligne) { setPourquoi(''); setErreur(null) } }, [ligne])
-  const retirer = useMutation({
+  useEffect(() => { if (cible) { setPourquoi(cible.retirer ? '' : cible.ligne.retour?.texte ?? ''); setErreur(null) } }, [cible])
+  const valider = useMutation({
     mutationFn: async () => {
-      const r = await apiFetch<{ point: Point }>(`/points-sst/${pointId}/lignes/${ligne!.id}`, { method: 'DELETE' })
-      if (!pourquoi.trim()) return r
-      return apiFetch<{ point: Point }>(`/points-sst/${pointId}/lignes/${ligne!.id}/retour`, { method: 'POST', body: JSON.stringify({ texte: pourquoi.trim() }) })
+      const r = retirer ? await apiFetch<{ point: Point }>(`/points-sst/${pointId}/lignes/${ligne!.id}`, { method: 'DELETE' }) : null
+      return (await enregistrerPourquoi(pointId, ligne!.id, pourquoi, retirer ? '' : ligne!.retour?.texte ?? '')) ?? r
     },
-    onSuccess: (r) => { onChanged(r.point); onClose() },
+    onSuccess: (r) => { if (r) onChanged(r.point); onClose() },
     onError: (e) => setErreur(erreurDe(e)),
   })
+  const sujet = ligne ? sujetDe(ligne) : ''
+  const Icone = retirer ? Trash2 : MessageSquare
   return (
-    <Dialog open={ligne !== null} onOpenChange={(o) => { if (!o) onClose() }}>
+    <Dialog open={cible !== null} onOpenChange={(o) => { if (!o) onClose() }}>
       <DialogContent className="max-w-md" onClose={onClose}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Trash2 className="h-5 w-5 text-accent" />
-            Retirer la ligne{ligne ? ` — ${[ligne.commande, ligne.reference].filter(Boolean).join(' · ')}` : ''}
+            <Icone className="h-5 w-5 text-accent" />
+            {retirer ? 'Retirer la ligne' : 'Dire pourquoi'}{sujet ? ` — ${sujet}` : ''}
           </DialogTitle>
         </DialogHeader>
         <div className="mt-4 space-y-3">
-          <TricobotBulle titre="Cette ligne n’avait rien à faire là ?"
-            texte="Je la retire du point. J’en tiendrai compte lors de ma prochaine mise à jour — dis-moi pourquoi si tu peux." />
+          {retirer ? (
+            <TricobotBulle titre="Cette ligne n’avait rien à faire là ?"
+              texte="Je la retire du point. J’en tiendrai compte lors de ma prochaine mise à jour — dis-moi pourquoi si tu peux." />
+          ) : (
+            <TricobotBulle
+              titre={ligne?.origine === 'manuel' ? 'J’ai oublié cette ligne ?' : ligne?.retiree ? 'Cette ligne n’avait rien à faire là ?' : 'Je me suis trompé sur cette ligne ?'}
+              texte="Dis-moi pourquoi : j’en tiendrai compte lors de ma prochaine mise à jour." />
+          )}
           <textarea rows={3} autoFocus className={textareaClass} value={pourquoi} onChange={(e) => setPourquoi(e.target.value)}
-            placeholder="Facultatif. Ex. : la 9023 est livrée par une autre commande, il ne faut plus la demander." />
+            placeholder={retirer ? 'Facultatif. Ex. : la 9023 est livrée par une autre commande, il ne faut plus la demander.'
+              : ligne?.origine === 'manuel' ? 'Ex. : la 8982 est repartie en reprise, on attend un nouveau délai.'
+              : ligne?.retiree ? 'Ex. : la 9023 est livrée par une autre commande, il ne faut plus la demander.'
+              : 'Ex. : c’est une reprise, il fallait demander le délai, pas les métrages.'} />
           {erreur && <p className="text-sm text-destructive flex items-center gap-1.5"><AlertCircle className="h-4 w-4" />{erreur}</p>}
         </div>
         <DialogFooter className="mt-4">
           <Button variant="outline" onClick={onClose}>Annuler</Button>
-          <Button variant="destructive" onClick={() => retirer.mutate()} disabled={retirer.isPending}>
-            {retirer.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5 mr-1.5" />}Retirer
-          </Button>
+          {retirer ? (
+            <Button variant="destructive" onClick={() => valider.mutate()} disabled={valider.isPending}>
+              {valider.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5 mr-1.5" />}Retirer
+            </Button>
+          ) : (
+            <Button onClick={() => valider.mutate()} disabled={valider.isPending}>
+              {valider.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}Enregistrer
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
