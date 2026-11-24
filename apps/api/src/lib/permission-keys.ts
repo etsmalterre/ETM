@@ -364,6 +364,17 @@ export const PERMISSION_KEYS = [
       'Autorise la sélection de pièces expédiées et leur remise en stock, avec observation de récupération, dans l’onglet « Marchandise expédiée » de Clients > Gestion.',
     category: 'Gestion client',
   },
+  // Sous-traitants — rendered below "Gestion client" (sections follow catalog
+  // insertion order). The espace partenaire's twin of
+  // gestion_acces_espace_client: closed by default, turning the switch on
+  // e-mails the sous-traitant's contact.
+  {
+    key: 'gestion_acces_espace_partenaire',
+    label: 'Accès espace partenaire',
+    description:
+      'Autorise à donner ou retirer l’accès à partenaire.etsmalterre.fr à un contact, dans l’onglet « Contacts » de Sous-traitants > Gestion. L’ERP est la seule source : l’espace partenaire ne crée ni ne supprime aucun compte de sous-traitant.',
+    category: 'Sous-traitants',
+  },
   // Transferts — one key per kind (Rouleaux / Fils) so a user can be allowed
   // to move rolls without touching yarn, and vice-versa. Each key covers the
   // whole écran: création, modification de l'en-tête, ajout / retrait des

@@ -12,7 +12,7 @@
 import postgres from 'postgres'
 import { query, fixEncoding } from './hfsql-auto.js'
 
-type Sql = ReturnType<typeof postgres>
+export type Sql = ReturnType<typeof postgres>
 
 let sql: Sql | null = null
 let ready: Promise<void> | null = null
@@ -44,6 +44,29 @@ const MIGRATIONS: string[] = [
      detail    text
    );
    CREATE INDEX journal_contact ON journal (idcontact);`,
+  // Espace partenaire (partenaire.etsmalterre.fr, lib/espace-partenaire-acces.ts): the same two tables for the
+  // contacts of a sous-traitant. Their own tables: an idcontact can never be read as the other portal's.
+  `CREATE TABLE acces_partenaire (
+     idcontact             integer PRIMARY KEY,
+     idsous_traitant       integer NOT NULL,
+     actif                 boolean NOT NULL,
+     modifie_le            timestamptz NOT NULL DEFAULT now(),
+     modifie_par           text NOT NULL,
+     invitation_le         timestamptz,
+     mot_de_passe_le       timestamptz,
+     derniere_connexion_le timestamptz
+   );
+   CREATE INDEX acces_partenaire_sous_traitant ON acces_partenaire (idsous_traitant);
+   CREATE TABLE journal_partenaire (
+     id              bigserial PRIMARY KEY,
+     le              timestamptz NOT NULL DEFAULT now(),
+     idcontact       integer NOT NULL,
+     idsous_traitant integer NOT NULL,
+     action          text NOT NULL,
+     par             text NOT NULL,
+     detail          text
+   );
+   CREATE INDEX journal_partenaire_contact ON journal_partenaire (idcontact);`,
 ]
 
 function db(): Sql {
@@ -74,8 +97,9 @@ async function migrate(s: Sql): Promise<void> {
   })
 }
 
-/** The connection, schema up to date. Throws EspaceIndisponible when not configured. */
-async function conn(): Promise<Sql> {
+/** The connection, schema up to date. Throws EspaceIndisponible when not configured.
+ *  Shared with the espace partenaire's access list (lib/espace-partenaire-acces.ts): one database, one migration list. */
+export async function conn(): Promise<Sql> {
   const s = db()
   ready ??= migrate(s).catch((err) => { ready = null; throw err })
   await ready
@@ -317,7 +341,7 @@ export interface Evenement {
   le: Date
 }
 
-const COLONNE: Record<TypeEvenement, 'invitation_le' | 'mot_de_passe_le' | 'derniere_connexion_le'> = {
+export const COLONNE: Record<TypeEvenement, 'invitation_le' | 'mot_de_passe_le' | 'derniere_connexion_le'> = {
   invitation: 'invitation_le',
   mot_de_passe: 'mot_de_passe_le',
   connexion: 'derniere_connexion_le',

@@ -13,6 +13,7 @@ import { filEtmSql } from '../lib/fil-gere-etm.js'
 import { etatEcruChezSst, type SstLineInfo } from '../lib/ecru-etat-sst.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
 import { qualiteService } from '../lib/qualite-service-sst.js'
+import { retirerAccesPartenaire } from '../lib/espace-partenaire-acces.js'
 
 // Gestion route for the `sous_traitant` entity (subcontractor management).
 // Mirrors fournisseurs.ts (identical contacts/adresses sub-resource shape) with
@@ -871,6 +872,17 @@ sousTraitantsRouter.post('/', async (req: Request, res: Response) => {
   }
 })
 
+/** An inactive (or deleted) sous-traitant's contacts lose the espace partenaire. If this fails the
+ *  portal still drops them (accesPartenairesEffectifs skips a hidden or missing sous-traitant);
+ *  only the switches in Contacts stay on. */
+async function retirerAccesEspacePartenaire(req: Request, id: number, detail: string): Promise<void> {
+  try {
+    await retirerAccesPartenaire(id, req.userId !== undefined ? await nomUtilisateur(req.userId) : 'ETM', detail)
+  } catch (err) {
+    console.error(`Sous-traitant ${id}: espace partenaire access not removed:`, err)
+  }
+}
+
 // PUT /api/sous-traitants/:id — update header (name, coordonnées, type, visibility, notes)
 sousTraitantsRouter.put('/:id', async (req: Request, res: Response) => {
   try {
@@ -886,6 +898,7 @@ sousTraitantsRouter.put('/:id', async (req: Request, res: Response) => {
     const rows = await query<SousTraitant>(`SELECT * FROM sous_traitant WHERE IDsous_traitant = ${id}`)
     if (rows.length === 0) { res.status(404).json({ error: 'Sous-traitant not found' }); return }
     const fixed = await fixEncoding(rows, 'sous_traitant', 'IDsous_traitant', TEXT_FIELDS)
+    if (!visible) await retirerAccesEspacePartenaire(req, id, 'sous-traitant inactif')
     res.json(fixed[0])
   } catch (err) {
     console.error('Error updating sous-traitant:', err)
@@ -901,6 +914,7 @@ sousTraitantsRouter.delete('/:id', async (req: Request, res: Response) => {
     const rows = await query<SousTraitant>(`SELECT * FROM sous_traitant WHERE IDsous_traitant = ${id}`)
     if (rows.length === 0) { res.status(404).json({ error: 'Sous-traitant not found' }); return }
     await query(`DELETE FROM sous_traitant WHERE IDsous_traitant = ${id}`)
+    await retirerAccesEspacePartenaire(req, id, 'sous-traitant supprimé')
     res.json({ message: 'Deleted', data: rows[0] })
   } catch (err) {
     console.error('Error deleting sous-traitant:', err)
