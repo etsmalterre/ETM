@@ -2514,27 +2514,45 @@ function ControlesTab({
   const allongementDemande = !!controles.mesures?.malterre?.allongement
   const voirAllongement = allongementDemande || detail.allongementH_tirelle != null || detail.allongementL_tirelle != null
   const tolAllong = detail.allongement_tolerance
+  /** A measure the reference does not ask of a side has no line on that side
+   *  (the chip of the card names it), unless the lot holds a value for it — the
+   *  lab tablet's rule (Vincent 2026-11-24, ref 1731: no dyer vrillage). */
+  const voir = (cote: 'sst' | 'tirelle', mesure: 'laize' | 'poids' | 'stabilites' | 'vrillage') => {
+    const qui = cote === 'sst' ? 'ennoblisseur' : 'malterre'
+    if (controles[qui] && controles.mesures?.[qui]?.[mesure] !== false) return true
+    if (mesure === 'stabilites') return detail[`stabH_${cote}`] != null || detail[`stabL_${cote}`] != null
+    if (mesure === 'vrillage') return detail[`vrillage_${cote}`] != null
+    return Number(detail[`${mesure}_${cote}`]) !== 0
+  }
   return (
     <>
       {/* Sous-Traitant */}
       <SidebarCard title="Sous-Traitant" icon={<Factory className="h-3.5 w-3.5 text-accent" />} highlight={isEditing} aside={<SansControle qui="ennoblisseur" asked={controles.ennoblisseur} mesures={controles.mesures?.ennoblisseur} />}>
         <CarteSansValeur.Provider value={!aDesValeurs('sst')}>
-        <KVNum label="Laize" field="laize_sst" detailVal={detail.laize_sst} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVNum label="Poids" field="poids_sst" detailVal={detail.poids_sst} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVNum label="Stab H" field="stabH_sst" detailVal={detail.stabH_sst} conformKind="stabH" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVNum label="Stab L" field="stabL_sst" detailVal={detail.stabL_sst} conformKind="stabL" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVVrillage label="Vrillage" field="vrillage_sst" detailVal={detail.vrillage_sst ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        {voir('sst', 'laize') && <KVNum label="Laize" field="laize_sst" detailVal={detail.laize_sst} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />}
+        {voir('sst', 'poids') && <KVNum label="Poids" field="poids_sst" detailVal={detail.poids_sst} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />}
+        {voir('sst', 'stabilites') && (
+          <>
+            <KVNum label="Stab H" field="stabH_sst" detailVal={detail.stabH_sst} conformKind="stabH" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
+            <KVNum label="Stab L" field="stabL_sst" detailVal={detail.stabL_sst} conformKind="stabL" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
+          </>
+        )}
+        {voir('sst', 'vrillage') && <KVVrillage label="Vrillage" field="vrillage_sst" detailVal={detail.vrillage_sst ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />}
         </CarteSansValeur.Provider>
       </SidebarCard>
 
       {/* Tirelle */}
       <SidebarCard title="Tirelle" icon={<Ruler className="h-3.5 w-3.5 text-accent" />} highlight={isEditing} aside={<SansControle qui="Malterre" asked={controles.malterre} mesures={controles.mesures?.malterre} />}>
         <CarteSansValeur.Provider value={!aDesValeurs('tirelle')}>
-        <KVNum label="Laize" field="laize_tirelle" detailVal={detail.laize_tirelle} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVNum label="Poids" field="poids_tirelle" detailVal={detail.poids_tirelle} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVNum label="Stab H" field="stabH_tirelle" detailVal={detail.stabH_tirelle} conformKind="stabH" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVNum label="Stab L" field="stabL_tirelle" detailVal={detail.stabL_tirelle} conformKind="stabL" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
-        <KVVrillage label="Vrillage" field="vrillage_tirelle" detailVal={detail.vrillage_tirelle ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />
+        {voir('tirelle', 'laize') && <KVNum label="Laize" field="laize_tirelle" detailVal={detail.laize_tirelle} conformKind="laize" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />}
+        {voir('tirelle', 'poids') && <KVNum label="Poids" field="poids_tirelle" detailVal={detail.poids_tirelle} conformKind="poids" bounds={bounds} isEditing={isEditing} edit={edit} onEditField={onEditField} />}
+        {voir('tirelle', 'stabilites') && (
+          <>
+            <KVNum label="Stab H" field="stabH_tirelle" detailVal={detail.stabH_tirelle} conformKind="stabH" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
+            <KVNum label="Stab L" field="stabL_tirelle" detailVal={detail.stabL_tirelle} conformKind="stabL" bounds={bounds} zeroIsValue isEditing={isEditing} edit={edit} onEditField={onEditField} />
+          </>
+        )}
+        {voir('tirelle', 'vrillage') && <KVVrillage label="Vrillage" field="vrillage_tirelle" detailVal={detail.vrillage_tirelle ?? null} max={vrillageMax} isEditing={isEditing} edit={edit} onEditField={onEditField} />}
         {voirAllongement && (
           <>
             <KVAllongement label="Allong. H" titre="Allongement en hauteur" field="allongementH_tirelle" detailVal={detail.allongementH_tirelle ?? null} tol={tolAllong?.h} isEditing={isEditing} edit={edit} onEditField={onEditField} />
