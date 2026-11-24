@@ -52,7 +52,8 @@ export interface EtapeDelai {
    *  calendar; absent / 0 = on time */
   retard?: number
   /** the urgency asked of that partner and still awaited (lib/urgence-sst.ts), on a step without a délai
-   *  as on one that has its délai (« can you go faster? ») */
+   *  as on one that has its délai (« can you go faster? »): the step then ends on the date wished,
+   *  as an estimate */
   urgence?: UrgenceEtape
   /** a step still to launch, shortened to the date we plan to ask of the partner with the order
    *  (« Prévoir une urgence », lib/lancement-ligne.ts): nobody was asked yet */
@@ -194,19 +195,26 @@ export function delaiAuPlusTot(e: EntreeDelai): DelaiAuPlusTot | null {
    *  a délai: the partner's standard from today, as an estimate. */
   const chezPartenaire = (libelle: string, m: { partenaire: string | null; delai: string | null; engagement?: string | null; urgence?: UrgenceEtape | null }, standard: number, ferm: Periode[]): EtapeDelai => {
     const delai = m.delai && /^\d{8}$/.test(m.delai) ? m.delai : null
-    // While an urgency is asked the step stays what it was (the standard as an estimate, or the délai
-    // given): nobody promised better yet.
     const urgence = m.urgence ? { urgence: m.urgence } : {}
+    // While an urgency awaits its answer, the date we asked for is the best estimate of the step's end
+    // (Vincent 2026-11-24): nobody promised it yet, so it reads « estimé », on a step without a délai
+    // as on one that has its délai (« can you go faster? »). Past, the step ends today at best.
+    const voeu = m.urgence?.dateSouhaitee
+    const souhaitee = voeu && /^\d{8}$/.test(voeu) ? (voeu > e.aujourdhui ? voeu : e.aujourdhui) : null
     if (!delai) {
+      if (souhaitee) {
+        return { libelle, du: e.aujourdhui, au: souhaitee, jours: joursOuvresEntre(e.aujourdhui, souhaitee, ferm), estime: true, partenaire: m.partenaire, delai: null, ...urgence }
+      }
       const au = ajouterJoursOuvres(e.aujourdhui, standard, ferm)
       return { libelle, du: e.aujourdhui, au, jours: standard, estime: true, partenaire: m.partenaire, delai: null, ...urgence }
     }
-    const au = delai > e.aujourdhui ? delai : e.aujourdhui
+    const au = souhaitee ?? (delai > e.aujourdhui ? delai : e.aujourdhui)
     // How late the partner already is on its own engagement (its reports, LIVA #1364).
     const engagement = m.engagement && /^\d{8}$/.test(m.engagement) ? m.engagement : null
     const retard = engagement && delai > engagement ? joursOuvresEntre(engagement, delai, ferm) : 0
     return {
       libelle, du: e.aujourdhui, au, jours: joursOuvresEntre(e.aujourdhui, au, ferm), partenaire: m.partenaire, delai, depasse: delai < e.aujourdhui,
+      ...(souhaitee ? { estime: true } : {}),
       ...(engagement ? { engagement } : {}), ...(retard > 0 ? { retard } : {}), ...urgence,
     }
   }

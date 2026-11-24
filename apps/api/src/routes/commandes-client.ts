@@ -5412,7 +5412,7 @@ function auPlusTotDe(l: LigneAuPlusTot, agg: AgregatLigne, fil: number, f: Faits
     fini: m ? agg.fini_metrage : agg.fini_poids,
     finiEnControle: m ? agg.controle_metrage : agg.controle_poids,
     finiRecuLe: agg.controle_recu_le,
-    ecruChezEnnoblisseur: (ordres?.enno ?? []).map((o) => ({ quantite: m ? o.metrage : o.poids, partenaire: o.partenaire, delai: o.delai, engagement: o.engagement })),
+    ecruChezEnnoblisseur: (ordres?.enno ?? []).map((o) => ({ quantite: m ? o.metrage : o.poids, partenaire: o.partenaire, delai: o.delai, engagement: o.engagement, urgence: o.urgence })),
     tricotageLance: ordres?.tricotage ?? null,
     enCours,
     sansControle: kind === 'fini' && desReception.has(l.refId),

@@ -53,8 +53,10 @@ describe('urgenceLigne', () => {
     const enno: LigneUrgence = { ...l('ennoblisseur', 10), preteAuPlusTot: dans(12), urgenceReponseLe: dans(-1), urgenceChez: 'ennoblissement' }
     expect(urgenceCommande([enno], today)?.raison).toBe('1 ligne : urgence demandée, relancer l’ennoblisseur')
     expect(niveau({ ...enno, urgenceReponseLe: dans(1) })).toBe(null)
-    // The date holds anyway: nothing to say, asked or not.
-    expect(niveau(trico(10, 10, -1))).toBe(null)
+    // The earliest date rests on the date wished while the answer is awaited (lib/delai-au-plus-tot.ts):
+    // it holding the client's date says nothing, an answer overdue is ours to chase.
+    expect(niveau(trico(10, 10, 1))).toBe(null)
+    expect(urgenceLigne(trico(10, 10, -1), today)?.action).toBe('relancer_urgence')
     // D already passed: an urgency cannot save it.
     expect(urgenceLigne(trico(-1, 5, 2), today)?.action).toBe('tricotage')
     // The order takes the colour of its other lines: neutral only when every line is.

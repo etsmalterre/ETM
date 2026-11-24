@@ -250,20 +250,20 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
   }
   // tricotage / ennoblisseur: someone else acts; only a passed délai is ours to chase.
   if (j < 0) return { niveau: 'rouge', action: l.etat, jours: j, date }
+  if (l.etat !== 'tricotage' && l.etat !== 'ennoblisseur') return null
+  // The partner was asked for an urgency: nothing to do until its answer is due, then chase it. The
+  // earliest date then rests on the date wished (lib/delai-au-plus-tot.ts), so it cannot tell whether
+  // the client's date is at stake: an answer overdue is always ours to chase.
+  const reponse = ymd(l.urgenceReponseLe)
+  if (reponse) {
+    const jr = joursAvant(reponse, today)
+    const action: Action = l.urgenceChez === 'ennoblissement' ? 'relancer_urgence_enno' : 'relancer_urgence'
+    return jr >= 0 ? null : { niveau: 'rouge', action, jours: jr, date: reponse }
+  }
   // …or a partner's délai (its reports, LIVA #1364) that leaves no margin: the client's date cannot be held,
   // ours to tell the client and move the line's date (a report, imputable to the partner).
   const prete = ymd(l.preteAuPlusTot)
-  if ((l.etat === 'tricotage' || l.etat === 'ennoblisseur') && prete && prete > date) {
-    // …unless the partner was asked for an urgency: nothing to do until its answer is due, then chase it.
-    const reponse = ymd(l.urgenceReponseLe)
-    if (reponse) {
-      const jr = joursAvant(reponse, today)
-      const action: Action = l.urgenceChez === 'ennoblissement' ? 'relancer_urgence_enno' : 'relancer_urgence'
-      return jr >= 0 ? null : { niveau: 'rouge', action, jours: jr, date: reponse }
-    }
-    return { niveau: 'rouge', action: 'intenable', jours: j, date }
-  }
-  return null
+  return prete && prete > date ? { niveau: 'rouge', action: 'intenable', jours: j, date } : null
 }
 
 const LIBELLE: Record<Action, [string, string]> = {

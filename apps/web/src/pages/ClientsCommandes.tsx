@@ -341,14 +341,14 @@ function DelaiLigneDetail({ auPlusTot: a, entete, lanceeAujourdhui }: {
                   </p>
                 )}
                 {/* An urgency asked of that partner (Vincent 2026-11-16): a detail OF THIS STEP, so indented
-                    under its label behind a « ↳ », then the siren and the day it was asked — nothing else
-                    while it is awaited; overdue, the action. */}
+                    under its label behind a « ↳ », then the siren and « Urgence demandée » alone (Vincent
+                    2026-11-24: the step already ends on the date wished); overdue, the action. */}
                 {e.urgence && (
                   <p className={cn('flex items-center gap-1.5 pl-[18px] text-[11px]', e.urgence.aRelancer ? 'font-medium text-red-600' : 'text-muted-foreground')}>
                     <CornerDownRight className="h-3 w-3 flex-shrink-0 text-muted-foreground/60" aria-hidden />
                     <UrgenceIcon />
                     <span>
-                      Urgence demandée le {formatHfsqlDate(e.urgence.demandeeLe).slice(0, 5)}
+                      Urgence demandée
                       {e.urgence.aRelancer ? `, sans réponse : relancer${e.partenaire ? ` ${e.partenaire}` : ''}` : ''}
                     </span>
                   </p>
@@ -2597,24 +2597,22 @@ function LineCard({
         })()}
       </div>
       {enEtude && <EtudeLigneBandeau line={line} canRelancer={!isEditing} />}
-      {/* An urgency asked of the knitter on the knitting this line waits for (API lib/urgence-sst.ts,
-          Vincent 2026-11-16): asked and chased on the knitting order; here the siren says why a date
-          that cannot be held is not red, or that the knitter must be chased. */}
+      {/* An urgency asked of the partner this line waits for (API lib/urgence-sst.ts): asked and chased
+          on the partner's order. While its answer is awaited the card says nothing (Vincent 2026-11-24:
+          the date's hover carries it, the step ends on the date wished); overdue, the line is red and
+          this is the action it prints. */}
       {(() => {
         const etape = line.statut?.etat === 'expediee' || line.statut?.etat === 'soldee' ? null : line.au_plus_tot?.etapes.find((e) => e.urgence)
         const u = etape?.urgence
-        if (!u) return null
+        if (!u || !u.aRelancer || line.urgence !== 'rouge') return null
         const qui = etape?.partenaire ? ` à ${etape.partenaire}` : ''
-        const due = u.aRelancer && line.urgence === 'rouge'
         return (
           <div className="flex items-center gap-1.5 mt-2 text-[11px]">
             <UrgenceIcon />
-            <span className={cn('truncate', due ? 'text-red-600 font-medium' : 'text-muted-foreground')}>
+            <span className="truncate text-red-600 font-medium">
               Urgence demandée{qui} le {formatHfsqlDate(u.demandeeLe).slice(0, 5)}
               {u.dateSouhaitee ? ` pour le ${formatHfsqlDate(u.dateSouhaitee).slice(0, 5)}` : ''}
-              {u.aRelancer
-                ? ` · sans réponse depuis le ${formatHfsqlDate(u.reponseAttendue).slice(0, 5)} : relancer sur la commande ${etape?.libelle === 'Ennoblissement' ? 'd’ennoblissement' : 'de tricotage'}`
-                : ` · réponse attendue le ${formatHfsqlDate(u.reponseAttendue).slice(0, 5)}`}
+              {` · sans réponse depuis le ${formatHfsqlDate(u.reponseAttendue).slice(0, 5)} : relancer sur la commande ${etape?.libelle === 'Ennoblissement' ? 'd’ennoblissement' : 'de tricotage'}`}
             </span>
           </div>
         )

@@ -152,13 +152,28 @@ describe('délai au plus tôt (doctrine des délais §5 ter)', () => {
       expect(sans.etapes[0]).toMatchObject({ libelle: 'Tricotage', estime: true })
       expect(sans.etapes[0].urgence).toBeUndefined()
       expect(avec.etapes[0]).toMatchObject({ libelle: 'Tricotage', estime: true, urgence })
-      // Asking changes nothing to the estimate: nobody promised better yet.
+      // An urgency without a date wished changes nothing to the estimate.
       expect(avec.date).toBe(sans.date)
-      // Asked on a délai already given (« can you go faster? »): the step keeps that délai and carries
-      // the urgency. Which urgency still awaits is the caller's to say (lib/urgence-sst.ts).
+      // Asked on a délai already given (« can you go faster? ») without a date: the step keeps that délai
+      // and carries the urgency. Which urgency still awaits is the caller's to say (lib/urgence-sst.ts).
       const donne = delaiAuPlusTot(base({ tricotage: 1000, enCours: true, tricotageLance: { partenaire: 'Tricotage Malterre', delai: '20261106', urgence } }))!
       expect(donne.etapes[0]).toMatchObject({ au: '20261106', delai: '20261106', urgence })
       expect(donne.etapes[0].estime).toBeUndefined()
+    })
+    it('an urgency awaited: the step ends on the date wished, as an estimate (order 3949)', () => {
+      // Tuesday 24/11: the écru at MATEL without a délai, asked for Friday 11/12 so that the line is
+      // ready on 18/12 after the 5 days of control. The standard would give 15/12 → 22/12.
+      const urgence = { demandeeLe: '20261124', reponseAttendue: '20261126', aRelancer: false, dateSouhaitee: '20261211' }
+      const chez = (p: object) => delaiAuPlusTot(base({ aujourdhui: '20261124', ecru: 1000, enCours: true, ecruChezEnnoblisseur: [{ quantite: 1000, partenaire: 'MATEL', delai: null, ...p }] }))!
+      expect(chez({}).date).toBe('20261222')
+      const d = chez({ urgence })
+      expect(d.etapes[0]).toEqual({ libelle: 'Ennoblissement', du: '20261124', au: '20261211', jours: 13, estime: true, partenaire: 'MATEL', delai: null, urgence })
+      expect(d.date).toBe('20261218')
+      // On a délai already given, asked earlier: the date wished too, still an estimate.
+      const donne = chez({ delai: '20261216', urgence })
+      expect(donne.etapes[0]).toMatchObject({ au: '20261211', estime: true, delai: '20261216', depasse: false })
+      // A date wished already passed: the step ends today at best.
+      expect(chez({ urgence: { ...urgence, dateSouhaitee: '20261120' } }).etapes[0]).toMatchObject({ au: '20261124', jours: 0 })
     })
     it('préparation keeps the reserve', () => {
       const d = delaiAuPlusTot(base({ ecru: 1000, ecruChezEnnoblisseur: [{ quantite: 1000, partenaire: 'MATEL', delai: '20261110' }] }))!
