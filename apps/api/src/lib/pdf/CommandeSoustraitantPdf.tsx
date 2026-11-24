@@ -62,6 +62,9 @@ export interface CommandeSoustraitantPdfData {
    *  one-off comment. Empty/absent ⇒ the block is not drawn at all. */
   mentionsQualite?: string[]
   lignes: Array<{
+    /** IDligne_commande_sous_traitant: never printed, lets a reader of this data match a line
+     *  (lib/espace-partenaire-commandes.ts). */
+    id?: number
     ref_label: string | null
     colori_reference: string | null
     /** ref_fini.designation — e.g. "DOUBLE FACE PES/COTON". */

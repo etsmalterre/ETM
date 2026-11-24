@@ -2831,6 +2831,7 @@ export async function buildCommandePdfData(id: number): Promise<CommandeSoustrai
 
       const recti = isRectiligneType(typeKind)
       return {
+        id: lid,
         ref_label: resolveRef(refId, typeKind) || null,
         colori_reference: resolveColoris(colId, typeKind, refId) || null,
         ref_designation: recti ? (rectiRefs.get(refId)?.designation || null) : (finiExtra?.designation ?? null),
@@ -2884,7 +2885,7 @@ export function buildEcruLabel(
   return parts.join(' — ')
 }
 
-async function renderCommandePdfBuffer(data: CommandeSoustraitantPdfData): Promise<Buffer> {
+export async function renderCommandePdfBuffer(data: CommandeSoustraitantPdfData): Promise<Buffer> {
   return renderToBuffer(
     React.createElement(CommandeSoustraitantPdf, { data }) as unknown as React.ReactElement<
       import('@react-pdf/renderer').DocumentProps
