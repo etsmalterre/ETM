@@ -28,6 +28,9 @@ import { insertProspect, type ProspectFields } from './prospects.js'
 import { enregistrerActivite, EspaceIndisponible, listeAcces } from '../lib/espace-client-acces.js'
 import { ficheClient } from '../lib/espace-fiche.js'
 import { commandeClient, confirmationCommandePdf, listeCommandesClient } from '../lib/espace-commandes.js'
+import { enregistrerActivitePartenaires, listeAccesPartenaires, partenairesVisibles } from '../lib/espace-partenaire-acces.js'
+import { bonDeCommandePartenaire, commandePartenaire, listeCommandesPartenaire } from '../lib/espace-partenaire-commandes.js'
+import { qualiteServicePartenaire } from '../lib/espace-partenaire-indicateurs.js'
 import { z } from 'zod'
 
 export const webserviceSiteRouter: RouterType = Router()
@@ -396,6 +399,87 @@ webserviceSiteRouter.get('/espace/clients/:id/commandes/:idCommande/confirmation
   res.setHeader('Content-Type', 'application/pdf')
   res.setHeader('Content-Disposition', `inline; filename="confirmation-commande-${doc.numero ?? idCommande}.pdf"`)
   res.send(doc.pdf)
+}))
+
+// ── Espace partenaire (espace-partenaire-etsmalterre) ─────────────────
+// The subcontractors' twin of the espace client, under espace/partenaires/: same tunnel, same host check (the
+// `/espace` guard above covers these paths too — they carry the partners' e-mails). The portal decides :id (an
+// ERP IDsous_traitant) from its session; nothing here trusts a browser. Each lib/espace-partenaire-*.ts opens
+// with what a partner must never be sent.
+
+/** Every visible sous-traitant, id + name only, sorted by name — the portal admin picks one for « voir comme ».
+ *  Cached 5 min like espace/clients. */
+let espacePartenairesCache: { at: number; partenaires: { IDsous_traitant: number; nom: string }[] } | null = null
+webserviceSiteRouter.get('/espace/partenaires', handle(async (_req, res) => {
+  if (!espacePartenairesCache || Date.now() - espacePartenairesCache.at > 5 * 60_000) {
+    espacePartenairesCache = { at: Date.now(), partenaires: await partenairesVisibles() }
+  }
+  res.json({ partenaires: espacePartenairesCache.partenaires })
+}))
+
+/** Who may sign in to the espace partenaire — decided in ETM (Sous-traitants › Gestion › Contacts), never by the
+ *  portal. One row per contact, e-mail lowercased and unique (lib/espace-partenaire-acces.ts). */
+webserviceSiteRouter.get('/espace/partenaires/acces', handle(async (_req, res) => {
+  try {
+    res.json({ acces: await listeAccesPartenaires() })
+  } catch (err) {
+    if (err instanceof EspaceIndisponible) { fault(res, 503, 'Accès espace partenaire non configuré'); return }
+    throw err
+  }
+}))
+
+/** What the portal reports back: invitation sent, password set, sign-in. Same body as espace/activite. */
+webserviceSiteRouter.post('/espace/partenaires/activite', handle(async (req, res) => {
+  const body = activiteSchema.safeParse(req.body)
+  if (!body.success) { fault(res, 400, 'Requête invalide'); return }
+  const now = Date.now()
+  const evenements = body.data.evenements
+    .map((e) => ({ idcontact: e.idcontact, type: e.type, le: new Date(e.le) }))
+    .filter((e) => e.le.getTime() <= now + 5 * 60_000)
+  try {
+    res.json({ enregistres: await enregistrerActivitePartenaires(evenements) })
+  } catch (err) {
+    if (err instanceof EspaceIndisponible) { fault(res, 503, 'Accès espace partenaire non configuré'); return }
+    throw err
+  }
+}))
+
+/** The partner's orders, newest first (lib/espace-partenaire-commandes.ts: ennoblissement orders whose bon de
+ *  commande was e-mailed, and only what the partner may see). [] for a sous-traitant with none. */
+webserviceSiteRouter.get('/espace/partenaires/:id/commandes', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  if (!id) { fault(res, 400, 'Identifiant partenaire invalide'); return }
+  res.json({ commandes: await listeCommandesPartenaire(id) })
+}))
+
+/** One order of the partner — 404 when it isn't this partner's or was never sent (never says whose it is). */
+webserviceSiteRouter.get('/espace/partenaires/:id/commandes/:idCommande', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  const idCommande = idParam(req.params.idCommande)
+  if (!id || !idCommande) { fault(res, 400, 'Identifiant invalide'); return }
+  const commande = await commandePartenaire(id, idCommande)
+  if (!commande) { fault(res, 404, 'Commande introuvable'); return }
+  res.json(commande)
+}))
+
+/** The bon de commande PDF, as Malterre e-mails it — 404 when the order isn't this partner's. No file extension
+ *  in the path: the prod nginx would serve it as a static asset (CLAUDE.md § React rules). */
+webserviceSiteRouter.get('/espace/partenaires/:id/commandes/:idCommande/bon-de-commande', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  const idCommande = idParam(req.params.idCommande)
+  if (!id || !idCommande) { fault(res, 400, 'Identifiant invalide'); return }
+  const doc = await bonDeCommandePartenaire(id, idCommande)
+  if (!doc) { fault(res, 404, 'Commande introuvable'); return }
+  res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Disposition', `inline; filename="bon-de-commande-${doc.numero}.pdf"`)
+  res.send(doc.pdf)
+}))
+
+/** The partner's délais over twelve sliding months (lib/espace-partenaire-indicateurs.ts). */
+webserviceSiteRouter.get('/espace/partenaires/:id/qualite-service', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  if (!id) { fault(res, 400, 'Identifiant partenaire invalide'); return }
+  res.json(await qualiteServicePartenaire(id))
 }))
 
 webserviceSiteRouter.get('/_etat', (_req, res) => {
