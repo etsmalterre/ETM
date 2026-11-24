@@ -1,9 +1,11 @@
-// « Espace client » on each contact card of Clients › Gestion › Contacts: who may use
-// client.etsmalterre.fr is decided here, the portal only applies it (API
-// routes/espace-client.ts, lib/espace-client-acces.ts). Read mode shows a chip beside the
-// envoi chips (this state in its tooltip); this switch line is rendered in edit mode only,
-// behind its own permission (gestion_acces_espace_client). It never joins the contact
-// form's envoi checkboxes: turning it on e-mails the customer at once.
+// « Espace client » on each contact card of Clients › Gestion › Contacts, and its twin « Espace
+// partenaire » on Sous-traitants › Gestion › Contacts: who may use client.etsmalterre.fr /
+// partenaire.etsmalterre.fr is decided here, the portal only applies it (API
+// routes/espace-client.ts + lib/espace-client-acces.ts, routes/espace-partenaire.ts +
+// lib/espace-partenaire-acces.ts). Read mode shows a chip beside the envoi chips (this state in
+// its tooltip); this switch line is rendered in edit mode only, behind its own permission
+// (gestion_acces_espace_client / gestion_acces_espace_partenaire). It never joins the contact
+// form's envoi checkboxes: turning it on e-mails the person at once.
 
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -22,21 +24,59 @@ export interface AccesContact {
   derniere_connexion_le: string | null
 }
 
-interface AccesClient {
+interface AccesEspace {
   disponible: boolean
   contacts: AccesContact[]
 }
 
-export function useAccesEspaceClient(clientId: number) {
-  return useQuery<AccesClient>({
-    queryKey: ['espace-client-acces', clientId],
-    queryFn: () => apiFetch(`/espace-client/clients/${clientId}`),
+/** One of the two portals: its name, its site, and where its access list lives in the API. */
+interface Espace {
+  libelle: string
+  site: string
+  queryKey: string
+  /** GET — the access state of the contacts of one owner (a client, a sous-traitant). */
+  lire: (idProprietaire: number) => string
+  /** PUT — one contact's switch. */
+  ecrire: (idcontact: number) => string
+  corps: (idProprietaire: number, actif: boolean) => Record<string, unknown>
+}
+
+const ESPACE_CLIENT: Espace = {
+  libelle: 'Espace client',
+  site: 'client.etsmalterre.fr',
+  queryKey: 'espace-client-acces',
+  lire: (id) => `/espace-client/clients/${id}`,
+  ecrire: (idcontact) => `/espace-client/contacts/${idcontact}`,
+  corps: (idclient, actif) => ({ idclient, actif }),
+}
+
+const ESPACE_PARTENAIRE: Espace = {
+  libelle: 'Espace partenaire',
+  site: 'partenaire.etsmalterre.fr',
+  queryKey: 'espace-partenaire-acces',
+  lire: (id) => `/espace-partenaire/sous-traitants/${id}`,
+  ecrire: (idcontact) => `/espace-partenaire/contacts/${idcontact}`,
+  corps: (idsous_traitant, actif) => ({ idsous_traitant, actif }),
+}
+
+function useAcces(espace: Espace, idProprietaire: number) {
+  return useQuery<AccesEspace>({
+    queryKey: [espace.queryKey, idProprietaire],
+    queryFn: () => apiFetch(espace.lire(idProprietaire)),
   })
+}
+
+export function useAccesEspaceClient(clientId: number) {
+  return useAcces(ESPACE_CLIENT, clientId)
+}
+
+export function useAccesEspacePartenaire(sousTraitantId: number) {
+  return useAcces(ESPACE_PARTENAIRE, sousTraitantId)
 }
 
 const jour = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('fr-FR') : null)
 
-/** What the portal did with this access, most advanced step first. */
+/** What the portal did with this access, most advanced step first (the same for both portals). */
 export function etatAccesEspaceClient(a: AccesContact | undefined): string {
   if (!a) return 'Pas d’accès'
   if (!a.actif) return `Accès retiré le ${jour(a.modifie_le)} par ${a.modifie_par}`
@@ -46,22 +86,30 @@ export function etatAccesEspaceClient(a: AccesContact | undefined): string {
   return `Accès donné le ${jour(a.modifie_le)} par ${a.modifie_par} — invitation en attente`
 }
 
-export function AccesContactLine({ clientId, contactId, contactNom, mail, acces, editable }: {
-  clientId: number
+export const etatAccesEspacePartenaire = etatAccesEspaceClient
+
+interface LigneProps {
   contactId: number
   contactNom: string
   mail: string | null
   acces: AccesContact | undefined
   editable: boolean
+}
+
+function AccesLine({ espace, idProprietaire, contactId, contactNom, mail, acces, editable, precision }: LigneProps & {
+  espace: Espace
+  idProprietaire: number
+  /** One more sentence in the « give access » dialog. */
+  precision?: string
 }) {
   const queryClient = useQueryClient()
   const [confirm, setConfirm] = useState<boolean | null>(null)
   const mut = useMutation({
-    mutationFn: (actif: boolean) => apiFetch(`/espace-client/contacts/${contactId}`, {
-      method: 'PUT', body: JSON.stringify({ idclient: clientId, actif }),
+    mutationFn: (actif: boolean) => apiFetch(espace.ecrire(contactId), {
+      method: 'PUT', body: JSON.stringify(espace.corps(idProprietaire, actif)),
     }),
     onSuccess: (payload: { contacts: AccesContact[] }) => {
-      queryClient.setQueryData(['espace-client-acces', clientId], { disponible: true, contacts: payload.contacts })
+      queryClient.setQueryData([espace.queryKey, idProprietaire], { disponible: true, contacts: payload.contacts })
       setConfirm(null)
     },
   })
@@ -69,18 +117,19 @@ export function AccesContactLine({ clientId, contactId, contactNom, mail, acces,
   const sansMail = !mail?.trim()
   const disabled = !editable || mut.isPending || (sansMail && !actif)
   const erreur = mut.error ? String((mut.error as { body?: { error?: string } }).body?.error ?? 'Échec de l’enregistrement') : null
+  const nom = espace.libelle.toLowerCase()
 
   return (
     <div className="mt-2 flex items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-2 py-1.5">
       <Globe className={cn('h-3.5 w-3.5 flex-shrink-0', actif ? 'text-accent' : 'text-muted-foreground/60')} />
       <div className="min-w-0 flex-1">
-        <div className="text-[11px] font-medium">Espace client</div>
+        <div className="text-[11px] font-medium">{espace.libelle}</div>
         <div className="text-[10px] text-muted-foreground truncate" title={etatAccesEspaceClient(acces)}>
           {sansMail && !actif ? 'Renseignez un e-mail pour donner l’accès' : etatAccesEspaceClient(acces)}
         </div>
       </div>
       {mut.isPending && <Loader2 className="h-3 w-3 animate-spin text-accent" />}
-      <button type="button" role="switch" aria-checked={actif} aria-label="Accès espace client" disabled={disabled}
+      <button type="button" role="switch" aria-checked={actif} aria-label={`Accès ${nom}`} disabled={disabled}
         onClick={() => setConfirm(!actif)}
         className={cn('relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors',
           'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
@@ -92,10 +141,10 @@ export function AccesContactLine({ clientId, contactId, contactNom, mail, acces,
       </button>
       <ConfirmDialog
         open={confirm !== null}
-        title={confirm ? 'Donner l’accès à l’espace client ?' : 'Retirer l’accès à l’espace client ?'}
+        title={confirm ? `Donner l’accès à l’${nom} ?` : `Retirer l’accès à l’${nom} ?`}
         description={confirm
-          ? `${contactNom} (${mail}) recevra un e-mail pour choisir son mot de passe sur client.etsmalterre.fr.`
-          : `${contactNom} ne pourra plus se connecter à client.etsmalterre.fr. Ses sessions ouvertes seront fermées.`}
+          ? `${contactNom} (${mail}) recevra un e-mail pour choisir son mot de passe sur ${espace.site}.${precision ? ` ${precision}` : ''}`
+          : `${contactNom} ne pourra plus se connecter à ${espace.site}. Ses sessions ouvertes seront fermées.`}
         confirmLabel={confirm ? 'Donner l’accès' : 'Retirer l’accès'}
         variant={confirm ? 'default' : 'destructive'}
         isPending={mut.isPending}
@@ -104,5 +153,18 @@ export function AccesContactLine({ clientId, contactId, contactNom, mail, acces,
         onCancel={() => { setConfirm(null); mut.reset() }}
       />
     </div>
+  )
+}
+
+export function AccesContactLine({ clientId, ...ligne }: LigneProps & { clientId: number }) {
+  return <AccesLine espace={ESPACE_CLIENT} idProprietaire={clientId} {...ligne} />
+}
+
+/** `ennoblisseur`: the space only lists ennoblissement orders for now — another sous-traitant is told so
+ *  before its contact is invited to an empty space. */
+export function AccesPartenaireLine({ sousTraitantId, ennoblisseur, ...ligne }: LigneProps & { sousTraitantId: number; ennoblisseur: boolean }) {
+  return (
+    <AccesLine espace={ESPACE_PARTENAIRE} idProprietaire={sousTraitantId} {...ligne}
+      precision={ennoblisseur ? undefined : 'Pour l’instant, cet espace n’affiche que les commandes d’ennoblissement.'} />
   )
 }

@@ -26,6 +26,7 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowLeftRight,
+  Globe,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -46,6 +47,8 @@ import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
 import { EtatPill } from '@/lib/etat-stock-fini'
 import { Link } from 'react-router-dom'
+import { useHasPermission } from '@/contexts/PermissionsContext'
+import { AccesPartenaireLine, etatAccesEspacePartenaire, useAccesEspacePartenaire } from '@/components/espace-client/AccesEspaceClient'
 
 // IDtype_sst value for "Ennoblisseur" (dyer/finisher) — see type_sst catalog.
 const ENNOBLISSEUR_TYPE = 2
@@ -952,6 +955,7 @@ function DetailSidebar({ sousTraitant, isLoading, isEditing, sousTraitantId, onM
   onSubFormsDirtyChange: (dirty: boolean) => void
 }) {
   const [activeTab, setActiveTab] = useState<SidebarTab>('info')
+  const canGestionAcces = useHasPermission('gestion_acces_espace_partenaire')
   if (isLoading) return (
     <div className="w-96 flex-shrink-0 bg-muted/30 rounded-xl border p-4 space-y-4">
       <div className="flex gap-2"><div className="h-8 flex-1 bg-muted animate-pulse rounded-md" /><div className="h-8 flex-1 bg-muted animate-pulse rounded-md" /><div className="h-8 flex-1 bg-muted animate-pulse rounded-md" /></div>
@@ -982,7 +986,7 @@ function DetailSidebar({ sousTraitant, isLoading, isEditing, sousTraitantId, onM
       </div>
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
         {activeTab === 'info' && <InfoTab sousTraitant={sousTraitant} isEditing={isEditing} editTypeSst={editTypeSst} onEditTypeSstChange={onEditTypeSstChange} editVisible={editVisible} onEditVisibleChange={onEditVisibleChange} editCommentaire={editCommentaire} onEditCommentaireChange={onEditCommentaireChange} delais={delais} />}
-        {activeTab === 'contacts' && <ContactsTab contacts={sousTraitant.contacts} isEditing={isEditing} sousTraitantId={sousTraitantId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
+        {activeTab === 'contacts' && <ContactsTab contacts={sousTraitant.contacts} isEditing={isEditing} accesEditable={isEditing && canGestionAcces} ennoblisseur={Number(sousTraitant.IDtype_sst) === ENNOBLISSEUR_TYPE} sousTraitantId={sousTraitantId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
         {activeTab === 'adresses' && <AdressesTab adresses={sousTraitant.adresses} isEditing={isEditing} sousTraitantId={sousTraitantId} onMutationSuccess={onMutationSuccess} onDirtyChange={onSubFormsDirtyChange} />}
       </div>
     </div>
@@ -1081,13 +1085,24 @@ const ENVOI_FLAGS = [
   { key: 'envoi_soumission' as const, label: 'Soumission', icon: Send },
 ]
 
-function ContactsTab({ contacts, isEditing, sousTraitantId, onMutationSuccess, onDirtyChange }: {
+// Espace partenaire access is not a document flag: its own hue (navy) and a Globe icon, as the
+// espace client's chip on Clients › Gestion.
+const espacePartenaireChipClass = 'inline-flex items-center gap-0.5 px-1.5 py-0 rounded text-[10px] font-medium border bg-primary/10 text-primary border-primary/25'
+
+function ContactsTab({ contacts, isEditing, accesEditable, ennoblisseur, sousTraitantId, onMutationSuccess, onDirtyChange }: {
   contacts: Contact[]; isEditing: boolean; sousTraitantId: number; onMutationSuccess: () => void
+  /** Edit mode AND the right to give the espace partenaire (gestion_acces_espace_partenaire). */
+  accesEditable: boolean
+  ennoblisseur: boolean
   onDirtyChange: (dirty: boolean) => void
 }) {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState({ nom: '', prenom: '', tel: '', mail: '', envoi_bl: false, envoi_bt: false, envoi_facture: false, envoi_commande: false, envoi_soumission: false })
   const [showForm, setShowForm] = useState(false)
+  const { data: acces } = useAccesEspacePartenaire(sousTraitantId)
+  const accesDe = (idcontact: number) => acces?.contacts.find((a) => a.idcontact === idcontact)
+  // Read mode: a chip beside the envoi chips. The switch line only where it can act.
+  const chipEspacePartenaire = (idcontact: number) => !!acces?.disponible && !accesEditable && !!accesDe(idcontact)?.actif
 
   const onDirtyChangeRef = useRef(onDirtyChange)
   useEffect(() => { onDirtyChangeRef.current = onDirtyChange })
@@ -1160,12 +1175,22 @@ function ContactsTab({ contacts, isEditing, sousTraitantId, onMutationSuccess, o
                 </div>
                 {c.tel && <div className="text-xs text-muted-foreground flex items-center gap-1.5 mt-1"><Phone className="h-3 w-3" />{c.tel}</div>}
                 {c.mail && <div className="text-xs text-muted-foreground flex items-center gap-1.5"><Mail className="h-3 w-3" /><span className="truncate">{c.mail}</span></div>}
-                {ENVOI_FLAGS.some(({ key }) => !!c[key]) && (
+                {(ENVOI_FLAGS.some(({ key }) => !!c[key]) || chipEspacePartenaire(c.IDcontact)) && (
                   <div className="flex gap-1 mt-1.5 flex-wrap">
                     {ENVOI_FLAGS.map(({ key, label }) => !!c[key] && (
                       <Badge key={key} variant="outline" className="text-[10px] py-0 px-1.5">{label}</Badge>
                     ))}
+                    {chipEspacePartenaire(c.IDcontact) && (
+                      <span className={espacePartenaireChipClass} title={etatAccesEspacePartenaire(accesDe(c.IDcontact))}>
+                        <Globe className="h-2.5 w-2.5" />Espace partenaire
+                      </span>
+                    )}
                   </div>
+                )}
+                {acces?.disponible && accesEditable && (
+                  <AccesPartenaireLine sousTraitantId={sousTraitantId} ennoblisseur={ennoblisseur} contactId={c.IDcontact}
+                    contactNom={[c.prenom, c.nom].filter(Boolean).join(' ') || 'Ce contact'} mail={c.mail}
+                    acces={accesDe(c.IDcontact)} editable />
                 )}
               </div>
               {isEditing && (
