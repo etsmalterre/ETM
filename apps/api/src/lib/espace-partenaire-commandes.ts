@@ -21,12 +21,14 @@
 //    itself, as it types its délai (lib/espace-partenaire-saisies.ts).
 //  - The lot's page (`lotPartenaire`, Vincent 2026-11-26: « permettre aux partenaires de voir toute l'information
 //    qualité de ce lot ») adds what Malterre found: ITS measures of the tirelle against the same tolerances, its
-//    coloris verdict, the lot's comment (suivilot `observations`, the lab's free text — it is read by the partner
-//    now), the rolls with their rendement and whether it is in the band (lib/rendement-lot.ts), the reprises, and
-//    the quality instructions the lot is judged against with its verdict (the MENTION, the sentence already
-//    printed on the bon de commande). Never add there: an action's title or description (Malterre's own story
-//    of the problem: they name clients — checked 2026-11-26), who judged, a roll's notes (they carry the
-//    knitting defects and the visiteurs' names), the client a roll is reserved to, the lot's prices.
+//    coloris verdict, the rolls with their rendement and whether it is in the band (lib/rendement-lot.ts), the
+//    reprises, and the quality actions the lot is judged against with its verdict (the MENTION, the sentence
+//    already printed on the bon de commande). Never add there: the lot's comment (suivilot `observations`: the
+//    lab's own notepad — « LAETITIA STP : vérifie l'unisson de la couleur !! » — shown at first, taken out the
+//    same day by Vincent: « une section que l'on utilise en interne »), an action's title or description
+//    (Malterre's own story of the problem: they name clients — checked 2026-11-26), who judged, a roll's notes
+//    (they carry the knitting defects and the visiteurs' names), the client a roll is reserved to, the lot's
+//    prices.
 //  - The LIST of lots (`lotsPartenaire`) is the work in progress plus two sliding months of what came back. The bon de commande PDF is the document Malterre e-mails: it carries what was sent
 //    (the partner's own prices included) and nothing is added to it here.
 //
@@ -243,8 +245,6 @@ export interface PieceLot {
 export interface LotDetail extends LotPartenaire {
   /** null when the reference asks Malterre no control. `coloris`: against the rond 0, null = not judged. */
   controleMalterre: { mesures: MesureMalterre[]; coloris: 'conforme' | 'ecart' | null } | null
-  /** The lab's comment on the lot. */
-  commentaire: string | null
   pieces: PieceLot[]
   /** The rolls' mean rendement and the band they are judged by. */
   rendement: { moyen: number | null; min: number | null; max: number | null }
@@ -764,7 +764,7 @@ export async function lotPartenaire(idSousTraitant: number, idLot: number): Prom
   type Row = Record<
     'laize' | 'poids' | 'rendement_demande' | 'poids_min' | 'poids_max' | 'laize_min' | 'laize_max' | 'freinte' | 'rendement'
     | 'stab_hauteur' | 'stab_largeur' | 'allh_min' | 'allh_max' | 'alll_min' | 'alll_max', number> &
-    Record<'stabh' | 'stabl' | 'vrillage' | 'allh' | 'alll', number | null> & { coloris: string | null; observations: string | null }
+    Record<'stabh' | 'stabl' | 'vrillage' | 'allh' | 'alll', number | null> & { coloris: string | null }
   const [noms, controles, [r], pieces, reprises, actions] = await Promise.all([
     libelles(v.lignes.map((l) => l.row)),
     controlesDesLots([idLot]),
@@ -772,7 +772,7 @@ export async function lotPartenaire(idSousTraitant: number, idLot: number): Prom
       SELECT COALESCE(s.laize_tirelle, 0)::float8 AS laize, COALESCE(s.poids_tirelle, 0)::float8 AS poids,
              s.stabh_tirelle::float8 AS stabh, s.stabl_tirelle::float8 AS stabl, s.vrillage_tirelle::float8 AS vrillage,
              s.allongementh_tirelle::float8 AS allh, s.allongementl_tirelle::float8 AS alll,
-             s.coloris_tirelle AS coloris, trim(s.observations::text) AS observations,
+             s.coloris_tirelle AS coloris,
              COALESCE(s.rendement_demande, 0)::float8 AS rendement_demande,
              COALESCE(r.poids_min, 0)::float8 AS poids_min, COALESCE(r.poids_max, 0)::float8 AS poids_max,
              COALESCE(r.laizeht_min, 0)::float8 AS laize_min, COALESCE(r.laizeht_max, 0)::float8 AS laize_max,
@@ -823,7 +823,6 @@ export async function lotPartenaire(idSousTraitant: number, idLot: number): Prom
     ...base,
     idCommande: v.entete.id,
     controleMalterre: malterre.length ? { mesures: malterre, coloris } : null,
-    commentaire: str(r.observations) || null,
     pieces: rouleaux,
     rendement: {
       moyen: mesures.length ? round3(mesures.reduce((a, b) => a + b, 0) / mesures.length) : null,
