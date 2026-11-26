@@ -1099,11 +1099,12 @@ export async function commandePartenaire(idSousTraitant: number, idCommande: num
 }
 
 /** The bon de commande PDF — the document Malterre e-mails the partner (Sous-traitants › Ennoblissement « PDF ») —
- *  or null when the order isn't this partner's or was never sent. Same rule as commandePartenaire. */
-export async function bonDeCommandePartenaire(idSousTraitant: number, idCommande: number): Promise<{ numero: string; pdf: Buffer } | null> {
+ *  or null when the order isn't this partner's or was never sent. Same rule as commandePartenaire. `sansPrix`: the
+ *  same document without its prices, for the partner's workshop (Vincent 2026-11-26). */
+export async function bonDeCommandePartenaire(idSousTraitant: number, idCommande: number, sansPrix = false): Promise<{ numero: string; pdf: Buffer } | null> {
   const { vues: vs } = await vues(idSousTraitant, idCommande)
   if (!vs[0]) return null
   const data = await buildCommandePdfData(idCommande)
   if (!data) return null
-  return { numero: data.numero, pdf: await renderCommandePdfBuffer(data) }
+  return { numero: data.numero, pdf: await renderCommandePdfBuffer(data, { sansPrix }) }
 }

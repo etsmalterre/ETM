@@ -471,10 +471,14 @@ webserviceSiteRouter.get('/espace/partenaires/:id/commandes/:idCommande/bon-de-c
   const id = idParam(req.params.id)
   const idCommande = idParam(req.params.idCommande)
   if (!id || !idCommande) { fault(res, 400, 'Identifiant invalide'); return }
-  const doc = await bonDeCommandePartenaire(id, idCommande)
+  // `?prix=0`: the copy without prices, for the partner's workshop. The header tells the portal the switch was
+  // honoured: an API that does not know it would send the prices, and the portal must refuse to hand that out.
+  const sansPrix = req.query.prix === '0'
+  const doc = await bonDeCommandePartenaire(id, idCommande, sansPrix)
   if (!doc) { fault(res, 404, 'Commande introuvable'); return }
   res.setHeader('Content-Type', 'application/pdf')
-  res.setHeader('Content-Disposition', `inline; filename="bon-de-commande-${doc.numero}.pdf"`)
+  if (sansPrix) res.setHeader('X-Bon-Sans-Prix', '1')
+  res.setHeader('Content-Disposition', `inline; filename="bon-de-commande-${doc.numero}${sansPrix ? '-sans-prix' : ''}.pdf"`)
   res.send(doc.pdf)
 }))
 

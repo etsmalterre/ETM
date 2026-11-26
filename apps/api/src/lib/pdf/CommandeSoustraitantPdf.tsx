@@ -641,10 +641,17 @@ function buildLivraisonAddress(data: CommandeSoustraitantPdfData): AddressBlockD
   }
 }
 
+/**
+ * `sansPrix` (espace partenaire, Vincent 2026-11-26: « imprimer la commande sans les prix », the copy that goes to
+ * the workshop): the same document without the price column and the € total. Every figure in € goes through
+ * this one switch — a new one must read it too.
+ */
 export function CommandeSoustraitantPdf({
   data,
+  sansPrix = false,
 }: {
   data: CommandeSoustraitantPdfData
+  sansPrix?: boolean
 }) {
   const sousTraitantAddress = buildSousTraitantAddress(data)
   const livraisonAddress = buildLivraisonAddress(data)
@@ -724,7 +731,7 @@ export function CommandeSoustraitantPdf({
         <View style={styles.tableHeader} fixed>
           <Text style={[styles.tableHeaderCell, styles.colDesc]}>{data.qty_unit === 'U' ? 'DÉSIGNATION (RÉFÉRENCE RECTILIGNE / COLORIS)' : 'DÉSIGNATION (RÉFÉRENCE FINI / COLORIS)'}</Text>
           <Text style={[styles.tableHeaderCell, styles.colQty]}>QTÉ ({data.qty_unit})</Text>
-          <Text style={[styles.tableHeaderCell, styles.colPU]}>{data.qty_unit === 'U' ? 'PRIX (€/U)' : 'PRIX (€/Kg)'}</Text>
+          {!sansPrix && <Text style={[styles.tableHeaderCell, styles.colPU]}>{data.qty_unit === 'U' ? 'PRIX (€/U)' : 'PRIX (€/Kg)'}</Text>}
           {/* "POIDS AFFECTE" tracks `total_kg_ecru_lie` — only meaningful
               for ennoblisseur lines (écru rolls linked for dyeing). Tricoteur
               commandes consume yarn (asso_fil_lignecmdsst) and produce
@@ -798,9 +805,11 @@ export function CommandeSoustraitantPdf({
               <Text style={[styles.cellBase, styles.colQty]}>
                 {l.quantite != null ? fmtNum(Number(l.quantite), data.qty_unit === 'U' ? 0 : 1) : '—'}
               </Text>
-              <Text style={[styles.cellBase, styles.colPU]}>
-                {l.prix != null ? `${fmtNum(Number(l.prix), 2)} €` : '—'}
-              </Text>
+              {!sansPrix && (
+                <Text style={[styles.cellBase, styles.colPU]}>
+                  {l.prix != null ? `${fmtNum(Number(l.prix), 2)} €` : '—'}
+                </Text>
+              )}
               {data.qty_unit === 'Ml' && (
                 <Text style={[styles.cellBase, styles.colTotal]}>
                   {kg > 0 ? `${fmtNum(kg, 1)} kg` : '—'}
@@ -825,12 +834,14 @@ export function CommandeSoustraitantPdf({
               </Text>
             </View>
           )}
-          <View style={styles.grandRow}>
-            <Text style={styles.grandLabel}>TOTAL HT</Text>
-            <Text style={styles.grandValue}>
-              {totalEur > 0 ? `${fmtNum(totalEur, 2)} €` : '—'}
-            </Text>
-          </View>
+          {!sansPrix && (
+            <View style={styles.grandRow}>
+              <Text style={styles.grandLabel}>TOTAL HT</Text>
+              <Text style={styles.grandValue}>
+                {totalEur > 0 ? `${fmtNum(totalEur, 2)} €` : '—'}
+              </Text>
+            </View>
+          )}
         </View>
       </View>
 

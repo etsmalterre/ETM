@@ -2885,9 +2885,9 @@ export function buildEcruLabel(
   return parts.join(' — ')
 }
 
-export async function renderCommandePdfBuffer(data: CommandeSoustraitantPdfData): Promise<Buffer> {
+export async function renderCommandePdfBuffer(data: CommandeSoustraitantPdfData, opts: { sansPrix?: boolean } = {}): Promise<Buffer> {
   return renderToBuffer(
-    React.createElement(CommandeSoustraitantPdf, { data }) as unknown as React.ReactElement<
+    React.createElement(CommandeSoustraitantPdf, { data, sansPrix: opts.sansPrix === true }) as unknown as React.ReactElement<
       import('@react-pdf/renderer').DocumentProps
     >,
   )
