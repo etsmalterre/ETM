@@ -14,6 +14,8 @@ import {
   urgenceCommande,
   urgenceDemandeeDe,
   calendrierTraitement,
+  avecTempsDesLignes,
+  tempsDesLignes,
   urgenceLot,
   type CommandeFait,
   type LotFait,
@@ -463,5 +465,52 @@ describe('« passer en urgence » chez l’ennoblisseur (lib/urgence-sst.ts, Vin
     const close = etatCommande(commande({ est_soldee: true, urgences: { lignes: [urgence()], couvreAttente: false } }))
     expect(close.urgences).toBeUndefined()
     expect(urgenceCommande(close, '2026-10-25')).toBeNull()
+  })
+})
+
+describe('a lot « en rame » is due with its line’s délai (Vincent 2026-11-26)', () => {
+  // Bon de commande Monday 2026-10-05, the line due Friday 2026-10-23.
+  const base = {
+    delaiFaits: faitsDelai({ demandeLe: '2026-10-05' }), delai: '2026-10-23',
+    lignesOuvertes: [{ id: 7, delai: '2026-10-23' }, { id: 8, delai: '2026-10-30' }],
+  }
+  const enRame = (p: Partial<LotFait> = {}) =>
+    lot({ reception: null, idligne: 7, coloris: soum({ le: '2026-10-12', accepte: true, reponseLe: '2026-10-14' }), okRamerLe: '2026-10-14', ...p })
+
+  it('the dyer’s time on a line runs from the bon to that line’s délai', () => {
+    const temps = tempsDesLignes(commande({ ...base, lots: [enRame()] }), '2026-10-15')
+    expect(temps.get(7)).toEqual({ depuis: '2026-10-05', echeance: '2026-10-23' })
+    expect(temps.get(8)).toEqual({ depuis: '2026-10-05', echeance: '2026-10-30' })
+  })
+
+  it('…pushed by what the client took beyond its five days on that line’s coloris, not by another line’s', () => {
+    // Asked Monday 12, answered Thursday 22: eight working days, three beyond the client’s five.
+    const lent = enRame({ coloris: soum({ le: '2026-10-12', accepte: true, reponseLe: '2026-10-22' }), okRamerLe: '2026-10-22' })
+    const temps = tempsDesLignes(commande({ ...base, lots: [lent] }), '2026-10-23')
+    expect(temps.get(7)!.echeance).toBe(plusJoursOuvres('2026-10-23', 3))
+    expect(temps.get(8)!.echeance).toBe('2026-10-30')
+    // A report already put those days on the délai: not pushed twice.
+    const reporte = tempsDesLignes(commande({ ...base, lignesOuvertes: [{ id: 7, delai: '2026-10-23', reporteClient: 3 }], lots: [lent] }), '2026-10-23')
+    expect(reporte.get(7)!.echeance).toBe('2026-10-23')
+  })
+
+  it('the lot is chased on that day, and its window is the line’s: a BL on the last day is on time', () => {
+    const c = avecTempsDesLignes(commande({ ...base, lots: [enRame()] }), '2026-10-15')
+    expect(c.lots[0].tempsLigne).toEqual({ depuis: '2026-10-05', echeance: '2026-10-23' })
+    expect(etatLot(c.lots[0])).toMatchObject({ etape: 'en_rame', main: 'teinturier', relance: '2026-10-23' })
+    // Fourteen working days from the bon to the délai — no longer three from the « coloris validé » mail.
+    expect(depuisEtape(c.lots[0])).toEqual({ depuis: '2026-10-05', delai: 14 })
+  })
+
+  it('a lot whose line carries no délai keeps the three days after the mail', () => {
+    const c = avecTempsDesLignes(commande({ ...base, lots: [enRame({ idligne: 99 })] }), '2026-10-15')
+    expect(c.lots[0].tempsLigne).toBeUndefined()
+    expect(etatLot(c.lots[0]).relance).toBe('2026-10-19')
+    expect(depuisEtape(c.lots[0])).toEqual({ depuis: '2026-10-14', delai: 3 })
+  })
+
+  it('nothing changes for the other steps of a lot', () => {
+    const recu = avecTempsDesLignes(commande({ ...base, lots: [lot({ idligne: 7 })] }), '2026-10-15').lots[0]
+    expect(depuisEtape(recu)).toEqual({ depuis: '2026-10-08', delai: 5 })
   })
 })

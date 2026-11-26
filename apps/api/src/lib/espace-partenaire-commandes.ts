@@ -394,11 +394,17 @@ export function fenetreCommande(
   return null
 }
 
-/** The lot's clock for the partner, ETM's own windows (cycle-ennoblissement.ts `depuisEtape`, RELANCE_J): 3 working
- *  days to finish and ship after the « coloris validé », 5 after the reception for its controls. A reprise and a
- *  reteinture have no date in ETM: no clock. */
+/** The lot's clock for the partner, ETM's own windows (cycle-ennoblissement.ts `depuisEtape`, RELANCE_J): a lot to
+ *  finish after the « coloris validé » is due with its line's délai (`LotFait.tempsLigne`, Vincent 2026-11-26: a
+ *  bon de livraison on the last day of the délai is on time) — three working days after the mail only when the
+ *  line carries no délai; its controls are due 5 working days after the reception. A reprise and a reteinture
+ *  have no date in ETM: no clock. */
 export function fenetreLot(fait: LotFait, etape: EtapeLotPartenaire, today: string): Fenetre | null {
-  if (etape === 'coloris_valide' && fait.okRamerLe) return fenetre(fait.okRamerLe, plusJoursOuvres(fait.okRamerLe, RELANCE_J.en_rame), today, true)
+  if (etape === 'coloris_valide') {
+    const depuis = fait.tempsLigne ? fait.tempsLigne.depuis ?? fait.okRamerLe : null
+    if (fait.tempsLigne && depuis) return fenetre(depuis, fait.tempsLigne.echeance, today, true)
+    return fait.okRamerLe ? fenetre(fait.okRamerLe, plusJoursOuvres(fait.okRamerLe, RELANCE_J.en_rame), today, true) : null
+  }
   if (etape === 'mesures_a_transmettre' && fait.reception) return fenetre(fait.reception, plusJoursOuvres(fait.reception, RELANCE_J.controle), today, true)
   return null
 }

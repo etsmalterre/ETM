@@ -317,6 +317,13 @@ to pass on stay +1 (decisions, not controls).
 and its « Livraison » délai no longer turns red. The legacy `sstatut` « Terminé »
 is written by nobody any more and cannot be the signal.
 
+**A lot « En rame » is due with its line's délai (Vincent 2026-11-26)**, not three working days after the
+« coloris validé » mail (an estimate of 2026-10-22): a bon de livraison on the last day of the délai is on time.
+Its window and its chase day are the line's — from the bon de commande to the line's délai, pushed by what the
+client took beyond its 5 days on that line's coloris answers (`tempsDesLignes` → `LotFait.tempsLigne`, the same
+`sortie` the order's card expects the dyer on). So the lot and its order turn red the same day, on Suivi lots as
+in the espace partenaire (`fenetreLot`). `RELANCE_J.en_rame` (3) is left for a lot whose line carries no délai.
+
 **Order steps**: À envoyer · Attente délai (relance = `date_notif`, the only date
 a person still moves) · En teinture (date shown = the earliest délai) ·
 En contrôle (at least one RECEIVED lot open: it starts with the first reception,

@@ -23,7 +23,8 @@
 //     reteinture          the client refused the coloris before the stenter: MATEL dyes
 //                         the lot again (same number) and tells us when to submit it again
 //     ok_ramer_a_envoyer  coloris accepted, not received, the « coloris validé » mail not sent
-//     en_rame             « coloris validé » sent: the dyer puts the lot on the stenter and ships it
+//     en_rame             « coloris validé » sent: the dyer puts the lot on the stenter and ships it —
+//                         due with its line's délai, not a number of days after the mail (2026-11-26)
 //     soumis              a stabilités soumission names the lot, no answer yet
 //     refuse_client       the client refused it (or the coloris of a received lot):
 //                         the only way on is « Reprendre »
@@ -114,6 +115,10 @@ export interface LotFait {
   stabilites: SoumissionFait
   /** The « coloris validé » mail, sent after the client accepted the coloris. 'YYYY-MM-DD' */
   okRamerLe?: string | null
+  /** The dyer's time on the lot's LINE (`tempsDesLignes`): from the bon de commande to the line's délai, pushed
+   *  by what the client took beyond its days on the line's coloris answers. What a lot « en rame » is due by
+   *  (Vincent 2026-11-26). Absent: the line carries no délai, or the lot no line. */
+  tempsLigne?: { depuis: string | null; echeance: string } | null
   /** Clients still owed a rapport de contrôle for this lot (names). */
   rcAEnvoyer?: string[]
   /** A reprise of the lot is open at the dyer (lib/reprises.ts). */
@@ -136,7 +141,10 @@ export const RELANCE_J = {
   controle: 5,
   /** The client answers a soumission. */
   soumis: 5,
-  /** The dyer rames the lot and ships it after the « coloris validé » (estimate 2026-10-22). */
+  /** The dyer rames the lot and ships it after the « coloris validé » — only when its line carries no délai:
+   *  a lot « en rame » is due with its line's délai (`LotFait.tempsLigne`, Vincent 2026-11-26: the bon de
+   *  livraison on the last day of the délai is on time; three days from the mail was an estimate of 2026-10-22
+   *  that turned a lot red, or kept it calm, against its own order). */
   en_rame: 3,
   /** Our own decisions outside the control window (refused by the client,
    *  coloris validé to pass on): flagged once they wait this long. */
@@ -157,6 +165,12 @@ export interface EtatLot {
   fenetre: { depuis: string; delai: number } | null
 }
 
+
+/** Today, 'YYYY-MM-DD', in the server's time zone. */
+function aujourdhuiIsoLocal(): string {
+  const t = new Date()
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
+}
 
 /** `iso` + n working days: no weekend, no French public holiday (lib/jours-ouvres.ts, #1339). */
 export function plusJoursOuvres(iso: string, n: number): string {
@@ -267,7 +281,12 @@ export function depuisEtape(l: LotFait, etape: EtapeLot = etapeLot(l)): { depuis
   if (etape === 'coloris_soumis' && l.coloris.envoyeeLe) return { depuis: l.coloris.envoyeeLe, delai: RELANCE_J.soumis }
   if (etape === 'soumis' && l.stabilites.envoyeeLe) return { depuis: l.stabilites.envoyeeLe, delai: RELANCE_J.soumis }
   if (etape === 'ok_ramer_a_envoyer' && l.coloris.reponse) return { depuis: l.coloris.reponse.le.slice(0, 10), delai: RELANCE_J.nous }
-  if (etape === 'en_rame' && l.okRamerLe) return { depuis: l.okRamerLe, delai: RELANCE_J.en_rame }
+  if (etape === 'en_rame') {
+    // Due with its line: the dyer's days from the bon de commande to the line's délai, as its order counts them.
+    const depuis = l.tempsLigne ? l.tempsLigne.depuis ?? l.okRamerLe : null
+    if (l.tempsLigne && depuis) return { depuis, delai: Math.max(1, joursOuvresDepuis(depuis, l.tempsLigne.echeance)) }
+    if (l.okRamerLe) return { depuis: l.okRamerLe, delai: RELANCE_J.en_rame }
+  }
   if (etape === 'refuse_client' && r) return { depuis: r, delai: RELANCE_J.nous }
   return null
 }
@@ -285,7 +304,7 @@ export function etatLot(l: LotFait): EtatLot {
   else if (etape === 'coloris_soumis' && l.coloris.envoyeeLe) relance = plusJoursOuvres(l.coloris.envoyeeLe, RELANCE_J.soumis)
   else if (etape === 'soumis' && l.stabilites.envoyeeLe) relance = plusJoursOuvres(l.stabilites.envoyeeLe, RELANCE_J.soumis)
   else if (etape === 'ok_ramer_a_envoyer' && l.coloris.reponse) relance = plusJoursOuvres(l.coloris.reponse.le.slice(0, 10), RELANCE_J.nous)
-  else if (etape === 'en_rame' && l.okRamerLe) relance = plusJoursOuvres(l.okRamerLe, RELANCE_J.en_rame)
+  else if (etape === 'en_rame') relance = l.tempsLigne?.echeance ?? (l.okRamerLe ? plusJoursOuvres(l.okRamerLe, RELANCE_J.en_rame) : null)
   else if (etape === 'refuse_client' && r) relance = plusJoursOuvres(r, RELANCE_J.nous)
   // en_reprise / reteinture: the dyer gives the date back in the point, nothing to compute.
   return { lot: l.lot, idsuivilot: l.idsuivilot, etape, main: MAIN[etape], relance, reprises: l.reprises ?? 0, fenetre: depuisEtape(l, etape) }
@@ -405,16 +424,44 @@ export function depassementClient(a: AttenteClient, fin: string): number {
   return Math.max(0, joursOuvresDepuis(a.du, fin) - RELANCE_J.soumis)
 }
 
+/** The coloris answers asked to the client on these lots before their reception: the client's time inside the
+ *  dyer's. A coloris asked on rolls already received is the control's time, not the dyer's. */
+function attentesDe(lots: readonly LotFait[]): AttenteClient[] {
+  return lots
+    .filter((l) => !!l.coloris.envoyeeLe && (!l.reception || l.coloris.envoyeeLe < l.reception))
+    .map((l) => ({ lot: l.lot, du: l.coloris.envoyeeLe!, au: l.coloris.reponse ? l.coloris.reponse.le.slice(0, 10) : null }))
+    .sort((a, b) => a.du.localeCompare(b.du))
+}
+
+/** The dyer's time on each line not delivered yet that carries a délai: from the bon de commande to that délai
+ *  pushed by the client's own delay on the line's coloris answers (`calendrierTraitement().sortie`, the day the
+ *  order's card expects the dyer). What a lot « en rame » on that line is due by. Pure. */
+export function tempsDesLignes(c: CommandeFait, today: string): Map<number, { depuis: string | null; echeance: string }> {
+  const out = new Map<number, { depuis: string | null; echeance: string }>()
+  const depuis = c.delaiFaits?.demandeLe ?? c.delaiFaits?.reponduLe ?? null
+  for (const ligne of c.lignesOuvertes ?? []) {
+    const attentes = attentesDe(c.lots.filter((l) => l.idligne === ligne.id))
+    const t: EtatTraitement = {
+      depuis, delai: ligne.delai, autres: [], attentes,
+      retardClient: attentes.reduce((n, a) => n + (a.au ? depassementClient(a, a.au) : 0), 0),
+      reporteClient: ligne.reporteClient ?? 0,
+    }
+    out.set(ligne.id, { depuis, echeance: calendrierTraitement(t, today).sortie })
+  }
+  return out
+}
+
+/** The facts of an order with, on each lot, the time of its line (`LotFait.tempsLigne`). Pure. */
+export function avecTempsDesLignes(c: CommandeFait, today: string): CommandeFait {
+  const temps = tempsDesLignes(c, today)
+  return { ...c, lots: c.lots.map((l) => (l.idligne && temps.has(l.idligne) ? { ...l, tempsLigne: temps.get(l.idligne)! } : l)) }
+}
+
 function traitementDe(c: CommandeFait): EtatTraitement | undefined {
   if (!c.delai) return undefined
   // The délai is each line's: only the lots of the line(s) the card follows.
   const lignes = c.lignesOuvertes ? new Set(c.lignesOuvertes.filter((l) => l.delai === c.delai).map((l) => l.id)) : null
-  const attentes: AttenteClient[] = c.lots
-    .filter((l) => !lignes || !l.idligne || lignes.has(l.idligne))
-    // A coloris asked on rolls already received is the control's time, not the dyer's.
-    .filter((l) => !!l.coloris.envoyeeLe && (!l.reception || l.coloris.envoyeeLe < l.reception))
-    .map((l) => ({ lot: l.lot, du: l.coloris.envoyeeLe!, au: l.coloris.reponse ? l.coloris.reponse.le.slice(0, 10) : null }))
-    .sort((a, b) => a.du.localeCompare(b.du))
+  const attentes = attentesDe(c.lots.filter((l) => !lignes || !l.idligne || lignes.has(l.idligne)))
   return {
     depuis: c.delaiFaits?.demandeLe ?? c.delaiFaits?.reponduLe ?? null,
     delai: c.delai,
@@ -920,7 +967,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     const delais = ouvertes.map((l) => l.delai!).sort()
     const pressees = sesLignes.filter(ouverte).map((l) => ({ l, u: urgencesParLigne.get(Number(l.id)) })).filter((x): x is { l: typeof x.l; u: UrgenceLigne } => !!x.u)
     const sansDelai = sesLignes.filter((l) => ouverte(l) && !l.delai)
-    out.set(id, {
+    out.set(id, avecTempsDesLignes({
       ...(pressees.length > 0 ? { urgences: {
         lignes: pressees.map(({ u }) => ({ etat: u.etat, reponseAttendue: u.reponseAttendue })),
         couvreAttente: sansDelai.length > 0 && sansDelai.every((l) => { const u = urgencesParLigne.get(Number(l.id)); return !!u && u.etat !== 'repondue' }),
@@ -933,7 +980,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       lignesOuvertes: ouvertes.map((l) => ({ id: Number(l.id), delai: l.delai!, reporteClient: reporteClient.get(Number(l.id)) ?? 0 })),
       lots: sesLots,
       ecruChezTeinturier: sesLignes.reduce((n, l) => n + (chezTeinturier.get(Number(l.id)) ?? 0), 0),
-    })
+    }, aujourdhuiIsoLocal()))
   }
   return out
 }

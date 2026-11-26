@@ -33,11 +33,16 @@ describe('the partner’s time at a step', () => {
     expect(fenetreCommande('en_controle', { traitement }, '2026-11-02', '2026-11-25')).toBeNull()
     expect(fenetreCommande('terminee', { traitement }, '2026-11-02', '2026-11-25')).toBeNull()
   })
-  it('a lot: three days after the coloris validé, five after the reception for its controls, no clock on a reprise', () => {
+  it('a lot: its line’s délai after the coloris validé, five days after the reception for its controls, no clock on a reprise', () => {
     const lot = (p: Partial<LotFait>): LotFait => ({
       lot: 'MA1', idsuivilot: 1, etat: 1, reception: null, mesuresTeinturier: false, tirelleMesuree: false,
       coloris: SANS_SOUMISSION, stabilites: SANS_SOUMISSION, ...p,
     })
+    // A lot to finish is due with its line's délai, counted from the bon de commande, as its order is.
+    const temps = { depuis: '2026-11-02', echeance: '2026-11-27' }
+    expect(fenetreLot(lot({ okRamerLe: '2026-11-23', tempsLigne: temps }), 'coloris_valide', '2026-11-24')).toMatchObject({ depuis: '2026-11-02', echeance: '2026-11-27', depassee: false })
+    expect(fenetreLot(lot({ okRamerLe: '2026-11-23', tempsLigne: temps }), 'coloris_valide', '2026-11-27')!.depassee).toBe(true)
+    // Only a line without a délai keeps the three days after the mail.
     expect(fenetreLot(lot({ okRamerLe: '2026-11-23' }), 'coloris_valide', '2026-11-24')).toMatchObject({ echeance: '2026-11-26', jours: 3, ecoules: 1, depassee: false })
     expect(fenetreLot(lot({ reception: '2026-11-18' }), 'mesures_a_transmettre', '2026-11-25')).toMatchObject({ echeance: '2026-11-25', jours: 5, ecoules: 5, depassee: true })
     expect(fenetreLot(lot({ reception: '2026-11-18' }), 'en_reprise', '2026-11-25')).toBeNull()
