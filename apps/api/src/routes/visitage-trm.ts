@@ -91,6 +91,7 @@ import {
   type DefautRow, type WaitingPieceRow,
 } from '../lib/production-trm.js'
 import { activeOfOnMachine, healHandedOverOfs } from '../lib/of-queue-trm.js'
+import { estMailleCoulee } from '../lib/maille-ouvert-large-trm.js'
 import { EtiquetteEcruPdf, type EtiquetteEcruData } from '../lib/pdf/EtiquetteEcruPdf.js'
 import { createSerialLock } from '../lib/serial-lock.js'
 
@@ -369,6 +370,10 @@ interface DefautPayload {
   id: number
   type_defaut: string
   description: string | null
+  /** A maille the bonnetier LEFT TO RUN on an OF opened at width — the roll is
+   *  to be opened along it (lib/maille-ouvert-large-trm.ts). It arrives already
+   *  récupérée, and the poste labels it « Maille coulée ». */
+  coulee: boolean
   taille_cm: number
   nombre: number
   unite: 'cm' | 'nb'
@@ -391,6 +396,7 @@ function shapeDefauts(rows: DefautRow[], names: Map<number, { prenom: string; no
         // "1m - 3m" and "Plus de 3m"), and taille_cm on a terminal row is a
         // bucket code, not a length.
         description: d.description ? d.description.replace(/\s+/g, ' ').trim() : null,
+        coulee: type === 'Maille' && estMailleCoulee(d.description),
         taille_cm: d.taille_cm,
         nombre: d.nombre,
         unite: uniteForType(d.type_defaut),

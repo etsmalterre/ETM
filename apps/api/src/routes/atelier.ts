@@ -39,7 +39,10 @@ import {
   nowDt,
   IS_WINDOWS,
   bonnetierDirectory,
+  selectDefauts,
+  normaliseTypeDefaut,
 } from '../lib/production-trm.js'
+import { guideMaille, rappelFinDePiece, ecritureMaille, type ContexteMaille } from '../lib/maille-ouvert-large-trm.js'
 import { pickVal } from '../lib/accented-keys.js'
 import { dureeMinimalePiece, productivitePiece, dureeMinutes } from '../lib/historique-atelier-trm.js'
 import { terminerOf } from '../lib/of-queue-trm.js'
@@ -761,9 +764,13 @@ atelierRouter.get('/of/:id/reglage', async (req: Request, res: Response) => {
         compteur,
         ecarteur: ref ? Number(ref.ecarteur) || 0 : 0,
         poids_piece: poidsPiece,
-        maille_ouverture: ref ? n(ref.maille_ouverture) === 1 : false,
+        // The OF's own boxes, not the reference's defaults they were seeded
+        // from at creation (a departure from the legacy sheet, 2026-11-26):
+        // « Ouvert au large » on the OF is what the visitage cadence and the
+        // maille rule obey, and the régleur must read the same value.
+        maille_ouverture: n(of.maille_ouverture) === 1,
         tombe_metier: ref ? txt(ref.tombe_metier) : '',
-        ouvert_visiteuse: ref ? n(ref.ouvert_visiteuse) === 1 : false,
+        ouvert_visiteuse: n(of.ouvert_visiteuse) === 1,
       },
       fils,
     })
@@ -1417,14 +1424,21 @@ async function chargerContexte(id: number) {
     const lastPieceId = last ? n(last.IDpiece_production) : 0
 
     const lastClosed = last ? parseDtMs(last.date_fin) !== null : true
-    const [nettoyages, nbMessages, derniere] = await Promise.all([
+    // The maille rule of an OF opened at width (lib/maille-ouvert-large-trm.ts)
+    // reads the OF's OWN box and the mailles already on the piece being
+    // knitted. Tubular OFs — most of them — skip the read.
+    const ouvertLarge = n(of.ouvert_visiteuse) === 1
+    const pieceOuverte = lastPieceId > 0 && !lastClosed
+    const [nettoyages, nbMessages, derniere, mailles] = await Promise.all([
       // A closed last piece is not the one on the machine: after « Réactiver
       // l'OF » the machine knits a piece no row exists for yet, and it has had
       // no nettoyage — counting the closed piece's would hide the action.
-      lastPieceId > 0 && !lastClosed ? countNettoyages(lastPieceId) : Promise.resolve(0),
+      pieceOuverte ? countNettoyages(lastPieceId) : Promise.resolve(0),
       countMessages(id),
       lastPieceId > 0 ? lastAction(lastPieceId) : Promise.resolve(null),
+      ouvertLarge && pieceOuverte ? countMailles(lastPieceId) : Promise.resolve(0),
     ])
+    const ctxMaille: ContexteMaille = { ouvertLarge, pieceOuverte, mailles }
 
     if (derniere) {
       derniere.annulable_par = annulablePar(
@@ -1467,6 +1481,11 @@ async function chargerContexte(id: number) {
       },
       compteur: await compteurFor(refId, machineId, poidsPiece),
       derniere_action: derniere,
+      // What the défaut sheet does with « Maille » on this piece: null = ask a
+      // length as always; otherwise the guided step, wording included — the
+      // phone holds none of it.
+      maille: guideMaille(ctxMaille),
+      rappel_fin_de_piece: rappelFinDePiece(ctxMaille),
     }
   }
 }
@@ -1479,6 +1498,14 @@ async function derniereAnnulation(pieceId: number): Promise<DerniereAnnulation |
     SELECT max_evenement, max_defaut FROM atelier_annulation
     WHERE idpiece_production = ${pieceId} ORDER BY le DESC, id DESC LIMIT 1`
   return r ? { max_evenement: Number(r.max_evenement), max_defaut: Number(r.max_defaut) } : null
+}
+
+/** Mailles declared at the machine on one piece — every terminal's, the legacy
+ *  Android ones included. Through selectDefauts (SELECT *, accent-safe) and
+ *  counted in JS: `type_defaut` carries historical padding. */
+async function countMailles(pieceId: number): Promise<number> {
+  const rows = await selectDefauts(1, [pieceId])
+  return rows.filter((d) => normaliseTypeDefaut(d.type_defaut) === 'Maille').length
 }
 
 async function countNettoyages(pieceId: number): Promise<number> {
@@ -1740,6 +1767,12 @@ const saisieBody = z.object({
       type: z.enum(DEFAUTS_ATELIER),
       /** 1-based index into TAILLES. Required for a cm-type, ignored otherwise. */
       taille: z.number().int().min(1).max(TAILLES.length).optional(),
+      /** The guided step the phone showed for a « Maille » on an OF opened at
+       *  width (`contexte.maille.conduite`). It replaces `taille`, and the
+       *  server refuses it when the piece no longer calls for that step. A
+       *  bundle from before the rule sends `taille` instead and is written as
+       *  it always was. */
+      conduite: z.enum(['couler', 'couper']).optional(),
     })
     .optional(),
 })
@@ -1791,7 +1824,24 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
         return
       }
       unite = uniteForType(body.defaut.type)
-      if (unite === 'cm' && !body.defaut.taille) {
+      if (body.defaut.conduite) {
+        // The rail of an OF opened at width. The phone commits to the step it
+        // SHOWED; if another terminal declared a maille on this piece in the
+        // meantime, « laisser couler » has become « couper » and the operator
+        // must read the new instruction before anything is recorded.
+        const attendue = body.defaut.type === 'Maille' ? ctx.maille?.conduite ?? null : null
+        if (attendue !== body.defaut.conduite) {
+          res.status(409).json({
+            error: 'conduite_maille_changee',
+            message:
+              attendue === 'couper'
+                ? 'Une maille a déjà été déclarée sur cette pièce. Relisez la consigne.'
+                : "La consigne de maille ne s'applique plus à cette pièce.",
+            contexte: ctx,
+          })
+          return
+        }
+      } else if (unite === 'cm' && !body.defaut.taille) {
         res.status(400).json({ error: 'taille requise pour ce type de défaut' })
         return
       }
@@ -1921,6 +1971,22 @@ atelierRouter.post('/of/:id/evenement', async (req: Request, res: Response) => {
 
       case 'Défaut': {
         const d = body.defaut!
+        if (d.conduite) {
+          // Checked against the piece above; the wording and what the row
+          // carries are the rule's (lib/maille-ouvert-large-trm.ts).
+          const e = ecritureMaille(d.conduite)
+          await ecrireDefaut({
+            pieceId,
+            type: d.type,
+            description: e.description,
+            IDbonnetier: body.IDbonnetier,
+            taille_cm: e.taille_cm,
+            nombre: 0,
+            recupere: e.recupere,
+          })
+          ecrits.push(`défaut ${e.description}`)
+          break
+        }
         const taille = d.taille ? TAILLES[d.taille - 1] : null
         // The legacy builds the description as the type plus, for a cm-type,
         // the size label — which is why live rows read « Maille Moins de 50 cm ».
@@ -2088,11 +2154,14 @@ async function ecrireDefaut(d: {
   IDbonnetier: number
   taille_cm: number
   nombre: number
+  /** `récuperé` — 1 only for a maille left to run on an OF opened at width,
+   *  the flag the visiteuse otherwise sets at the poste. */
+  recupere?: 0 | 1
 }): Promise<number> {
   const newId = (await maxId('defaut_qualite', 'IDdefaut_qualite')) + 1
   await query(
     `INSERT INTO defaut_qualite VALUES (${newId}, '${d.pieceId}', ${sqlText(d.description)}, ` +
-      `'${nowDt()}', 1, ${d.IDbonnetier}, 1, ${sqlText(d.type)}, 0, ${d.taille_cm}, 0, ${d.nombre})`,
+      `'${nowDt()}', 1, ${d.IDbonnetier}, 1, ${sqlText(d.type)}, 0, ${d.taille_cm}, ${d.recupere ?? 0}, ${d.nombre})`,
   )
   return newId
 }
