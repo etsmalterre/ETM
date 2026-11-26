@@ -2,8 +2,36 @@ import { describe, expect, it } from 'vitest'
 import { SANS_SOUMISSION, type EtapeLot, type LotFait } from './cycle-ennoblissement.js'
 import {
   article, debutDouzeMois, etapeCommandePartenaire, etapeLignePartenaire, etapeLotPartenaire, lotsVus, LOT_A_VOUS,
-  sansMouvementDepuis,
+  LOT_MESURABLE, mesuresDuLot, sansMouvementDepuis, tolerancesRef,
 } from './espace-partenaire-commandes.js'
+import { CONTROLES_PAR_DEFAUT, type ControlesRef } from './controles-lot.js'
+
+describe('the partner’s control of a lot', () => {
+  const bornes = { laizeMin: 150, laizeMax: 160, poidsMin: 0, poidsMax: 165, stabHauteur: -5, stabLargeur: 0 }
+  it('the tolerances are those of Suivi lots', () => {
+    expect(tolerancesRef(bornes)).toEqual({
+      laize: { min: 150, max: 160 },
+      // A bound of 0 is « not set ».
+      poids: { min: null, max: 165 },
+      // One figure, a symmetric band; none = no tolerance.
+      stabH: { min: -5, max: 5 },
+      stabL: { min: null, max: null },
+      // The same for every reference.
+      vrillage: { min: null, max: 5 },
+    })
+    expect(tolerancesRef(undefined).laize).toEqual({ min: null, max: null })
+  })
+  it('only the measures the reference asks, 0 being « not measured » for a laize or a poids only', () => {
+    const valeurs = { laize: 154, poids: 0, stabH: 0, stabL: null, vrillage: null }
+    expect(mesuresDuLot(valeurs, bornes).map((m) => [m.cle, m.valeur])).toEqual([['laize', 154], ['poids', null], ['stabH', 0], ['stabL', null], ['vrillage', null]])
+    const sansStab: ControlesRef = { ...CONTROLES_PAR_DEFAUT, mesures: { ...CONTROLES_PAR_DEFAUT.mesures, ennoblisseur: { ...CONTROLES_PAR_DEFAUT.mesures.ennoblisseur, stabilites: false, vrillage: false } } }
+    expect(mesuresDuLot(valeurs, bornes, sansStab).map((m) => m.cle)).toEqual(['laize', 'poids'])
+    expect(mesuresDuLot(valeurs, bornes, { ...CONTROLES_PAR_DEFAUT, ennoblisseur: false })).toEqual([])
+  })
+  it('measured once the partner finishes the lot, never before the stenter nor once validated', () => {
+    expect([...LOT_MESURABLE].sort()).toEqual(['coloris_valide', 'en_controle', 'en_reprise', 'mesures_a_transmettre'])
+  })
+})
 
 describe('twelve sliding months', () => {
   it('the window opens the first day of the month, the current one included', () => {

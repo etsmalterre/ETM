@@ -29,7 +29,8 @@ import { enregistrerActivite, EspaceIndisponible, listeAcces } from '../lib/espa
 import { ficheClient } from '../lib/espace-fiche.js'
 import { commandeClient, confirmationCommandePdf, listeCommandesClient } from '../lib/espace-commandes.js'
 import { enregistrerActivitePartenaires, listeAccesPartenaires, partenairesVisibles } from '../lib/espace-partenaire-acces.js'
-import { bonDeCommandePartenaire, commandePartenaire, listeCommandesPartenaire } from '../lib/espace-partenaire-commandes.js'
+import { bonDeCommandePartenaire, commandePartenaire, listeCommandesPartenaire, lotsPartenaire } from '../lib/espace-partenaire-commandes.js'
+import { donnerDelaiPartenaire, enregistrerMesuresPartenaire, RefusSaisie } from '../lib/espace-partenaire-saisies.js'
 import { qualiteServicePartenaire } from '../lib/espace-partenaire-indicateurs.js'
 import { z } from 'zod'
 
@@ -475,6 +476,54 @@ webserviceSiteRouter.get('/espace/partenaires/:id/commandes/:idCommande/bon-de-c
   res.setHeader('Content-Type', 'application/pdf')
   res.setHeader('Content-Disposition', `inline; filename="bon-de-commande-${doc.numero}.pdf"`)
   res.send(doc.pdf)
+}))
+
+// What the partner types itself (lib/espace-partenaire-saisies.ts, Vincent 2026-11-26). `par` is who typed, as the
+// portal names its signed-in contact. A refusal answers its status with the sentence the partner reads
+// (`faultstring`) and a code (`detail`).
+const parSchema = z.string().trim().min(1).max(200)
+const saisieDelaiSchema = z.object({ delai: z.string().max(20), motif: z.string().max(1000).optional(), par: parSchema })
+const mesureSchema = z.union([z.string().max(20), z.number(), z.null()]).optional()
+const saisieMesuresSchema = z.object({
+  mesures: z.object({ laize: mesureSchema, poids: mesureSchema, stabH: mesureSchema, stabL: mesureSchema, vrillage: mesureSchema }).strict(),
+  par: parSchema,
+})
+
+function saisie(fn: (req: Request, res: Response) => Promise<void>) {
+  return handle(async (req, res) => {
+    try {
+      await fn(req, res)
+    } catch (err) {
+      if (err instanceof RefusSaisie) { fault(res, err.status, err.message, err.code); return }
+      throw err
+    }
+  })
+}
+
+/** The partner gives, or pushes back, its délai for one line of one of its orders. */
+webserviceSiteRouter.put('/espace/partenaires/:id/commandes/:idCommande/lignes/:idLigne/delai', saisie(async (req, res) => {
+  const id = idParam(req.params.id)
+  const idCommande = idParam(req.params.idCommande)
+  const idLigne = idParam(req.params.idLigne)
+  const body = saisieDelaiSchema.safeParse(req.body)
+  if (!id || !idCommande || !idLigne || !body.success) { fault(res, 400, 'Requête invalide'); return }
+  res.json({ modifie: await donnerDelaiPartenaire(id, idCommande, idLigne, body.data, body.data.par) })
+}))
+
+/** The lots of the partner's orders in progress, each with its own control and the tolerances. */
+webserviceSiteRouter.get('/espace/partenaires/:id/lots', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  if (!id) { fault(res, 400, 'Identifiant partenaire invalide'); return }
+  res.json({ lots: await lotsPartenaire(id) })
+}))
+
+/** The partner types its measures of one of its lots. */
+webserviceSiteRouter.put('/espace/partenaires/:id/lots/:idLot/mesures', saisie(async (req, res) => {
+  const id = idParam(req.params.id)
+  const idLot = idParam(req.params.idLot)
+  const body = saisieMesuresSchema.safeParse(req.body)
+  if (!id || !idLot || !body.success) { fault(res, 400, 'Requête invalide'); return }
+  res.json({ modifie: await enregistrerMesuresPartenaire(id, idLot, body.data.mesures, body.data.par) })
 }))
 
 /** The partner's délais over twelve sliding months (lib/espace-partenaire-indicateurs.ts). */

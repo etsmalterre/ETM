@@ -507,10 +507,10 @@ export async function omission(id: number, commentaire: string, par: Auteur): Pr
   await marquer(id, 'omission', par, null, pourquoi(commentaire))
 }
 
-/** A person changed a line's délai by hand (PUT lignes): every saisie of
- *  Tricobot on it still open (waiting, or written alone) is judged by that
+/** A person changed a line's délai by hand (PUT lignes; `depuis` names another place, the espace
+ *  partenaire): every saisie of Tricobot on it still open (waiting, or written alone) is judged by that
  *  value — the same value validates, another corrects. Never fails the write. */
-export async function ligneModifiee(idligne: number, delaiDigits: string, par: Auteur | null): Promise<number> {
+export async function ligneModifiee(idligne: number, delaiDigits: string, par: Auteur | null, depuis = 'la ligne de commande'): Promise<number> {
   try {
     const sql = mpsPg()
     const ouvertes = (await sql`
@@ -520,20 +520,20 @@ export async function ligneModifiee(idligne: number, delaiDigits: string, par: A
     const qui = par ?? { id: 0, nom: 'Inconnu' }
     for (const s of ouvertes) {
       if (iso && iso === s.proposition) await marquer(s.id, 'validee', qui, iso, null, sql)
-      else await marquer(s.id, 'corrigee', qui, iso, 'Délai modifié depuis la ligne de commande.', sql)
+      else await marquer(s.id, 'corrigee', qui, iso, `Délai modifié depuis ${depuis}.`, sql)
     }
     // Observation: what Tricobot would have done, judged by the délai the person typed.
-    return iso ? await comparerObservations(sql`idligne_commande_sous_traitant = ${idligne} AND champ = 'date_livraison'`, iso, qui, 'la ligne de commande', sql) : 0
+    return iso ? await comparerObservations(sql`idligne_commande_sous_traitant = ${idligne} AND champ = 'date_livraison'`, iso, qui, depuis, sql) : 0
   } catch (e) {
     console.error('[saisies] line edit not reflected on Tricobot’s saisies', idligne, e)
     return 0
   }
 }
 
-/** A person saved a lot's dyer measures on Suivi lots (PUT): Tricobot's open
- *  saisie on it is judged by them — the same values validate, others correct.
- *  Never fails the write. */
-export async function lotModifie(idsuivilot: number, par: Auteur | null): Promise<number> {
+/** A person saved a lot's dyer measures on Suivi lots (PUT; `depuis` names another place, the espace
+ *  partenaire): Tricobot's open saisie on it is judged by them — the same values validate, others
+ *  correct. Never fails the write. */
+export async function lotModifie(idsuivilot: number, par: Auteur | null, depuis = 'Suivi lots'): Promise<number> {
   try {
     const sql = mpsPg()
     const ouvertes = (await sql`
@@ -545,9 +545,9 @@ export async function lotModifie(idsuivilot: number, par: Auteur | null): Promis
     const qui = par ?? { id: 0, nom: 'Inconnu' }
     for (const s of ouvertes) {
       if (t === s.proposition) await marquer(s.id, 'validee', qui, t, null, sql)
-      else await marquer(s.id, 'corrigee', qui, t, 'Mesures modifiées depuis Suivi lots.', sql)
+      else await marquer(s.id, 'corrigee', qui, t, `Mesures modifiées depuis ${depuis}.`, sql)
     }
-    return aDesMesures(m) ? await comparerObservations(sql`idsuivilot = ${idsuivilot} AND champ = 'mesures_sst'`, t, qui, 'Suivi lots', sql) : 0
+    return aDesMesures(m) ? await comparerObservations(sql`idsuivilot = ${idsuivilot} AND champ = 'mesures_sst'`, t, qui, depuis, sql) : 0
   } catch (e) {
     console.error('[saisies] lot edit not reflected on Tricobot’s saisies', idsuivilot, e)
     return 0

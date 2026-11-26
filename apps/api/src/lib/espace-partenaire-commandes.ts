@@ -13,8 +13,13 @@
 //    affectations), the order `commentaire` and `journal`, the LINE `commentaire`, the Journal tab's facts
 //    (journal_commande_sst, journal_lot), relances and reports of a délai (who was chased, motif, imputable),
 //    whose move a step is on Malterre's side or its chase date (`main`, `relance`, red / amber), Tricobot's
-//    readings, the lot's measures and tolerances, roll numbers, the rapport de contrôle and which client a
-//    soumission went to. The bon de commande PDF is the document Malterre e-mails: it carries what was sent
+//    readings, MALTERRE's measures of the lot (the tirelle side, its allongement, its coloris verdict), the
+//    target values copied from the client's fiche (`*_demandee`), roll numbers, the rapport de contrôle and
+//    which client a soumission went to.
+//  - Since 2026-11-26 (Vincent) the partner reads ITS OWN measures of a lot (the dyer side, suivilot `*_sst`:
+//    laize, poids, stabilités, vrillage — only those the reference asks it, lib/controles-lot.ts) with the
+//    tolerance each is judged by, exactly as Qualité › Suivi lots shows them (`tolerancesRef`), and types them
+//    itself, as it types its délai (lib/espace-partenaire-saisies.ts). The bon de commande PDF is the document Malterre e-mails: it carries what was sent
 //    (the partner's own prices included) and nothing is added to it here.
 //
 // Steps. ETM's cycle says where an order and its lots stand AND whose move it is at Malterre; the partner is told
@@ -62,6 +67,9 @@ import {
 import { ecruToutRevenu, ligneLivreeLe } from './ligne-sst-livree.js'
 import { familleOfTypeSst } from './sst-tricotage.js'
 import { urgencesLignes } from './urgence-sst.js'
+import { CONTROLES_PAR_DEFAUT, type ControlesRef } from './controles-lot.js'
+import { VRILLAGE_MAX } from './vrillage.js'
+import type { MesuresSst } from './agents/flux-ennoblisseur/saisies.js'
 import { buildCommandePdfData, renderCommandePdfBuffer } from '../routes/commandes-sous-traitant.js'
 
 // ── Steps (pure, tested) ────────────────────────────────────
@@ -165,8 +173,29 @@ export interface LigneCommande {
   etape: EtapeLignePartenaire
 }
 
+/** The dyer's measures of a lot. Units: laize cm, poids g/m², stabilités and vrillage %. */
+export const CLES_MESURE = ['laize', 'poids', 'stabH', 'stabL', 'vrillage'] as const
+export type CleMesure = (typeof CLES_MESURE)[number]
+
+export interface MesureLot {
+  cle: CleMesure
+  /** null = not measured (a stabilité or a vrillage of 0 is a measure). */
+  valeur: number | null
+  /** The tolerance, bounds included; null = no bound on that side. */
+  min: number | null
+  max: number | null
+}
+
+/** The partner's control of a lot: the measures the reference asks it, and whether it may type them now. */
+export interface ControleLot {
+  mesures: MesureLot[]
+  modifiable: boolean
+}
+
 export interface Lot {
   lot: string
+  /** suivilot id, the key the measures are written by; null for a lot without a row (an old soumission mail). */
+  idLot: number | null
   idLigne: number
   reference: string
   coloris: string
@@ -175,6 +204,13 @@ export interface Lot {
   nbRouleaux: number
   metrageMl: number
   motif: string | null
+  /** null when the reference asks the partner no control. */
+  controle: ControleLot | null
+}
+
+/** A lot in the partner's list of lots: with the order it belongs to. */
+export interface LotPartenaire extends Lot {
+  idCommande: number
 }
 
 export interface CommandeDetail extends Omit<CommandeResume, 'articles'> {
@@ -182,6 +218,51 @@ export interface CommandeDetail extends Omit<CommandeResume, 'articles'> {
   lignes: LigneCommande[]
   lots: Lot[]
 }
+
+// ── The partner's control of a lot (pure, tested) ───────────
+
+/** ref_fini's tolerance figures; 0 = not set. */
+export interface BornesRef { laizeMin: number; laizeMax: number; poidsMin: number; poidsMax: number; stabHauteur: number; stabLargeur: number }
+
+/** The tolerance of each measure, as Qualité › Suivi lots judges it (`resolveTolerance` of its page — keep both in
+ *  step): laize and poids between the reference's min and max, a bound ≤ 0 being « not set »; a stabilité inside
+ *  the symmetric band of the reference's one figure (−5 → from −5 to +5 %); the vrillage up to VRILLAGE_MAX. */
+export function tolerancesRef(b: BornesRef | undefined): Record<CleMesure, { min: number | null; max: number | null }> {
+  const pos = (n: number | undefined) => (n != null && n > 0 ? n : null)
+  const sym = (n: number | undefined) => {
+    const a = Math.abs(n ?? 0)
+    return a > 0 ? { min: -a, max: a } : { min: null, max: null }
+  }
+  return {
+    laize: { min: pos(b?.laizeMin), max: pos(b?.laizeMax) },
+    poids: { min: pos(b?.poidsMin), max: pos(b?.poidsMax) },
+    stabH: sym(b?.stabHauteur),
+    stabL: sym(b?.stabLargeur),
+    vrillage: { min: null, max: VRILLAGE_MAX },
+  }
+}
+
+/** The measures the reference asks the partner, in display order, with what is stored and their tolerance.
+ *  Empty when it asks none. A laize or a poids of 0 is « not measured ». */
+export function mesuresDuLot(valeurs: MesuresSst | undefined, bornes: BornesRef | undefined, controles: ControlesRef = CONTROLES_PAR_DEFAUT): MesureLot[] {
+  if (!controles.ennoblisseur) return []
+  const d = controles.mesures.ennoblisseur
+  const tol = tolerancesRef(bornes)
+  const demandee: Record<CleMesure, boolean> = { laize: d.laize, poids: d.poids, stabH: d.stabilites, stabL: d.stabilites, vrillage: d.vrillage }
+  const valeur: Record<CleMesure, number | null> = {
+    laize: valeurs && valeurs.laize > 0 ? valeurs.laize : null,
+    poids: valeurs && valeurs.poids > 0 ? valeurs.poids : null,
+    stabH: valeurs?.stabH ?? null,
+    stabL: valeurs?.stabL ?? null,
+    vrillage: valeurs?.vrillage ?? null,
+  }
+  return CLES_MESURE.filter((c) => demandee[c]).map((cle) => ({ cle, valeur: valeur[cle], ...tol[cle] }))
+}
+
+/** The steps of a lot at which the partner may type its measures: once it finishes the lot (coloris validé, or
+ *  back for a reprise, which erased the controls) and while Malterre has not validated it. Never before the
+ *  stenter (coloris soumis / refusé: the matter will still move), never once validated. */
+export const LOT_MESURABLE: ReadonlySet<EtapeLotPartenaire> = new Set(['coloris_valide', 'mesures_a_transmettre', 'en_controle', 'en_reprise'])
 
 // ── Reads (native PostgreSQL, flat, merged in JS) ───────────
 
@@ -361,6 +442,40 @@ async function finiParLigne(ligneIds: number[]): Promise<Map<number, FiniRow[]>>
   return out
 }
 
+interface ControleRow { valeurs: MesuresSst; bornes: BornesRef }
+
+/** The dyer side of these lots (suivilot *_sst) and the tolerance figures of their reference — the lot's own
+ *  reference, else its line's, as the cycle resolves it (cycle-ennoblissement.ts `controlesDuLot`). */
+async function controlesDesLots(idsuivilots: number[]): Promise<Map<number, ControleRow>> {
+  const ids = [...new Set(idsuivilots.filter((x) => x > 0))]
+  const out = new Map<number, ControleRow>()
+  if (ids.length === 0) return out
+  type Row = Record<'laize' | 'poids' | 'laize_min' | 'laize_max' | 'poids_min' | 'poids_max' | 'stab_hauteur' | 'stab_largeur', number> &
+    { id: number; stabh: number | null; stabl: number | null; vrillage: number | null }
+  const rows = await mpsPg()<Row[]>`
+    SELECT s.idsuivilot AS id,
+           COALESCE(s.laize_sst, 0)::float8 AS laize, COALESCE(s.poids_sst, 0)::float8 AS poids,
+           s.stabh_sst::float8 AS stabh, s.stabl_sst::float8 AS stabl, s.vrillage_sst::float8 AS vrillage,
+           COALESCE(r.laizeht_min, 0)::float8 AS laize_min, COALESCE(r.laizeht_max, 0)::float8 AS laize_max,
+           COALESCE(r.poids_min, 0)::float8 AS poids_min, COALESCE(r.poids_max, 0)::float8 AS poids_max,
+           COALESCE(r.stab_hauteur, 0)::float8 AS stab_hauteur, COALESCE(r.stab_largeur, 0)::float8 AS stab_largeur
+    FROM suivilot s
+    LEFT JOIN ligne_commande_sous_traitant l ON l.idligne_commande_sous_traitant = s.idligne_commande_sous_traitant
+    LEFT JOIN ref_fini r ON r.idref_fini = CASE WHEN COALESCE(s.idref_fini, 0) > 0 THEN s.idref_fini ELSE l.idreference END
+    WHERE s.idsuivilot = ANY(${ids})`
+  const ouNull = (v: number | null) => (v == null ? null : Number(v))
+  for (const r of rows) {
+    out.set(Number(r.id), {
+      valeurs: { laize: Number(r.laize) || 0, poids: Number(r.poids) || 0, stabH: ouNull(r.stabh), stabL: ouNull(r.stabl), vrillage: ouNull(r.vrillage) },
+      bornes: {
+        laizeMin: Number(r.laize_min) || 0, laizeMax: Number(r.laize_max) || 0, poidsMin: Number(r.poids_min) || 0, poidsMax: Number(r.poids_max) || 0,
+        stabHauteur: Number(r.stab_hauteur) || 0, stabLargeur: Number(r.stab_largeur) || 0,
+      },
+    })
+  }
+  return out
+}
+
 // ── Assembly ────────────────────────────────────────────────
 
 interface LotVu { fait: LotFait; idLigne: number; etape: EtapeLotPartenaire }
@@ -420,8 +535,9 @@ interface Vue {
   urgences: Map<number, string | null>
 }
 
-/** Every listed order of the partner with its step, lines and lots; one order (`idCommande`) also reads its rolls. */
-async function vues(idSousTraitant: number, idCommande?: number): Promise<{ vues: Vue[]; fini: Map<number, FiniRow[]> }> {
+/** Every listed order of the partner with its step, lines and lots; one order (`idCommande`) also reads its rolls,
+ *  as does `rouleauxOuverts` for the orders in progress (the list of lots). */
+async function vues(idSousTraitant: number, idCommande?: number, rouleauxOuverts = false): Promise<{ vues: Vue[]; fini: Map<number, FiniRow[]> }> {
   const vide = { vues: [] as Vue[], fini: new Map<number, FiniRow[]>() }
   if (!(await estEnnoblisseur(idSousTraitant))) return vide
   const toutes = await entetesEnvoyees(idSousTraitant, idCommande)
@@ -444,7 +560,8 @@ async function vues(idSousTraitant: number, idCommande?: number): Promise<{ vues
     lireCommandesEnnoblissement(aLire),
     // The pieces themselves only where their return is still followed (open orders).
     ecruParLigne(lignes.map((l) => l.id), lignesOuvertes.map((l) => l.id)),
-    idCommande ? finiParLigne(lignes.map((l) => l.id)) : Promise.resolve(new Map<number, FiniRow[]>()),
+    idCommande ? finiParLigne(lignes.map((l) => l.id))
+      : rouleauxOuverts ? finiParLigne(lignesOuvertes.map((l) => l.id)) : Promise.resolve(new Map<number, FiniRow[]>()),
     urgencesLignes(lignesOuvertes.map((l) => ({ id: l.id, delai: l.delai })), aujourdhui()),
   ])
   const revenus = await consumedEcruIds(lignesOuvertes.flatMap((l) => ecru.get(l.id)?.ids ?? []))
@@ -508,17 +625,56 @@ async function lireAdresse(id: number): Promise<Adresse | null> {
   return { nom: str(r.nom), lignes: [r.adresse1, r.adresse2, r.adresse3].map(str).filter(Boolean), cp: str(r.cp), ville: str(r.ville), pays: str(r.pays) }
 }
 
+/** The lots of an order as the partner reads them: rolls received, the reason of a refusal or a reprise, and its
+ *  own control with the tolerances. */
+function lotsDe(v: Vue, noms: Map<number, { reference: string; coloris: string }>, fini: Map<number, FiniRow[]>, controles: Map<number, ControleRow>): Lot[] {
+  return v.lots.map((l) => {
+    const nom = noms.get(l.idLigne) ?? { reference: '', coloris: '' }
+    const rouleaux = (fini.get(l.idLigne) ?? []).filter((f) => cleLot(f.lot) === cleLot(l.fait.lot))
+    const c = controles.get(l.fait.idsuivilot)
+    const mesures = c ? mesuresDuLot(c.valeurs, c.bornes, l.fait.controles) : []
+    return {
+      lot: l.fait.lot,
+      idLot: l.fait.idsuivilot > 0 ? l.fait.idsuivilot : null,
+      idLigne: l.idLigne,
+      reference: nom.reference,
+      coloris: nom.coloris,
+      etape: l.etape,
+      recuLe: l.fait.reception,
+      nbRouleaux: rouleaux.length,
+      metrageMl: round1(rouleaux.reduce((s, f) => s + f.metrage, 0)),
+      motif: l.etape === 'en_reprise'
+        ? l.fait.repriseMotif ?? null
+        : l.etape === 'coloris_refuse' ? l.fait.coloris.reponse?.commentaire.trim() || null : null,
+      controle: mesures.length ? { mesures, modifiable: v.etape !== 'terminee' && LOT_MESURABLE.has(l.etape) } : null,
+    }
+  })
+}
+
+/** The lots of the partner's orders in progress, newest order first: what its lot controller works from. A lot
+ *  leaves the list with its order (finished: nothing is expected of the partner any more). */
+export async function lotsPartenaire(idSousTraitant: number): Promise<LotPartenaire[]> {
+  const { vues: toutes, fini } = await vues(idSousTraitant, undefined, true)
+  const vs = toutes.filter((v) => v.etape !== 'terminee')
+  const [noms, controles] = await Promise.all([
+    libelles(vs.flatMap((v) => v.lignes.map((l) => l.row))),
+    controlesDesLots(vs.flatMap((v) => v.lots.map((l) => l.fait.idsuivilot))),
+  ])
+  return vs.flatMap((v) => lotsDe(v, noms, fini, controles).map((l) => ({ ...l, idCommande: v.entete.id })))
+}
+
 /** One order of the partner, or null — also when it exists but is another sous-traitant's, was never sent, or is
  *  finished and out of the twelve sliding months. */
 export async function commandePartenaire(idSousTraitant: number, idCommande: number): Promise<CommandeDetail | null> {
   const { vues: vs, fini } = await vues(idSousTraitant, idCommande)
   const v = vs[0]
   if (!v) return null
-  const [noms, pdf, adresseLivraison] = await Promise.all([
+  const [noms, pdf, adresseLivraison, controles] = await Promise.all([
     libelles(v.lignes.map((l) => l.row)),
     // What the bon de commande prints of each reference: its designation, treatments and presentation.
     buildCommandePdfData(idCommande),
     lireAdresse(v.entete.idadresse),
+    controlesDesLots(v.lots.map((l) => l.fait.idsuivilot)),
   ])
   const imprime = new Map((pdf?.lignes ?? []).map((l) => [l.id ?? 0, l]))
   const enReprise = new Set(v.lots.filter((l) => l.etape === 'en_reprise').map((l) => `${l.idLigne}:${cleLot(l.fait.lot)}`))
@@ -545,23 +701,7 @@ export async function commandePartenaire(idSousTraitant: number, idCommande: num
       etape: etapeLignePartenaire(l.livree, l.row.delai),
     }
   })
-  const lots: Lot[] = v.lots.map((l) => {
-    const nom = noms.get(l.idLigne) ?? { reference: '', coloris: '' }
-    const rouleaux = (fini.get(l.idLigne) ?? []).filter((f) => cleLot(f.lot) === cleLot(l.fait.lot))
-    return {
-      lot: l.fait.lot,
-      idLigne: l.idLigne,
-      reference: nom.reference,
-      coloris: nom.coloris,
-      etape: l.etape,
-      recuLe: l.fait.reception,
-      nbRouleaux: rouleaux.length,
-      metrageMl: round1(rouleaux.reduce((s, f) => s + f.metrage, 0)),
-      motif: l.etape === 'en_reprise'
-        ? l.fait.repriseMotif ?? null
-        : l.etape === 'coloris_refuse' ? l.fait.coloris.reponse?.commentaire.trim() || null : null,
-    }
-  })
+  const lots = lotsDe(v, noms, fini, controles)
   const { articles: _articles, ...r } = resume(v, noms)
   return { ...r, adresseLivraison, lignes, lots }
 }
