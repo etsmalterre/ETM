@@ -89,7 +89,7 @@ import { VRILLAGE_MAX } from './vrillage.js'
 import type { MesuresSst } from './agents/flux-ennoblisseur/saisies.js'
 import { bornesRendement, rendementConforme, rendementPiece } from './rendement-lot.js'
 import { reprisesDuLot } from './reprises.js'
-import { actionsDuLot } from './actions-lot.js'
+import { actionsDesLots, actionsDuLot, type ActionDuLot } from './actions-lot.js'
 import { buildCommandePdfData, renderCommandePdfBuffer } from '../routes/commandes-sous-traitant.js'
 
 // ── Steps (pure, tested) ────────────────────────────────────
@@ -248,9 +248,14 @@ export interface Lot {
   fenetre: Fenetre | null
 }
 
-/** A lot in the partner's list of lots: with the order it belongs to. */
+/** A quality action the lot is judged against: the MENTION (the sentence already printed on the bon de commande)
+ *  and Malterre's verdict for this lot; null = not judged yet. Nothing of the action itself. */
+export interface ConsigneLot { texte: string; verdict: 'conforme' | 'non_conforme' | null }
+
+/** A lot in the partner's list of lots: with the order it belongs to, and the quality actions it carries. */
 export interface LotPartenaire extends Lot {
   idCommande: number
+  consignes: ConsigneLot[]
 }
 
 /** Malterre's own control of the tirelle: the dyer's measures plus the allongement, ours only. */
@@ -277,8 +282,6 @@ export interface LotDetail extends LotPartenaire {
   rendement: { moyen: number | null; min: number | null; max: number | null }
   /** Oldest first. Dates YYYY-MM-DD. */
   reprises: { rang: number; nature: 'rame' | 'teinture'; motif: string | null; envoyeLe: string | null; retourLe: string | null }[]
-  /** The quality instructions the lot is judged against, with Malterre's verdict; null = not judged yet. */
-  consignes: { texte: string; verdict: 'conforme' | 'non_conforme' | null }[]
 }
 
 export interface CommandeDetail extends Omit<CommandeResume, 'articles'> {
@@ -811,14 +814,21 @@ function lotsDe(v: Vue, noms: Map<number, { reference: string; coloris: string }
 export async function lotsPartenaire(idSousTraitant: number): Promise<LotPartenaire[]> {
   const depuis = deuxMoisAvant(aujourdhui())
   const { vues: vs, fini } = await vues(idSousTraitant, undefined, depuis)
-  const [noms, controles] = await Promise.all([
+  const idsLots = vs.flatMap((v) => v.lots.map((l) => l.fait.idsuivilot))
+  const [noms, controles, actions] = await Promise.all([
     libelles(vs.flatMap((v) => v.lignes.map((l) => l.row))),
-    controlesDesLots(vs.flatMap((v) => v.lots.map((l) => l.fait.idsuivilot))),
+    controlesDesLots(idsLots),
+    actionsDesLots(idsLots),
   ])
   return vs.flatMap((v) =>
     lotsDe(v, noms, fini, controles)
       .filter((l) => v.etape !== 'terminee' || (l.recuLe ?? '') >= depuis)
-      .map((l) => ({ ...l, idCommande: v.entete.id })))
+      .map((l) => ({ ...l, idCommande: v.entete.id, consignes: consignesDe(l.idLot ? actions.get(l.idLot) : undefined) })))
+}
+
+/** The sentence already printed on the bon de commande, and the lot's verdict — nothing of the action itself. */
+function consignesDe(actions: ActionDuLot[] | null | undefined): ConsigneLot[] {
+  return (actions ?? []).filter((a) => a.mention.trim()).map((a) => ({ texte: a.mention.trim(), verdict: a.conformite }))
 }
 
 /** One lot of the partner with everything it reads of its quality, or null — the lot of an order it cannot open
@@ -906,8 +916,7 @@ export async function lotPartenaire(idSousTraitant: number, idLot: number): Prom
       max: bande ? round3(bande.maxi) : null,
     },
     reprises: reprises.map((x) => ({ rang: x.rang, nature: x.nature, motif: x.motif?.trim() || null, envoyeLe: x.envoye_le?.slice(0, 10) ?? null, retourLe: x.retour_le?.slice(0, 10) ?? null })),
-    // The sentence already printed on the bon de commande, and this lot's verdict — nothing of the action itself.
-    consignes: (actions ?? []).filter((a) => a.mention.trim()).map((a) => ({ texte: a.mention.trim(), verdict: a.conformite })),
+    consignes: consignesDe(actions),
   }
 }
 

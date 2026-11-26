@@ -78,54 +78,70 @@ export interface ActionDuLot {
   applicable: boolean
 }
 
-/** The actions a lot carries (Qualité › Suivi lots, « Actions qualité »; the espace partenaire reads the mention
- *  and the verdict of each): the mentions of OPEN actions that match its sst line, plus any mention the lot
- *  already carries a verdict for — closing an action must not make the verdicts recorded under it vanish from
- *  the lot. The verdict is THIS lot's (lib/conformite-lot.ts, Vincent 2026-11-03). Null = no such lot. */
-export async function actionsDuLot(idsuivilot: number): Promise<ActionDuLot[] | null> {
-  const id = Math.trunc(idsuivilot)
-  const baseRows = await query<{ IDligne_commande_sous_traitant: number | null; IDcommande_sous_traitant: number | null; IDsous_traitant: number | null }>(
-    `SELECT IDligne_commande_sous_traitant, IDcommande_sous_traitant, IDsous_traitant
-     FROM suivilot WHERE IDsuivilot = ${id}`,
+/** The actions each of these lots carries (Qualité › Suivi lots, « Actions qualité »; the espace partenaire reads
+ *  the mention and the verdict of each, for one lot and for its list of lots): the mentions of OPEN actions that
+ *  match the lot's sst line, plus any mention the lot already carries a verdict for — closing an action must not
+ *  make the verdicts recorded under it vanish from the lot. The verdict is THE lot's (lib/conformite-lot.ts,
+ *  Vincent 2026-11-03). One entry per lot found (an empty list when nothing applies); a lot that does not exist
+ *  has none. A handful of flat reads whatever the number of lots. */
+export async function actionsDesLots(idsuivilots: number[]): Promise<Map<number, ActionDuLot[]>> {
+  const out = new Map<number, ActionDuLot[]>()
+  const ids = [...new Set(idsuivilots.map((x) => Math.trunc(x)).filter((x) => x > 0))]
+  if (ids.length === 0) return out
+  const baseRows = await query<{ lotid: number; lid: number | null; cid: number | null; sstid: number | null }>(
+    `SELECT IDsuivilot AS lotid, IDligne_commande_sous_traitant AS lid, IDcommande_sous_traitant AS cid, IDsous_traitant AS sstid
+     FROM suivilot WHERE IDsuivilot IN (${ids.join(',')})`,
   )
-  if (baseRows.length === 0) return null
-  const ligneId = Number(baseRows[0].IDligne_commande_sous_traitant) || 0
-  if (ligneId === 0) return []
-  // The line's own matching key. `type` is a reserved word → always aliased.
-  const lineRows = await query<{ type_kind: number; refid: number; colid: number }>(
-    `SELECT type AS type_kind, IDreference AS refid, IDColoris AS colid
+  if (baseRows.length === 0) return out
+  const ligneIds = [...new Set(baseRows.map((r) => Number(r.lid) || 0).filter((x) => x > 0))]
+  // Each line's own matching key. `type` is a reserved word → always aliased.
+  const lineRows = ligneIds.length === 0 ? [] : await query<{ lid: number; type_kind: number; refid: number; colid: number }>(
+    `SELECT IDligne_commande_sous_traitant AS lid, type AS type_kind, IDreference AS refid, IDColoris AS colid
      FROM ligne_commande_sous_traitant
-     WHERE IDligne_commande_sous_traitant = ${ligneId}`,
+     WHERE IDligne_commande_sous_traitant IN (${ligneIds.join(',')})`,
   )
-  if (lineRows.length === 0) return []
-  const line: SstLineKey = {
-    IDligne_commande_sous_traitant: ligneId,
-    IDcommande_sous_traitant: Number(baseRows[0].IDcommande_sous_traitant) || 0,
-    type_kind: Number(lineRows[0].type_kind) || 0,
-    IDreference: Number(lineRows[0].refid) || 0,
-    IDColoris: Number(lineRows[0].colid) || 0,
-    IDsous_traitant: Number(baseRows[0].IDsous_traitant) || 0,
-  }
-  const [allMentions, actions, verdicts] = await Promise.all([loadAllMentions(), loadActions(), verdictsDesLots([id])])
+  const ligneParId = new Map(lineRows.map((r) => [Number(r.lid), r]))
+  const [allMentions, actions, verdicts] = await Promise.all([loadAllMentions(), loadActions(), verdictsDesLots(ids)])
   const actionById = new Map(actions.map((a) => [a.IDaction_qualite, a]))
-  const verdictByMention = new Map(verdicts.map((v) => [v.idmention, v]))
-  const openMatches = mentionsForLine(line, allMentions.filter((m) => actionById.get(m.IDaction_qualite)?.termine === 0))
-  const seen = new Set(openMatches.map((m) => m.IDmention_qualite))
-  const historic = allMentions.filter((m) => !seen.has(m.IDmention_qualite) && verdictByMention.has(m.IDmention_qualite))
-  return [...openMatches, ...historic].map((m) => {
-    const action = actionById.get(m.IDaction_qualite)
-    const v = verdictByMention.get(m.IDmention_qualite)
-    return {
-      IDmention_qualite: m.IDmention_qualite,
-      IDaction_qualite: m.IDaction_qualite,
-      action_titre: action?.titre ?? '',
-      action_description: action?.description ?? '',
-      action_termine: action?.termine ?? 0,
-      mention: m.mention,
-      conformite: v?.conformite ?? null,
-      par: v?.par ?? null,
-      le: v?.le ?? null,
-      applicable: seen.has(m.IDmention_qualite),
+  const ouvertes = allMentions.filter((m) => actionById.get(m.IDaction_qualite)?.termine === 0)
+  for (const b of baseRows) {
+    const id = Number(b.lotid)
+    const ligneId = Number(b.lid) || 0
+    const l = ligneParId.get(ligneId)
+    if (ligneId === 0 || !l) { out.set(id, []); continue }
+    const line: SstLineKey = {
+      IDligne_commande_sous_traitant: ligneId,
+      IDcommande_sous_traitant: Number(b.cid) || 0,
+      type_kind: Number(l.type_kind) || 0,
+      IDreference: Number(l.refid) || 0,
+      IDColoris: Number(l.colid) || 0,
+      IDsous_traitant: Number(b.sstid) || 0,
     }
-  })
+    const verdictByMention = new Map(verdicts.filter((v) => v.idsuivilot === id).map((v) => [v.idmention, v]))
+    const openMatches = mentionsForLine(line, ouvertes)
+    const seen = new Set(openMatches.map((m) => m.IDmention_qualite))
+    const historic = allMentions.filter((m) => !seen.has(m.IDmention_qualite) && verdictByMention.has(m.IDmention_qualite))
+    out.set(id, [...openMatches, ...historic].map((m) => {
+      const action = actionById.get(m.IDaction_qualite)
+      const v = verdictByMention.get(m.IDmention_qualite)
+      return {
+        IDmention_qualite: m.IDmention_qualite,
+        IDaction_qualite: m.IDaction_qualite,
+        action_titre: action?.titre ?? '',
+        action_description: action?.description ?? '',
+        action_termine: action?.termine ?? 0,
+        mention: m.mention,
+        conformite: v?.conformite ?? null,
+        par: v?.par ?? null,
+        le: v?.le ?? null,
+        applicable: seen.has(m.IDmention_qualite),
+      }
+    }))
+  }
+  return out
+}
+
+/** The actions ONE lot carries. Null = no such lot. */
+export async function actionsDuLot(idsuivilot: number): Promise<ActionDuLot[] | null> {
+  return (await actionsDesLots([idsuivilot])).get(Math.trunc(idsuivilot)) ?? null
 }
