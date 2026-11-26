@@ -29,7 +29,13 @@
 //    (Malterre's own story of the problem: they name clients — checked 2026-11-26), who judged, a roll's notes
 //    (they carry the knitting defects and the visiteurs' names), the client a roll is reserved to, the lot's
 //    prices.
-//  - The LIST of lots (`lotsPartenaire`) is the work in progress plus two sliding months of what came back. The bon de commande PDF is the document Malterre e-mails: it carries what was sent
+//  - The LIST of lots (`lotsPartenaire`) is the work in progress plus two sliding months of what came back.
+//  - Time (Vincent 2026-11-26: « on les laisse tranquilles jusqu'à ce que le segment se remplisse, et d'un seul
+//    coup ça devient rouge »): the partner is shown the clock of each step that is ITS OWN, exactly as ETM runs
+//    it (`fenetreCommande` / `fenetreLot`): the working days it gets, those gone, and whether the time is up —
+//    the day ETM itself turns the order or the lot red. Waiting is never red. Never add the clocks that are not
+//    the partner's: Malterre's own steps and chase dates, the client's days on a soumission (the dyer's délai is
+//    pushed by what the client took beyond its 5: only the resulting day is told, `sortie`). The bon de commande PDF is the document Malterre e-mails: it carries what was sent
 //    (the partner's own prices included) and nothing is added to it here.
 //
 // Steps. ETM's cycle says where an order and its lots stand AND whose move it is at Malterre; the partner is told
@@ -71,9 +77,10 @@
 import { mpsPg } from './mps-pg.js'
 import { consumedEcruIds } from './fini-sources.js'
 import {
-  etatCommande, etapeLot, lireCommandesEnnoblissement,
+  calendrierTraitement, etatCommande, etapeLot, joursOuvresDepuis, lireCommandesEnnoblissement, plusJoursOuvres, RELANCE_J,
   type CommandeFait, type EtapeLot, type EtatCommande, type LotFait,
 } from './cycle-ennoblissement.js'
+import { DELAI_PREMIERE_DEMANDE_J } from './delai-sst.js'
 import { ecruToutRevenu, ligneLivreeLe } from './ligne-sst-livree.js'
 import { familleOfTypeSst } from './sst-tricotage.js'
 import { urgencesLignes } from './urgence-sst.js'
@@ -138,6 +145,20 @@ export function etapeLignePartenaire(livree: boolean, delai: string | null): Eta
 
 // ── Shapes (the portal's contract) ──────────────────────────
 
+/** The time the partner has at a step that is its own. Days are working days (lib/jours-ouvres.ts). */
+export interface Fenetre {
+  /** The day the clock started, YYYY-MM-DD. */
+  depuis: string
+  /** The day it is due. */
+  echeance: string
+  /** Working days granted, from `depuis` to `echeance`. */
+  jours: number
+  /** Working days gone since `depuis`. */
+  ecoules: number
+  /** The time is up: ETM shows it red from this day. */
+  depassee: boolean
+}
+
 export interface CommandeResume {
   /** The number printed on the bon de commande (IDcommande_sous_traitant). */
   id: number
@@ -159,6 +180,9 @@ export interface CommandeResume {
   lotsAVous: number
   /** « REF - coloris » of each line. */
   articles: string[]
+  /** The partner's clock at this step (a délai to give, the treatment up to its délai); null when the step is
+   *  not its own, or has no date. */
+  fenetre: Fenetre | null
 }
 
 export interface Adresse {
@@ -219,6 +243,9 @@ export interface Lot {
   motif: string | null
   /** null when the reference asks the partner no control. */
   controle: ControleLot | null
+  /** The partner's clock at this step (the lot to finish after « coloris validé », its controls after the
+   *  reception); null when the step is not its own, or has no date (a reprise, a reteinture). */
+  fenetre: Fenetre | null
 }
 
 /** A lot in the partner's list of lots: with the order it belongs to. */
@@ -325,6 +352,52 @@ export function mesuresMalterre(
     ['allongementL', d.allongement, v.allongementL],
   ]
   return lignes.filter(([, demandee]) => demandee).map(([cle, , valeur]) => ({ cle, valeur, ...tol[cle] }))
+}
+
+// ── The partner's time at a step (pure, tested) ─────────────
+
+/** A window from `depuis` to `echeance`, read on `today`. `rougeLeJourMeme`: the time is up on the échéance itself
+ *  (ETM's rule for a délai of treatment and for a lot's window) or only the working day after (a délai to give:
+ *  « on the échéance itself nobody has anything to do », lib/delai-sst.ts). */
+export function fenetre(depuis: string, echeance: string, today: string, rougeLeJourMeme: boolean): Fenetre {
+  return {
+    depuis, echeance,
+    jours: Math.max(1, joursOuvresDepuis(depuis, echeance)),
+    ecoules: joursOuvresDepuis(depuis, today),
+    depassee: rougeLeJourMeme ? today >= echeance : today > echeance,
+  }
+}
+
+/** The order's clock for the partner:
+ *  - a délai to give: from the bon de commande to the day ETM expects the answer (lib/delai-sst.ts `echeanceDelai`:
+ *    3 working days, or the day Malterre pushed it to); a line left without a délai on an order already under
+ *    way is counted from the bon too;
+ *  - en traitement: from the bon to its own délai, pushed by what Malterre's client took beyond its days on a
+ *    coloris (`calendrierTraitement().sortie`) — red on that day, as the order is in ETM;
+ *  - anything else is not the partner's time. */
+export function fenetreCommande(
+  etape: EtapeCommandePartenaire, etat: Pick<EtatCommande, 'delai' | 'traitement'> | null, envoyee: string | null, today: string,
+): Fenetre | null {
+  if (etape === 'delai_a_donner') {
+    const depuis = etat?.delai?.demandeLe ?? envoyee
+    if (!depuis) return null
+    return fenetre(depuis, etat?.delai?.echeance ?? plusJoursOuvres(depuis, DELAI_PREMIERE_DEMANDE_J), today, false)
+  }
+  if (etape === 'en_traitement' && etat?.traitement) {
+    const depuis = etat.traitement.depuis ?? envoyee
+    const sortie = calendrierTraitement(etat.traitement, today).sortie
+    return depuis && depuis < sortie ? fenetre(depuis, sortie, today, true) : null
+  }
+  return null
+}
+
+/** The lot's clock for the partner, ETM's own windows (cycle-ennoblissement.ts `depuisEtape`, RELANCE_J): 3 working
+ *  days to finish and ship after the « coloris validé », 5 after the reception for its controls. A reprise and a
+ *  reteinture have no date in ETM: no clock. */
+export function fenetreLot(fait: LotFait, etape: EtapeLotPartenaire, today: string): Fenetre | null {
+  if (etape === 'coloris_valide' && fait.okRamerLe) return fenetre(fait.okRamerLe, plusJoursOuvres(fait.okRamerLe, RELANCE_J.en_rame), today, true)
+  if (etape === 'mesures_a_transmettre' && fait.reception) return fenetre(fait.reception, plusJoursOuvres(fait.reception, RELANCE_J.controle), today, true)
+  return null
 }
 
 /** The steps of a lot at which the partner may type its measures: once it finishes the lot (coloris validé, or
@@ -607,6 +680,7 @@ function lignesVues(
 interface Vue {
   entete: Entete
   etape: EtapeCommandePartenaire
+  fenetre: Fenetre | null
   lignes: LigneVue[]
   lots: LotVu[]
   urgences: Map<number, string | null>
@@ -660,7 +734,7 @@ async function vues(idSousTraitant: number, idCommande?: number, lotsDepuis?: st
     if (!etape) continue // « À envoyer » again (lines back to Non_Envoye): not the partner's to see
     if (etape === 'terminee' && horsFenetre(entete)) continue // finished without being closed, out of the window
     out.push({
-      entete, etape, lignes: lignesV, lots,
+      entete, etape, lignes: lignesV, lots, fenetre: fenetreCommande(etape, etat, entete.envoyee, aujourdhui()),
       urgences: new Map(lignesV.filter((l) => !l.livree && urgences.has(l.row.id)).map((l) => [l.row.id, urgences.get(l.row.id)!.dateSouhaitee])),
     })
   }
@@ -682,6 +756,7 @@ function resume(v: Vue, noms: Map<number, { reference: string; coloris: string }
     urgente: v.urgences.size > 0,
     lotsAVous: v.etape === 'terminee' ? 0 : v.lots.filter((l) => LOT_A_VOUS.has(l.etape)).length,
     articles: [...new Set(v.lignes.map((l) => article(noms.get(l.row.id)?.reference ?? '', noms.get(l.row.id)?.coloris ?? '')).filter(Boolean))],
+    fenetre: v.fenetre,
   }
 }
 
@@ -726,6 +801,7 @@ function lotsDe(v: Vue, noms: Map<number, { reference: string; coloris: string }
         ? l.fait.repriseMotif ?? null
         : l.etape === 'coloris_refuse' ? l.fait.coloris.reponse?.commentaire.trim() || null : null,
       controle: mesures.length ? { mesures, modifiable: v.etape !== 'terminee' && LOT_MESURABLE.has(l.etape) } : null,
+      fenetre: v.etape === 'terminee' ? null : fenetreLot(l.fait, l.etape, aujourdhui()),
     }
   })
 }

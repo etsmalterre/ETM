@@ -2,9 +2,51 @@ import { describe, expect, it } from 'vitest'
 import { SANS_SOUMISSION, type EtapeLot, type LotFait } from './cycle-ennoblissement.js'
 import {
   article, debutDouzeMois, etapeCommandePartenaire, etapeLignePartenaire, etapeLotPartenaire, lotsVus, LOT_A_VOUS,
-  deuxMoisAvant, LOT_MESURABLE, mesuresDuLot, mesuresMalterre, sansMouvementDepuis, tolerancesRef,
+  deuxMoisAvant, fenetre, fenetreCommande, fenetreLot, LOT_MESURABLE, mesuresDuLot, mesuresMalterre, sansMouvementDepuis, tolerancesRef,
 } from './espace-partenaire-commandes.js'
 import { CONTROLES_PAR_DEFAUT, type ControlesRef } from './controles-lot.js'
+
+describe('the partner’s time at a step', () => {
+  // Monday 2026-11-23 … Friday 2026-11-27, no public holiday that week.
+  it('counts working days, and is up on the échéance or the working day after, by the step', () => {
+    expect(fenetre('2026-11-23', '2026-11-26', '2026-11-24', false)).toEqual({ depuis: '2026-11-23', echeance: '2026-11-26', jours: 3, ecoules: 1, depassee: false })
+    // A délai to give: nothing to do on the échéance itself, red the working day after.
+    expect(fenetre('2026-11-23', '2026-11-26', '2026-11-26', false).depassee).toBe(false)
+    expect(fenetre('2026-11-23', '2026-11-26', '2026-11-27', false).depassee).toBe(true)
+    // A lot's window, a délai of treatment: red on the day itself.
+    expect(fenetre('2026-11-23', '2026-11-26', '2026-11-26', true).depassee).toBe(true)
+    // The weekend is not counted.
+    expect(fenetre('2026-11-20', '2026-11-25', '2026-11-23', true)).toMatchObject({ jours: 3, ecoules: 1 })
+  })
+  it('an order: three working days to give its délai, then its own délai — nothing while Malterre works', () => {
+    expect(fenetreCommande('delai_a_donner', null, '2026-11-23', '2026-11-24')).toMatchObject({ depuis: '2026-11-23', echeance: '2026-11-26', jours: 3, depassee: false })
+    // The day ETM expects the answer wins (Malterre pushed it, or the pieces were already at the dyer).
+    const delai = { demandeLe: '2026-11-23', echeance: '2026-11-24', derniereRelance: null, historique: [] }
+    expect(fenetreCommande('delai_a_donner', { delai }, '2026-11-23', '2026-11-25')).toMatchObject({ echeance: '2026-11-24', jours: 1, depassee: true })
+    const traitement = { depuis: '2026-11-02', delai: '2026-11-25', autres: [], attentes: [], retardClient: 0, reporteClient: 0 }
+    expect(fenetreCommande('en_traitement', { traitement }, '2026-11-02', '2026-11-24')).toMatchObject({ depuis: '2026-11-02', echeance: '2026-11-25', depassee: false })
+    expect(fenetreCommande('en_traitement', { traitement }, '2026-11-02', '2026-11-25')!.depassee).toBe(true)
+    // What the client took beyond its five days on a coloris is not the dyer's: its délai is pushed by it.
+    const avecClient = { ...traitement, attentes: [{ lot: 'MA1', du: '2026-11-09', au: '2026-11-18' }], retardClient: 2 }
+    expect(fenetreCommande('en_traitement', { traitement: avecClient }, '2026-11-02', '2026-11-25')).toMatchObject({ echeance: '2026-11-27', depassee: false })
+    expect(fenetreCommande('en_traitement', {}, '2026-11-02', '2026-11-25')).toBeNull()
+    expect(fenetreCommande('en_controle', { traitement }, '2026-11-02', '2026-11-25')).toBeNull()
+    expect(fenetreCommande('terminee', { traitement }, '2026-11-02', '2026-11-25')).toBeNull()
+  })
+  it('a lot: three days after the coloris validé, five after the reception for its controls, no clock on a reprise', () => {
+    const lot = (p: Partial<LotFait>): LotFait => ({
+      lot: 'MA1', idsuivilot: 1, etat: 1, reception: null, mesuresTeinturier: false, tirelleMesuree: false,
+      coloris: SANS_SOUMISSION, stabilites: SANS_SOUMISSION, ...p,
+    })
+    expect(fenetreLot(lot({ okRamerLe: '2026-11-23' }), 'coloris_valide', '2026-11-24')).toMatchObject({ echeance: '2026-11-26', jours: 3, ecoules: 1, depassee: false })
+    expect(fenetreLot(lot({ reception: '2026-11-18' }), 'mesures_a_transmettre', '2026-11-25')).toMatchObject({ echeance: '2026-11-25', jours: 5, ecoules: 5, depassee: true })
+    expect(fenetreLot(lot({ reception: '2026-11-18' }), 'en_reprise', '2026-11-25')).toBeNull()
+    expect(fenetreLot(lot({ reception: '2026-11-18' }), 'coloris_refuse', '2026-11-25')).toBeNull()
+    // Malterre's own time on the lot is never told.
+    expect(fenetreLot(lot({ reception: '2026-11-18' }), 'en_controle', '2026-11-25')).toBeNull()
+    expect(fenetreLot(lot({ reception: '2026-11-18' }), 'coloris_soumis', '2026-11-25')).toBeNull()
+  })
+})
 
 describe('the lot’s page', () => {
   it('the list of lots goes two months back, to the same day', () => {
