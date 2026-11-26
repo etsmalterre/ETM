@@ -131,6 +131,39 @@ function prises(y: FilALancer, ids: readonly number[], kgCommande: number, kgSto
   return out
 }
 
+/** The yarn an EXISTING knitting order holds, as a reading: one card per yarn, one line per lot with
+ *  its kg. The look of the picker in `lectureSeule` (a launch from a client line), without a verdict:
+ *  the yarn is already at the knitter (Clients › Commandes, « Réservation — Commande N° … »). */
+export function LotsFilLecture({ fils }: {
+  fils: readonly { nom: string; lots: readonly { lot: string; kg: number; titre?: string }[] }[]
+}) {
+  return (
+    <div className="space-y-3">
+      {fils.map((y) => (
+        <div key={y.nom} className={cn('rounded-lg border-l-4 border border-border/60 bg-card shadow-sm overflow-hidden', 'border-l-amber-400/60')}>
+          <div className="flex items-center gap-2.5 px-3 pt-3 pb-2">
+            <div className="h-8 w-8 rounded-md flex items-center justify-center flex-shrink-0 bg-amber-400/10 text-amber-600">
+              <BobineIcon className="h-4 w-4" />
+            </div>
+            <p className="min-w-0 flex-1 text-sm font-semibold truncate">{y.nom}</p>
+            <span className="flex-shrink-0 text-sm text-muted-foreground tabular-nums">
+              {fmtNum(y.lots.reduce((s, l) => s + l.kg, 0), 1)} kg
+            </span>
+          </div>
+          <div className="px-3 pb-3 space-y-1.5">
+            {y.lots.map((l, i) => (
+              <div key={i} title={l.titre} className="flex items-center gap-2.5 rounded-md border border-border/60 bg-zinc-50 px-2.5 py-1.5">
+                <span className="text-sm tabular-nums">Lot {l.lot || '—'}</span>
+                <span className="ml-auto flex-shrink-0 text-sm font-semibold tabular-nums">{fmtNum(l.kg, 1)} kg</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function LotsFilPicker({
   yarns, kgCommande, kgStock, choix, onChoix, magasinNom, disabled, aideEnCommande, emporterReserve = false, lectureSeule = false,
 }: {

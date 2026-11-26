@@ -5249,7 +5249,15 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/tricotage/:sstLineId/affe
         }
       }
       // The words the window prints: each yarn with its lot.
-      const lotIds = [...new Set([...r.fil.map((x) => x.lot), ...liberes.map((x) => x.lot)])]
+      // The yarn the order still holds, lot by lot (what it has left to knit, in yarn): the window's
+      // « Fil de la commande », the reading the launch window gives of the yarn it takes.
+      const lecture = apercu ? await lectureTricotage(sstLineId) : null
+      const tenus = lecture
+        ? lecture.ligne.lots
+          .map((l) => ({ lot: l.lot, refFil: l.refFil, coloriFil: l.coloriFil, kg: lecture.engagement.get(l.lot) ?? 0 }))
+          .filter((l) => l.kg > 0.005)
+        : []
+      const lotIds = [...new Set([...r.fil.map((x) => x.lot), ...liberes.map((x) => x.lot), ...tenus.map((x) => x.lot)])]
       const [noms, lotsNoms] = await Promise.all([
         nomsFils(besoins.fils.map((f) => ({ refFil: f.refFil, coloriFil: f.coloriFil, pourcentage: f.pourcentage }))),
         lotIds.length === 0 ? Promise.resolve([]) : mpsPg()<{ id: number; lot: string | null }[]>`
@@ -5266,6 +5274,7 @@ commandesClientRouter.put('/:id/lignes/:ligneId/supply/tricotage/:sstLineId/affe
         besoin: round2c(besoins.kgAProduire),
         fil: r.fil.map(lisible),
         liberes: liberes.map(lisible),
+        fil_commande: tenus.map(lisible).sort((x, y) => x.fil.localeCompare(y.fil, 'fr') || x.lot.localeCompare(y.lot, 'fr')),
         arbitrage,
       })
       return

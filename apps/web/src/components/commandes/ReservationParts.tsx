@@ -1,6 +1,8 @@
 // Shared pieces of the « Réservation — Commande N° … » dialogs of a client order line (knitting order,
 // yarn supplier order): the choice of a quantity, the order's répartition between the client lines that
 // reserve on it, and the footer gauge of the client line. One look for both (Vincent 2026-11-13).
+// A knitting order reads as its launch window since 2026-11-26: the « Poids à tricoter » card (CartePoids).
+import type React from 'react'
 import { fmtNum } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -27,6 +29,55 @@ export function AffecteGauge({
       <div className="h-1.5 mt-1.5 rounded-full bg-white overflow-hidden">
         <div className={cn('h-full rounded-full transition-all', covered ? 'bg-green-500' : 'bg-accent')} style={{ width: `${pct}%` }} />
       </div>
+    </div>
+  )
+}
+
+/** One share printed under the fields of the « Poids à tricoter » card: who it is for, its kg. */
+export interface PartPoids {
+  cle: string
+  label: string
+  kg: number
+  /** hover: whose line it is */
+  titre?: string
+  /** kg this share gives up in the choice being made (shown beside its kg) */
+  perd?: number
+}
+
+/** The « Poids à tricoter » card of a knitting order, the same when the order is launched from a client
+ *  line and when an existing order is opened from it (Vincent 2026-11-26): the weight fields the person
+ *  types (children), then one row per other share, and the order's total under them. With the fields,
+ *  the card IS the order's répartition. Gold edge = what the confirm writes. */
+export function CartePoids({ children, parts = [], totalLabel, total, pied }: {
+  children: React.ReactNode
+  parts?: readonly PartPoids[]
+  totalLabel: string
+  total: number
+  /** a last block under the total (the launch's « Commande urgente ») */
+  pied?: React.ReactNode
+}) {
+  return (
+    <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card shadow-sm overflow-hidden">
+      <div className="p-4 space-y-4">
+        <h3 className="text-sm font-semibold">Poids à tricoter</h3>
+        {children}
+        {parts.map((a) => (
+          <div key={a.cle} className="flex items-baseline justify-between gap-2 text-sm" title={a.titre}>
+            <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">{a.label}</span>
+            <span className="flex-shrink-0 tabular-nums">
+              {(a.perd ?? 0) > 0.005 && <span className="mr-1.5 text-xs text-muted-foreground">− {fmtNum(a.perd ?? 0, 1)}</span>}
+              <span className="font-semibold">{fmtNum(Math.max(0, a.kg), 1)} kg</span>
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="px-4 py-3 border-t border-border/60 bg-zinc-50 flex items-baseline justify-between gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{totalLabel}</span>
+        <span className="text-xl font-bold tabular-nums">
+          {fmtNum(total, 1)} <span className="text-sm font-medium text-muted-foreground">kg</span>
+        </span>
+      </div>
+      {pied && <div className="px-4 py-3 border-t border-border/60">{pied}</div>}
     </div>
   )
 }
