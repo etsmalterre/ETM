@@ -6,8 +6,9 @@
 //
 // So a line's share of a knitting order is no longer typed on the order: it is the yarn reserved to
 // the line that the order holds — `reservation_fil` rows on a lot with the knitting line
-// (idligne_commande_sous_traitant), written by the launch from the line and by « Réserver du fil »
-// on a lot in knitting. In écru: the scarcest yarn of the order's recipe decides, after the freinte
+// (idligne_commande_sous_traitant), written by the launch from a line (for every client line the
+// order knits for, LIVA #1398), by « Réserver du fil » on a lot in knitting, and by the order's
+// « Réservation » window (lib/engagement-tricotage.ts fixerPartTricotage). In écru: the scarcest yarn of the order's recipe decides, after the freinte
 // (a line holding the cotton of an order but not its élasthanne has no share yet). When the lines'
 // yarn makes more than the order knits (their 5 % safety margin goes to the knitter with them), the
 // shares are scaled to the order's quantity; and when it covers the whole order, nothing is for the

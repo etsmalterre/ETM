@@ -696,3 +696,107 @@ export async function fixerFilEnTricotage(p: {
   await reserverPiecesTricotees([k.id])
   return {}
 }
+
+// ── A client line's share of a knitting order, set from the order (LIVA #1398) ──
+
+export interface FilDePart { lot: number; asso: number; refFil: number; coloriFil: number; kg: number }
+
+/** Pure: the yarn an écru share of a knitting line stands for, lot by lot: every yarn of the recipe
+ *  ÷ (1 − freinte), spread over the lots feeding the line by their plan. */
+export function filDePart(k: Pick<LigneTricotage, 'paires' | 'lots' | 'freinte'>, ecru: number): FilDePart[] {
+  if (!(ecru > EPS)) return []
+  return autresFilsDe(k as LigneTricotage, { refFil: -1, coloriFil: -1 }, ecru)
+}
+
+/** Sets a client line's share of a knitting order of its écru, in écru kg, from the ORDER (the
+ *  « Réservation — Commande N° … » window of the client line's Tricotage tab).
+ *
+ *  Why (LIVA #1398, order 3957): a knitting order made big on purpose showed its « pour le stock »
+ *  part on every other client line of the same écru, but the click only read it: the share had to be
+ *  taken lot by lot in « Réserver du fil ». Two lines of 186A ended on two knitting orders.
+ *
+ *  Same writing as `fixerFilEnTricotage` (a share IS the yarn the line holds in the order,
+ *  lib/parts-tricotage.ts), reached by the écru: `ecru` = what the line holds of the order once done
+ *  (`'stock'` = its share + everything the order still brings for the stock). More: the stock part
+ *  first; beyond, another line's share: the plan comes back to validate (`arbitrage` false).
+ *  Less: the yarn goes back to the order's stock part. `apercu` writes nothing. */
+export async function fixerPartTricotage(p: {
+  ligne: number; lsst: number
+  ecru: number | 'stock'
+  /** the most écru the line may ADD (what it still has to knit, + 10 %) */
+  max?: number
+  arbitrage: boolean
+  apercu?: boolean
+  parId: number; par: string | null
+}): Promise<{
+  /** the line's share before and after, écru kg */
+  de: number; a: number
+  /** écru kg the order still brings for the stock, before */
+  stock: number
+  /** the yarn that follows the change (taken when `a` > `de`, given back otherwise) */
+  fil: FilDePart[]
+  arbitrage?: { libre: number; kg: number; effets: EffetArbitrage[]; cibles: CibleArbitrage[] }
+}> {
+  const sql = mpsPg()
+  const [k] = await lignesTricotage({ lignes: [p.lsst] }, sql)
+  if (!k || !k.ouverte) throw new RefusArbitrage('commande_close', 'Cette commande de tricotage est terminée.')
+  if (!k.lots.some((l) => l.asso > 0)) throw new RefusArbitrage('sans_lot', "Aucun lot de fil n'alimente cette commande de tricotage.")
+  const allocations = (await allocationsParLigneTricot([k.id])).get(k.id) ?? []
+  const r = lireRepartition({ quantite: k.quantite, pieces: k.pieces, allocations })
+  const moi = r.parts.find((x) => x.lcc === p.ligne)
+  const de = round2(moi?.reserve ?? 0)
+  const libre = round2(r.stock.aVenir)
+  const a = round2(p.ecru === 'stock' ? de + libre : Math.max(0, p.ecru))
+  const delta = round2(a - de)
+  const fmt = (x: number) => x.toLocaleString('fr-FR', { maximumFractionDigits: 1 })
+
+  if (delta < -EPS) {
+    const fil = filDePart(k, -delta)
+    if (!p.apercu) {
+      await sql.begin(async (t) => { await reduirePartFil(t as unknown as Sql, k, p.ligne, -delta) })
+      await reserverPiecesTricotees([k.id])
+    }
+    return { de, a, stock: libre, fil }
+  }
+  if (!(delta > EPS)) return { de, a: de, stock: libre, fil: [] }
+
+  if (p.max !== undefined && delta > p.max + 0.05) {
+    throw new RefusArbitrage('au_dela_du_besoin', `La ligne n'a plus que ${fmt(Math.max(0, p.max))} kg à faire tricoter.`)
+  }
+  const fil = filDePart(k, delta)
+  const manque = round2(delta - libre)
+  let arbitrage: { libre: number; kg: number; effets: EffetArbitrage[]; cibles: CibleArbitrage[] } | undefined
+  if (manque > EPS) {
+    // Beyond what the order knits for the stock: another client line of it gives up part of its
+    // share (the latest délai first), the order knits as much. Counted on the recipe's first yarn.
+    const p0 = k.paires.find((x) => x.pourcentage > 0)
+    const fil0 = (ecru: number) => (p0 ? filPourEcru(ecru * (p0.pourcentage / 100), k.freinte) : 0)
+    const autres = r.parts.filter((x) => x.lcc !== p.ligne && x.reste > EPS)
+    const resteAutres = autres.reduce((x, y) => x + y.reste, 0)
+    const cibles: CibleArbitrage[] = [{
+      lsst: k.id, commande: k.commande, quantite: k.quantite, pct: p0?.pourcentage ?? 0, freinte: k.freinte, garde: true,
+      reste: resteAutres, engage: fil0(resteAutres), stockAVenir: 0,
+      parts: autres.map((x) => ({ lcc: x.lcc, delai: x.delai, reste: x.reste })),
+    }]
+    const plan = planArbitrage(fil0(manque), cibles)
+    if (!plan.ok) {
+      const possible = p0 && p0.pourcentage > 0 ? ecruPourFil(plan.libere / (p0.pourcentage / 100), k.freinte) : 0
+      throw new RefusArbitrage('libre_insuffisant', `Cette commande de tricotage ne peut donner que ${fmt(libre + possible)} kg à la ligne.`)
+    }
+    arbitrage = { libre, kg: manque, effets: plan.effets, cibles }
+    if (p.apercu || !p.arbitrage) return { de, a, stock: libre, fil, arbitrage }
+    await appliquerArbitrage(plan.effets)
+  }
+  if (p.apercu) return { de, a, stock: libre, fil }
+  await sql.begin(async (t) => {
+    const tx = t as unknown as Sql
+    for (const x of fil) {
+      await tx`
+        INSERT INTO reservation_fil (idligne_commande_client, idref_fil, idcolori_fil, quantite, idstock_fil,
+                                     idligne_commande_sous_traitant, idasso_fil_lignecmdsst, cree_par_id, cree_par)
+        VALUES (${p.ligne}, ${x.refFil}, ${x.coloriFil}, ${x.kg}, ${x.lot}, ${k.id}, ${x.asso}, ${p.parId}, ${p.par})`
+    }
+  })
+  await reserverPiecesTricotees([k.id])
+  return { de, a, stock: libre, fil, ...(arbitrage ? { arbitrage } : {}) }
+}

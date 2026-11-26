@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { engagementParLot, lireRepartition, planArbitrage, resteATricoterPour, type CibleArbitrage, type PieceTricotage } from './engagement-tricotage.js'
+import { engagementParLot, filDePart, lireRepartition, planArbitrage, resteATricoterPour, type CibleArbitrage, type PieceTricotage } from './engagement-tricotage.js'
 import type { AllocationRepartition } from './repartition-tricotage.js'
 
 const a = (lcc: number, poids: number, delai = '', toute = false): AllocationRepartition => ({ lcc, poids, toute, delai })
@@ -142,5 +142,31 @@ describe('planArbitrage, the yarn changes hands inside the order', () => {
     }])
     expect(r.ok).toBe(true)
     expect(r.effets[0]).toMatchObject({ deQuantite: 1000, aQuantite: 1000, interne: true, lignes: [{ lcc: 2, perd: 100 }] })
+  })
+})
+
+describe('filDePart: the yarn an écru share of a knitting order stands for (LIVA #1398)', () => {
+  // 186 - écru on order 9190: yarn 10 on one lot, yarn 93 on a lot end and a second lot
+  const k = {
+    freinte: 0,
+    paires: [{ refFil: 10, coloriFil: 320, pourcentage: 70 }, { refFil: 93, coloriFil: 903, pourcentage: 30 }],
+    lots: [
+      { lot: 1809, refFil: 10, coloriFil: 320, plan: 71, of: 0, asso: 992 },
+      { lot: 1649, refFil: 93, coloriFil: 903, plan: 10, of: 0, asso: 993 },
+      { lot: 1685, refFil: 93, coloriFil: 903, plan: 30, of: 0, asso: 994 },
+    ],
+  }
+  it('every yarn of the recipe, spread over the lots feeding the order by their plan', () => {
+    expect(filDePart(k, 20)).toEqual([
+      { lot: 1809, asso: 992, refFil: 10, coloriFil: 320, kg: 14 },
+      { lot: 1649, asso: 993, refFil: 93, coloriFil: 903, kg: 1.5 },
+      { lot: 1685, asso: 994, refFil: 93, coloriFil: 903, kg: 4.5 },
+    ])
+  })
+  it('counts the freinte de tricotage: the yarn covers écru ÷ (1 − freinte)', () => {
+    expect(filDePart({ ...k, freinte: 0.05 }, 19)[0].kg).toBe(14)
+  })
+  it('nothing for no share', () => {
+    expect(filDePart(k, 0)).toEqual([])
   })
 })

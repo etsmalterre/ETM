@@ -5,9 +5,10 @@
 // `couvertureFils()`. Used by Clients › Commandes › Tricotage « Nouvelle commande » and by the
 // new-line form of Sous-traitants › Tricotage at Tricotage Malterre.
 //
-// Each lot reads only what the user can take here (Vincent: no initial stock, no « already
-// promised elsewhere »): Disponible, then how this order splits it — pour la commande / pour le
-// stock / reste libre — with a bar that moves while the weight is typed.
+// Each lot is ONE line (Vincent 2026-11-26, « on enlève et on va droit au but »): its number, then what
+// this order takes of it and what is left, or what is available when it is not ticked. The supplier,
+// the entry date and the split « commande / stock » are on the row's hover. Before: four figures, a
+// chip and a bar per lot, which made a launch for two yarns taller than the screen.
 import { useRef } from 'react'
 import { AlertCircle, CalendarClock, CheckCircle2 } from 'lucide-react'
 import { BobineIcon } from '@/components/icons/BobineIcon'
@@ -51,17 +52,35 @@ export const cleFil = (y: Pick<FilALancer, 'IDref_fil' | 'IDcolori_fil'>) => `${
 const filPour = (y: FilALancer, kgEcru: number) => (kgEcru * (y.pourcentage / 100)) / (1 - Math.min(0.49, y.freinte ?? 0))
 const besoinDe = (y: FilALancer, totalKg: number) => Math.round(filPour(y, totalKg) * 100) / 100
 
-/** Same order as the server's plan (the lots arrive sorted): as many lots as the need takes. */
+/** Same order as the server's plan (the lots arrive sorted): as many lots as the need takes, and
+ *  every lot holding a reservation of the launch (API lotsParDefaut). */
 function lotsParDefaut(y: FilALancer, besoin: number): number[] {
   const out: number[] = []
   let reste = besoin
   for (const l of y.stock) {
-    if (!(reste > 0.005)) break
+    if (!(reste > 0.005) && !(l.reserve_ligne > 0)) continue
     if (!(l.poids > 0)) continue
     out.push(l.id)
     reste -= l.poids
   }
   return out
+}
+
+/** The yarns as a launch for SEVERAL client lines sees them (LIVA #1398, API avecLignesJointes): what
+ *  the joining lines hold on a lot is no longer « elsewhere »: it is free for this order and reserved
+ *  to it. Lots are put back in the order of service (reserved first, then the oldest). */
+export function avecLignesJointes(yarns: readonly FilALancer[], lots: readonly { id: number; kg: number }[]): FilALancer[] {
+  if (lots.length === 0) return [...yarns]
+  const plus = new Map<number, number>()
+  for (const l of lots) plus.set(l.id, (plus.get(l.id) ?? 0) + l.kg)
+  return yarns.map((y) => ({
+    ...y,
+    stock: y.stock
+      .map((l) => ({ ...l, poids: l.poids + (plus.get(l.id) ?? 0), reserve_ligne: l.reserve_ligne + (plus.get(l.id) ?? 0) }))
+      .sort((a, b) => Number(b.reserve_ligne > 0) - Number(a.reserve_ligne > 0)
+        || (a.date_entree || '99999999').localeCompare(b.date_entree || '99999999')
+        || a.id - b.id),
+  }))
 }
 
 export function lotsDuFil(y: FilALancer, totalKg: number, choix: ChoixLots): number[] {
@@ -81,10 +100,6 @@ export function couvertureFils(yarns: readonly FilALancer[], totalKg: number, ch
   return { lots, couvert }
 }
 
-/** Bar + column colours: this order's two parts in the CA widget's validated palette slots, the
- *  rest grey (what is left, not a series). */
-const COULEUR = { commande: '#2a78d6', stock: '#1baf7a', reste: '#e4e4e7' }
-
 interface Prise { commande: number; stock: number }
 
 /** Per ticked lot, in the plan's order: the client part first, then the stock part. */
@@ -95,11 +110,21 @@ function prises(y: FilALancer, ids: readonly number[], kgCommande: number, kgSto
   const reserve = emporterReserve ? y.stock.filter((l) => ids.includes(l.id)).reduce((s, l) => s + (Number(l.reserve_ligne) || 0), 0) : 0
   let resteCmd = kgCommande > 0 ? Math.max(filPour(y, kgCommande), reserve) : 0
   let resteStock = filPour(y, kgStock)
-  for (const l of y.stock) {
-    if (!ids.includes(l.id)) continue
-    const commande = Math.max(0, Math.min(l.poids, resteCmd))
+  const choisis = y.stock.filter((l) => ids.includes(l.id))
+  // What is reserved on a lot goes first, lot by lot (API planLancement): a reservation names its lot.
+  const cmd = new Map<number, number>()
+  if (emporterReserve) {
+    for (const l of choisis) {
+      const kg = Math.max(0, Math.min(l.poids, Number(l.reserve_ligne) || 0, resteCmd))
+      cmd.set(l.id, kg)
+      resteCmd -= kg
+    }
+  }
+  for (const l of choisis) {
+    const deja = cmd.get(l.id) ?? 0
+    const commande = deja + Math.max(0, Math.min(l.poids - deja, resteCmd))
     const stock = Math.max(0, Math.min(l.poids - commande, resteStock))
-    resteCmd -= commande
+    resteCmd -= commande - deja
     resteStock -= stock
     out.set(l.id, { commande, stock })
   }
@@ -107,7 +132,7 @@ function prises(y: FilALancer, ids: readonly number[], kgCommande: number, kgSto
 }
 
 export function LotsFilPicker({
-  yarns, kgCommande, kgStock, choix, onChoix, magasinNom, disabled, aideEnCommande, libelleCommande = 'Pour la commande', emporterReserve = false,
+  yarns, kgCommande, kgStock, choix, onChoix, magasinNom, disabled, aideEnCommande, emporterReserve = false, lectureSeule = false,
 }: {
   yarns: readonly FilALancer[]
   /** kg of écru for the client order (or the sst line) */
@@ -121,7 +146,10 @@ export function LotsFilPicker({
   disabled?: boolean
   /** what to do with yarn still on order, under a short yarn's supplier orders */
   aideEnCommande?: string
-  libelleCommande?: string
+  /** a launch from a client line: nothing to tick (Vincent 2026-11-26). The order leaves with the yarn
+   *  reserved to its lines, lot by lot, so the lots are a reading: only those that give yarn, with
+   *  their kg. The stock part takes free yarn of those same lots first, then of the oldest lot. */
+  lectureSeule?: boolean
   /** a launch from a client line: the order part takes every kg reserved to the line (margin included) */
   emporterReserve?: boolean
 }) {
@@ -201,67 +229,62 @@ export function LotsFilPicker({
                 Aucun lot{magasinNom ? ` chez ${magasinNom}` : ''}
               </p>
             ) : (
-              <div className="px-3 pb-3 space-y-2">
+              <div className="px-3 pb-3 space-y-1.5">
                 {y.stock.map((l) => {
                   const coche = ids.includes(l.id)
                   const vide = !(l.poids > 0)
                   const p = parLot.get(l.id) ?? { commande: 0, stock: 0 }
-                  const reste = Math.max(0, l.poids - p.commande - p.stock)
-                  const w = (x: number) => (l.poids > 0 ? `${(x / l.poids) * 100}%` : '0%')
+                  const pris = p.commande + p.stock
+                  const reste = Math.max(0, l.poids - pris)
+                  // The detail the line no longer prints: where the lot comes from, what is reserved on it,
+                  // how the order splits what it takes.
+                  const detail = [
+                    [l.fournisseur, l.date_entree ? `entré le ${formatHfsqlDate(l.date_entree)}` : ''].filter(Boolean).join(' · '),
+                    l.reserve_ligne > 0 ? `${fmtNum(l.reserve_ligne, 1)} kg réservés aux lignes de cette commande de tricotage` : '',
+                    coche && avecStock && p.stock > 0.05 ? `${fmtNum(p.commande, 1)} kg pour les lignes client, ${fmtNum(p.stock, 1)} kg pour le stock` : '',
+                  ].filter(Boolean).join('\n')
+                  if (lectureSeule) {
+                    if (!coche || !(pris > 0.005)) return null
+                    return (
+                      <div
+                        key={l.id}
+                        title={[detail, `reste ${fmtNum(reste, 1)} kg libres sur le lot`].filter(Boolean).join('\n')}
+                        className="flex items-center gap-2.5 rounded-md border border-border/60 bg-zinc-50 px-2.5 py-1.5"
+                      >
+                        <span className="text-sm tabular-nums">Lot {l.lot || '—'}</span>
+                        <span className="ml-auto flex-shrink-0 text-sm font-semibold tabular-nums">{fmtNum(pris, 1)} kg</span>
+                      </div>
+                    )
+                  }
                   return (
                     <div
                       key={l.id}
+                      title={detail || undefined}
                       onClick={(e) => { if (!vide && !disabled) toggle(l.id, e.shiftKey) }}
                       className={cn(
-                        'rounded-md border px-2.5 py-2 select-none transition-colors',
+                        'flex items-center gap-2.5 rounded-md border px-2.5 py-1.5 select-none transition-colors',
                         coche ? 'border-accent/50 bg-accent/[0.06]' : 'border-border/60 bg-zinc-50',
                         vide || disabled ? 'opacity-50' : 'cursor-pointer hover:border-accent/50',
                       )}
                     >
-                      <div className="flex items-center gap-2.5">
-                        <input
-                          type="checkbox"
-                          checked={coche}
-                          disabled={vide || disabled}
-                          readOnly
-                          className="h-4 w-4 rounded border-input text-accent pointer-events-none flex-shrink-0"
-                        />
-                        <span className="text-sm font-semibold tabular-nums">Lot {l.lot || '—'}</span>
-                        <span className="min-w-0 truncate text-xs text-muted-foreground">
-                          {[l.fournisseur, l.date_entree ? `entré le ${formatHfsqlDate(l.date_entree)}` : ''].filter(Boolean).join(' · ')}
+                      <input
+                        type="checkbox"
+                        checked={coche}
+                        disabled={vide || disabled}
+                        readOnly
+                        className="h-4 w-4 rounded border-input text-accent pointer-events-none flex-shrink-0"
+                      />
+                      <span className="text-sm font-semibold tabular-nums">Lot {l.lot || '—'}</span>
+                      {coche ? (
+                        <span className="ml-auto flex-shrink-0 text-sm tabular-nums">
+                          <span className="font-semibold">{fmtNum(pris, 1)} kg</span>
+                          <span className="text-muted-foreground"> pris · reste {fmtNum(reste, 1)} kg</span>
                         </span>
-                        {l.reserve_ligne > 0 && (
-                          <span className="flex-shrink-0 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800">
-                            {fmtNum(l.reserve_ligne, 1)} kg réservés pour cette ligne
-                          </span>
-                        )}
-                        {/* Not ticked: one line, what can be taken. Ticked: the detail opens below. */}
-                        {!coche && (
-                          <span className="ml-auto flex-shrink-0 text-sm tabular-nums">
-                            <span className="font-semibold">{fmtNum(l.poids, 1)} kg</span>
-                            <span className="text-muted-foreground"> disponibles</span>
-                          </span>
-                        )}
-                      </div>
-
-                      {coche && (
-                        <>
-                          <div className={cn('mt-2.5 grid gap-2', avecStock ? 'grid-cols-4' : 'grid-cols-3')}>
-                            <Chiffre label="Disponible" kg={l.poids} />
-                            <Chiffre label={libelleCommande} kg={p.commande} couleur={COULEUR.commande} />
-                            {avecStock && <Chiffre label="Pour le stock" kg={p.stock} couleur={COULEUR.stock} />}
-                            <Chiffre label="Reste libre" kg={reste} fort />
-                          </div>
-
-                          <div className="mt-2 flex h-2 w-full overflow-hidden rounded-full" style={{ backgroundColor: COULEUR.reste }}>
-                            {p.commande > 0 && (
-                              <div className="h-full transition-[width] duration-200" style={{ width: w(p.commande), backgroundColor: COULEUR.commande }} />
-                            )}
-                            {p.stock > 0 && (
-                              <div className="h-full border-l-2 border-white transition-[width] duration-200" style={{ width: w(p.stock), backgroundColor: COULEUR.stock }} />
-                            )}
-                          </div>
-                        </>
+                      ) : (
+                        <span className="ml-auto flex-shrink-0 text-sm tabular-nums">
+                          <span className="font-semibold">{fmtNum(l.poids, 1)} kg</span>
+                          <span className="text-muted-foreground"> disponibles{l.reserve_ligne > 0 ? `, dont ${fmtNum(l.reserve_ligne, 1)} réservés` : ''}</span>
+                        </span>
                       )}
                     </div>
                   )
@@ -284,19 +307,6 @@ export function LotsFilPicker({
           </div>
         )
       })}
-    </div>
-  )
-}
-
-/** One labelled figure of a ticked lot. */
-function Chiffre({ label, kg, couleur, fort }: { label: string; kg: number; couleur?: string; fort?: boolean }) {
-  return (
-    <div className="min-w-0">
-      <p className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground truncate">
-        {couleur && <span className="h-2 w-2 flex-shrink-0 rounded-sm" style={{ backgroundColor: couleur }} />}
-        {label}
-      </p>
-      <p className={cn('text-sm tabular-nums', fort ? 'font-bold' : 'font-medium')}>{fmtNum(kg, 1)} kg</p>
     </div>
   )
 }

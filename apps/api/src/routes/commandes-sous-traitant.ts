@@ -113,7 +113,7 @@ import { valeurStab } from '../lib/stabilites.js'
 import { jourDe, ligneLivreeLe } from '../lib/ligne-sst-livree.js'
 import { freinteTricotage, filPourEcru, ecruPourFil } from '../lib/freinte-tricotage.js'
 import {
-  couvertureLigne, ecrireAffectation, filsALancer, lotsLibres, messageFilNonCouvert, nomsFils, planLancement, type PlanLancement,
+  couvertureLigne, ecrireAffectation, filsALancer, lotsLibres, messageFilNonCouvert, nomsFils, planLancement, rendreFilDesLignes, type PlanLancement,
 } from '../lib/lancement-tricotage.js'
 
 const upload = multer({ storage: multer.memoryStorage() })
@@ -5028,9 +5028,9 @@ commandesSousTraitantRouter.delete('/:id', async (req: Request, res: Response) =
         `UPDATE stock_ecru SET IDref_commande_affectation = 0
          WHERE IDref_commande_affectation IN (${lineIds.join(',')})`,
       )
-      // Yarn lots affected to the lines (asso_fil_lignecmdsst) were left
-      // orphaned by the previous delete — they would keep the fil reserved.
-      await query(`DELETE FROM asso_fil_lignecmdsst WHERE IDligne_commande_sous_traitant IN (${lineIds.join(',')})`)
+      // The yarn goes back: the lots' links are removed and what the order held for client lines is
+      // reserved to them in stock again (lib/lancement-tricotage.ts rendreFilDesLignes).
+      await rendreFilDesLignes(lineIds)
     }
 
     // Mirror first: its lines carry back-pointers to the sst lines.
@@ -5542,6 +5542,9 @@ commandesSousTraitantRouter.delete('/lignes/:lineId', async (req: Request, res: 
 
     // Clear ecru affectations pointing at this line (rolls go back to stock).
     await query(`UPDATE stock_ecru SET IDref_commande_affectation = 0 WHERE IDref_commande_affectation = ${lineId}`)
+    // A knitting line gives its yarn back to the client lines it knitted for (LIVA #1398: this delete
+    // left 17 kg « pris par le tricotage » on an order that no longer existed).
+    await rendreFilDesLignes([lineId])
     await query(`DELETE FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant = ${lineId}`)
 
     // Refresh cc.ref_client now that one line is gone.
@@ -6533,7 +6536,7 @@ interface LectureTricotagePayload {
   chez_tricoteur: number
   a_venir: number
   sur_promesse: number
-  parts: { lcc: number; client_nom: string | null; commande_numero: number | null; article: string | null; delai: string | null; reserve: number; recu: number; reste: number; toute: boolean }[]
+  parts: { lcc: number; client_nom: string | null; commande_numero: number | null; article: string | null; delai: string | null; reserve: number; recu: number; reste: number; toute: boolean; fil: { nom: string; kg: number }[] }[]
   autres: { lcc: number; client_nom: string | null; commande_numero: number | null; article: string | null; don: boolean; recu: number }[]
   stock: { recu: number; a_venir: number }
 }
@@ -6545,7 +6548,22 @@ async function lecturePourTiroir(ligneId: number): Promise<{ lecture: LectureTri
   // commandes-client.ts imports this file: its label helper is loaded when the route runs, not when
   // the module is evaluated.
   const { articlesDesLignesClient } = await import('./commandes-client.js')
-  const [{ clientByLcc, commandeNumByLcc }, articles] = await Promise.all([reservationsClient(lccs), articlesDesLignesClient(lccs)])
+  const [{ clientByLcc, commandeNumByLcc }, articles, filTenu] = await Promise.all([
+    reservationsClient(lccs),
+    articlesDesLignesClient(lccs),
+    // The yarn each client line holds in the order: what its share is made of (LIVA #1398: how much
+    // yarn leaves for which client is read on the order, not worked out).
+    mpsPg()<{ lcc: number; ref: number; col: number; kg: number }[]>`
+      SELECT idligne_commande_client AS lcc, idref_fil AS ref, idcolori_fil AS col, SUM(quantite)::float8 AS kg
+        FROM reservation_fil
+       WHERE idligne_commande_sous_traitant = ${ligneId} AND liberee_le IS NULL
+       GROUP BY idligne_commande_client, idref_fil, idcolori_fil
+       ORDER BY idref_fil, idcolori_fil`,
+  ])
+  const nomsFil = await nomsFils(filTenu.map((f) => ({ refFil: Number(f.ref), coloriFil: Number(f.col), pourcentage: 0 })))
+  const filDe = (lcc: number) => filTenu.filter((f) => Number(f.lcc) === lcc).map((f) => ({
+    nom: nomsFil.get(`${Number(f.ref)}:${Number(f.col)}`) ?? `fil ${f.ref}`, kg: Math.round((Number(f.kg) || 0) * 100) / 100,
+  }))
   const qui = (lcc: number) => ({
     client_nom: clientByLcc.get(lcc) ?? null,
     commande_numero: commandeNumByLcc.get(lcc) ?? null,
@@ -6560,7 +6578,7 @@ async function lecturePourTiroir(ligneId: number): Promise<{ lecture: LectureTri
       chez_tricoteur: l.chezTricoteur,
       a_venir: l.aVenir,
       sur_promesse: l.surPromesse,
-      parts: l.parts.map((p) => ({ lcc: p.lcc, ...qui(p.lcc), delai: /^\d{8}$/.test(p.delai) ? p.delai : null, reserve: p.reserve, recu: p.recu, reste: p.reste, toute: p.toute })),
+      parts: l.parts.map((p) => ({ lcc: p.lcc, ...qui(p.lcc), delai: /^\d{8}$/.test(p.delai) ? p.delai : null, reserve: p.reserve, recu: p.recu, reste: p.reste, toute: p.toute, fil: filDe(p.lcc) })),
       autres: l.autres.map((a) => ({ lcc: a.lcc, ...qui(a.lcc), don: a.don, recu: a.recu })),
       stock: { recu: l.stock.recu, a_venir: l.stock.aVenir },
     },
@@ -6992,13 +7010,8 @@ commandesSousTraitantRouter.delete(
         return
       }
 
-      await query(
-        `DELETE FROM asso_fil_lignecmdsst WHERE IDligne_commande_sous_traitant = ${ligneId}`,
-      )
       // The yarn the order held for client lines goes back to its lots, still reserved to them.
-      await mpsPg()`
-        UPDATE reservation_fil SET idligne_commande_sous_traitant = 0, idasso_fil_lignecmdsst = 0
-         WHERE idligne_commande_sous_traitant = ${ligneId} AND liberee_le IS NULL`
+      await rendreFilDesLignes([ligneId])
 
       res.json({ ok: true, payload: await fetchPiecesFilPayload(ctx, ligneId) })
     } catch (err) {

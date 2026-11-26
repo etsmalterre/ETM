@@ -11,7 +11,7 @@ export interface LectureTricotage {
   chez_tricoteur: number
   a_venir: number
   sur_promesse: number
-  parts: { lcc: number; client_nom: string | null; commande_numero: number | null; article: string | null; delai: string | null; reserve: number; recu: number; reste: number; toute: boolean }[]
+  parts: { lcc: number; client_nom: string | null; commande_numero: number | null; article: string | null; delai: string | null; reserve: number; recu: number; reste: number; toute: boolean; fil?: { nom: string; kg: number }[] }[]
   autres: { lcc: number; client_nom: string | null; commande_numero: number | null; article: string | null; don: boolean; recu: number }[]
   stock: { recu: number; a_venir: number }
 }
@@ -75,6 +75,7 @@ export function ReservationsTricotage({ lecture, ligneCourante }: {
               <th className={cn(th, 'text-left')}>Article</th>
               <th className={cn(th, 'text-left')}>Prête le</th>
               <th className="px-2.5 py-2 w-full" />
+              <th className={cn(th, 'text-right')} title="Le fil que la ligne tient dans la commande : c'est lui qui fait sa part">Fil tenu</th>
               <th className={cn(th, 'text-right')}>Réservé</th>
               <th className={cn(th, 'text-right')} title="Pièces déjà livrées et réservées à la ligne">Reçu</th>
               <th className={cn(th, 'text-right')} title="Ce que la commande doit encore lui apporter">Reste à recevoir</th>
@@ -87,6 +88,11 @@ export function ReservationsTricotage({ lecture, ligneCourante }: {
                 <td className={td}>{p.article || '—'}</td>
                 <td className={cn(td, 'text-muted-foreground tabular-nums')}>{p.delai ? formatHfsqlDate(p.delai) : '—'}</td>
                 <td className={td} />
+                {/* how much yarn leaves for this client: the total, each yarn on hover */}
+                <td className={cn(td, 'text-right tabular-nums text-muted-foreground')}
+                  title={(p.fil ?? []).map((f) => `${f.nom} : ${fmtNum(f.kg, 1)} kg`).join('\n') || undefined}>
+                  {kg((p.fil ?? []).reduce((s, f) => s + f.kg, 0))}
+                </td>
                 <td className={cn(td, 'text-right tabular-nums')}>
                   {p.toute && <span className="mr-1.5 text-[10px] text-muted-foreground">tout le reste</span>}
                   {kg(p.reserve)}
@@ -103,6 +109,7 @@ export function ReservationsTricotage({ lecture, ligneCourante }: {
                 <td className={td}>{a.article || '—'}</td>
                 <td className={cn(td, 'text-muted-foreground')} colSpan={2}>{a.don ? 'données' : 'hors réservation'}</td>
                 <td className={cn(td, 'text-right tabular-nums text-muted-foreground')}>—</td>
+                <td className={cn(td, 'text-right tabular-nums text-muted-foreground')}>—</td>
                 <td className={cn(td, 'text-right tabular-nums')}>{kg(a.recu)}</td>
                 <td className={cn(td, 'text-right tabular-nums text-muted-foreground')}>—</td>
               </tr>
@@ -111,6 +118,7 @@ export function ReservationsTricotage({ lecture, ligneCourante }: {
               <td className={cn(td, 'font-medium')}>Stock</td>
               <td className={cn(td, 'text-muted-foreground')} colSpan={3}>non réservé</td>
               <td className={cn(td, 'text-right tabular-nums text-muted-foreground')}>—</td>
+              <td className={cn(td, 'text-right tabular-nums text-muted-foreground')}>—</td>
               <td className={cn(td, 'text-right tabular-nums')}>{kg(lecture.stock.recu)}</td>
               <td className={cn(td, 'text-right tabular-nums font-medium')}>{kg(lecture.stock.a_venir)}</td>
             </tr>
@@ -118,7 +126,7 @@ export function ReservationsTricotage({ lecture, ligneCourante }: {
           <tfoot className="bg-zinc-100/80 border-t border-border/60">
             <tr className="font-semibold">
               {/* The order's own line: ordered, delivered, still to come — what the rows above share. */}
-              <td className={td} colSpan={4}>La commande</td>
+              <td className={td} colSpan={5}>La commande</td>
               <td className={cn(td, 'text-right tabular-nums')}>{kg(lecture.quantite)}</td>
               <td className={cn(td, 'text-right tabular-nums')}>{kg(livre)}</td>
               <td className={cn(td, 'text-right tabular-nums')}>{kg(lecture.a_venir)}</td>

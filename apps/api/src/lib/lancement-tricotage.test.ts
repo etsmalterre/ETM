@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { planLancement, lotsParDefaut, filNonReserve, ecruCouvertParReservation, type LotLibre } from './lancement-tricotage.js'
+import { planLancement, lotsParDefaut, filNonReserve, ecruCouvertParReservation, avecLignesJointes, lotsDeLigneJointe, type LotLibre } from './lancement-tricotage.js'
 
 const lot = (o: Partial<LotLibre> & { id: number }): LotLibre => ({
   refFil: 1, coloriFil: 10, lot: `L${o.id}`, dateEntree: '20260101', idRefFilCommande: 0, magasin: 1, fournisseur: 0, stockInitial: 0,
@@ -92,5 +92,75 @@ describe('filNonReserve: the line part of a launch takes reserved yarn only (202
     expect(ecruCouvertParReservation({ paires, lots })).toBe(50)
     expect(ecruCouvertParReservation({ paires, lots, freinte: 0.1 })).toBe(45)
     expect(ecruCouvertParReservation({ paires, lots: [] })).toBe(0)
+  })
+})
+
+// LIVA #1398, order 3957: two lines of 186A (two dyed coloris) knitted in the same écru 186 - écru,
+// one knitting order for both. Yarn 10 on one lot for both lines; yarn 93 on a lot end (line 1) and
+// on a second lot (both lines). Freinte left at 0 to keep the figures readable.
+describe('one knitting order for several client lines (LIVA #1398)', () => {
+  const p3957 = [{ refFil: 10, coloriFil: 320, pourcentage: 70 }, { refFil: 93, coloriFil: 903, pourcentage: 30 }]
+  const lots = [
+    lot({ id: 1809, refFil: 10, coloriFil: 320, libre: 440, reserveLigne: 71, reserveJointes: [{ ligne: 13476, kg: 15 }] }),
+    lot({ id: 1649, refFil: 93, coloriFil: 903, libre: 17.35, reserveLigne: 17.35, dateEntree: '20250101' }),
+    lot({ id: 1685, refFil: 93, coloriFil: 903, libre: 547, reserveLigne: 20.65, reserveJointes: [{ ligne: 13476, kg: 8 }] }),
+  ]
+
+  it('what a joining line holds counts as reserved to the launch, another line’s yarn does not', () => {
+    const vus = avecLignesJointes(lots, [13476])
+    expect(vus.map((l) => l.reserveLigne)).toEqual([86, 17.35, 28.65])
+    expect(avecLignesJointes(lots, [999]).map((l) => l.reserveLigne)).toEqual([71, 17.35, 20.65])
+  })
+
+  it('a joining line’s part is what ITS yarn makes, the scarcest yarn deciding', () => {
+    // 15 kg of yarn 10 make 21,42 kg of écru, 8 kg of yarn 93 make 26,66: the first decides
+    expect(ecruCouvertParReservation({ paires: p3957, lots: lotsDeLigneJointe(lots, 13476) })).toBe(21.42)
+    expect(ecruCouvertParReservation({ paires: p3957, lots: lotsDeLigneJointe(lots, 999) })).toBe(0)
+  })
+
+  it('the order takes every kg reserved to both lines, lot by lot', () => {
+    // line 1: 101,4 kg; line 2: 21,42 kg
+    const plan = planLancement({ totalKg: 122.82, paires: p3957, lots: avecLignesJointes(lots, [13476]), choisis: [1809, 1649, 1685], emporterReserve: true })
+    expect(plan.ok).toBe(true)
+    expect(plan.entrees).toEqual([
+      { lot: 1809, refFil: 10, coloriFil: 320, kg: 86 },
+      { lot: 1649, refFil: 93, coloriFil: 903, kg: 17.35 },
+      { lot: 1685, refFil: 93, coloriFil: 903, kg: 28.65 },
+    ])
+  })
+
+  it('two lines holding the same yarn on two lots: each lot gives what is reserved on it', () => {
+    // Before, the oldest reserved lot took the whole need and the second line's yarn stayed at home.
+    const deux = [
+      lot({ id: 1, libre: 500, reserveLigne: 60, dateEntree: '20250101' }),
+      lot({ id: 2, libre: 300, reserveLigne: 0, reserveJointes: [{ ligne: 7, kg: 40 }], dateEntree: '20260101' }),
+    ]
+    const plan = planLancement({ totalKg: 100, paires: [paires[0]], lots: avecLignesJointes(deux, [7]), choisis: [1, 2], emporterReserve: true })
+    expect(plan.entrees).toEqual([
+      { lot: 1, refFil: 1, coloriFil: 10, kg: 60 },
+      { lot: 2, refFil: 1, coloriFil: 10, kg: 40 },
+    ])
+  })
+
+  it('on top of the reservations, the stock part fills from the order of service', () => {
+    const deux = [
+      lot({ id: 1, libre: 500, reserveLigne: 60, dateEntree: '20250101' }),
+      lot({ id: 2, libre: 300, reserveLigne: 40, dateEntree: '20260101' }),
+    ]
+    // 94 kg reserved yarn asked + 47 for the stock: the oldest reserved lot gives the rest
+    const plan = planLancement({ totalKg: 150, paires: [paires[0]], lots: deux, choisis: [1, 2], emporterReserve: true })
+    expect(plan.entrees).toEqual([
+      { lot: 1, refFil: 1, coloriFil: 10, kg: 101 },
+      { lot: 2, refFil: 1, coloriFil: 10, kg: 40 },
+    ])
+  })
+
+  it('the default ticks every lot holding a reservation of the launch, even once the need is covered', () => {
+    const deux = [
+      lot({ id: 1, libre: 500, reserveLigne: 60, dateEntree: '20250101' }),
+      lot({ id: 2, libre: 300, reserveLigne: 40, dateEntree: '20260101' }),
+      lot({ id: 3, libre: 900, dateEntree: '20240101' }),
+    ]
+    expect(lotsParDefaut(deux, 94)).toEqual([1, 2])
   })
 })

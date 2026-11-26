@@ -87,11 +87,10 @@ import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/compone
 import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
 import { FilEnStockZone, FilLigneTab, filLigneQueryKey, tricoteursPrets, useFilLigne, type FilPayload } from '@/components/fils/FilLigneTab'
 import { AffecteGauge, ChoixQuantite, RepartitionCommande, COULEURS_AUTRES_LIGNES, type PartCommande } from '@/components/commandes/ReservationParts'
-import { ReservationsTricotage, type LectureTricotage } from '@/components/commandes/ReservationsTricotage'
 import { EcruLigneZone, PieceEcruLigne, PiecesEcruCarte, lieuxAEnnoblir, matiereEcruQueryKey, useMatiereEcru, type LieuEnnoblisseur } from '@/components/commandes/EcruLigneZone'
 import { BoutonsCommande, ZoneLigne } from '@/components/commandes/ZonesLigne'
 import { GESTES_TROP_TARD, LancementLabel, PlanifierBouton, UrgencePrevueBouton, UrgencePrevueLabel, type EtapeLancement, type UrgenceApresTricotage, type UrgencePrevue } from '@/components/commandes/LancementLigne'
-import { LotsFilPicker, couvertureFils, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
+import { LotsFilPicker, couvertureFils, avecLignesJointes, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
 import { RappelButton } from '@/components/rappels/RappelButton'
 
 // ── Types ──────────────────────────────────────────────
@@ -453,6 +452,8 @@ interface SupplyTricoRow {
   poids_disponible: number
   poids_affecte: number
   metrage_potentiel: number
+  /** écru kg the order still brings that no client line holds: what this line can reserve on it */
+  pour_stock?: number
   /** the knitting line's quantity, kg */
   quantite: number
   /** « Toute la commande »: every knitted piece goes to this line (API lib/repartition-tricotage.ts) */
@@ -464,7 +465,7 @@ interface SupplyTricoRow {
   poids_reste?: number
   metrage_reste?: number
   /** the other client lines' reservations on this knitting order */
-  autres_reservations: { client_nom: string | null; commande_numero: number | null; article?: string | null; poids: number; toute_commande: boolean }[]
+  autres_reservations: { ligne_id?: number; client_nom: string | null; commande_numero: number | null; article?: string | null; poids: number; toute_commande: boolean }[]
 }
 interface SupplyEnnoRow {
   id: number
@@ -2867,7 +2868,6 @@ function AffectationDrawer({
   // Tricotage row clicked → adjust this line's planning allocation on that knitting order.
   const [tricoTarget, setTricoTarget] = useState<SupplyTricoRow | null>(null)
   // A knitting order knitting our yarn: its reservations, read only (the share is the yarn held there).
-  const [tricoVue, setTricoVue] = useState<SupplyTricoRow | null>(null)
   // "Nouvelle commande" on a location row → open the create-order modal scoped to it.
   const [createEnnoLocation, setCreateEnnoLocation] = useState<LieuEnnoblisseur | null>(null)
   // "Nouvelle commande" on a stock-fil location band → knit-order modal
@@ -3263,11 +3263,12 @@ function AffectationDrawer({
               rows={supply?.tricotage ?? []}
               emptyLabel="Aucune commande tricotage en cours"
               emptyIcon={KnitIcon}
-              // A share is typed on a knitting order only when the knitter brings the yarn (an entry
-              // point, Vincent 2026-11-13). On an order knitting our yarn the line's share is the yarn it
-              // holds there (reserved above, on the lot « en tricotage »): the click shows who the order
-              // knits for, read only.
-              onRowClick={(r) => (r.entree ? setTricoTarget(r) : setTricoVue(r))}
+              // One click, one window, « Réservation — Commande N° … »: the line takes a share of the
+              // order. Typed on the order when the knitter brings the yarn (an entry point, Vincent
+              // 2026-11-13); on an order knitting our yarn the share is the yarn the line holds in it,
+              // set from the same window since LIVA #1398 (it was read only, and sent the person to
+              // « Réserver du fil », lot by lot).
+              onRowClick={(r) => setTricoTarget(r)}
               columns={[
                 { key: 'no', label: 'N°', align: 'left', render: (r) => {
                   // The yarn this order took from the line's reservation (it carries the matter now).
@@ -3298,7 +3299,12 @@ function AffectationDrawer({
                 { key: 'dc', label: 'Date', align: 'left', render: (r) => fmtSupplyDate(r.date_commande) },
                 { key: 'sst', label: 'Tricoteur', align: 'left', render: (r) => r.sous_traitant_nom || '—' },
                 { key: 'dl', label: 'Délai', align: 'left', render: (r) => fmtSupplyDate(r.date_livraison) },
-                { key: 'di', label: 'Poids dispo.', align: 'right', render: (r) => `${fmtNum(r.poids_disponible, 1)} Kg` },
+                // What the order still brings that no client line holds: a click reserves it for this line.
+                { key: 'di', label: 'Pour le stock', align: 'right', render: (r) => (
+                  <span title="Ce que la commande tricote encore pour le stock : cliquez pour en réserver à la ligne">
+                    {fmtNum(r.pour_stock ?? r.poids_disponible, 1)} Kg
+                  </span>
+                ) },
                 // What is still to come from the order, as the zone above shows the yarn still to knit: the
                 // pieces already received are tombé de métier now (Ennoblissement tab), never counted twice.
                 { key: 'af', label: 'À recevoir', align: 'right', render: (r) => (
@@ -3371,11 +3377,11 @@ function AffectationDrawer({
         }}
       />
     )}
-    {tricoVue && (
-      <ReservationsTricotageDialog row={tricoVue} ligneId={ligne.IDligne_commande_client} onClose={() => setTricoVue(null)} />
-    )}
-    {tricoTarget && (
-      <TricotageAffectationDialog
+    {tricoTarget && (() => {
+      // The knitter brings the yarn: the share is typed on the order. Our yarn: it is yarn held in it.
+      const FenetreReservation = tricoTarget.entree ? TricotageAffectationDialog : PartTricotageDialog
+      return (
+      <FenetreReservation
         commandeId={commandeId}
         ligneId={ligne.IDligne_commande_client}
         row={tricoTarget}
@@ -3397,10 +3403,13 @@ function AffectationDrawer({
           // Knitted pieces still free are reserved to the line by the save (LIVA #1350).
           invalidateStockCaches(queryClient)
           invalidateSstCommandeCaches(queryClient)
+          // A share of an order knitting our yarn is yarn: the Fil / Tricotage zones move too.
+          queryClient.invalidateQueries({ queryKey: filLigneQueryKey(commandeId, ligne.IDligne_commande_client) })
           onSuccess()
         }}
       />
-    )}
+      )
+    })()}
     {createEnnoLocation && (
       <CreateEnnoblisseurOrderDialog
         commandeId={commandeId}
@@ -5284,32 +5293,179 @@ function EnnoblissementAffectationDialog({
 // here: a line's share is the yarn it holds in the order (« Réserver du fil », lot « en tricotage »).
 // §18.D banded dialog.
 
-function ReservationsTricotageDialog({ row, ligneId, onClose }: { row: SupplyTricoRow; ligneId: number; onClose: () => void }) {
-  const { data, isLoading, isError } = useQuery<{ lecture: LectureTricotage | null }>({
-    queryKey: ['commande-sst-reservations', row.commande_id, row.id],
-    queryFn: () => apiFetch(`/commandes-sous-traitant/${row.commande_id}/lignes/${row.id}/reservations`),
+/** What a choice takes on an order knitting our yarn (API PUT …/affectation with `apercu`). */
+interface PartTricotApercu {
+  /** the line's share before / after, écru kg */
+  de: number
+  a: number
+  /** écru kg the order still brings that no client line holds */
+  pour_stock: number
+  /** the most the line may hold of the order: its share + what it still has to knit, + 10 % */
+  max: number
+  /** écru kg the line still has to knit, its share of this order counted */
+  besoin: number
+  fil: { fil: string; lot: string; kg: number }[]
+  liberes: { fil: string; lot: string; kg: number }[]
+  arbitrage: {
+    libre: number
+    kg: number
+    effets: { commande: number; lignes: { ligne_id?: number; client_nom: string | null; commande_numero: number | null; article: string | null; delai: string | null; perd: number }[] }[]
+  } | null
+}
+
+// Click a « Commandes tricoteur » row whose order knits OUR yarn → the line reserves a share of it
+// (LIVA #1398, Vincent 2026-11-26). The same window as for an order whose knitter brings the yarn and
+// as for a yarn supplier order (components/commandes/ReservationParts.tsx), with one more block: the
+// share IS yarn the line holds in the order (API lib/parts-tricotage.ts), so the window says which
+// yarn follows, and which yarn the line kept in stock for the same écru goes back free. The server
+// computes it (`apercu`), nothing is worked out here.
+function PartTricotageDialog({
+  commandeId, ligneId, row, clientNom, reserved, target, dim, uniteLabel, rendement, refLabel, articleLabel, onClose, onSuccess,
+}: {
+  commandeId: number
+  ligneId: number
+  row: SupplyTricoRow
+  clientNom?: string
+  articleLabel?: string | null
+  reserved: number
+  target: number
+  dim: 'metrage' | 'poids'
+  uniteLabel: string
+  rendement: number
+  refLabel?: string | null
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const url = `/commandes-client/${commandeId}/lignes/${ligneId}/supply/tricotage/${row.id}/affectation`
+  const quantite = Number(row.quantite) || 0
+  const autres = row.autres_reservations ?? []
+  const [mode, setMode] = useState<'besoin' | 'stock' | 'exacte' | null>(null)
+  const [valueStr, setValueStr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const apercu = (body: Record<string, unknown>) =>
+    apiFetch<PartTricotApercu>(url, { method: 'PUT', body: JSON.stringify({ ...body, apercu: true }) })
+  // What the order and the line are before any choice.
+  const { data: base, isLoading, isError } = useQuery<PartTricotApercu>({
+    queryKey: ['commande-client-part-tricot', commandeId, ligneId, row.id, 'base'],
+    queryFn: () => apercu({ poids_affecte: Number(row.poids_affecte) || 0 }),
     staleTime: 0,
+    gcTime: 0,
   })
+  const de = base?.de ?? 0
+  const pourStock = base?.pour_stock ?? 0
+  const max = base?.max ?? 0
+  // « Besoin de la ligne »: its share once it holds what it still has to knit, to the kilo above.
+  const cibleBesoin = Math.round((de + Math.ceil((base?.besoin ?? 0) - 0.005)) * 100) / 100
+  const besoinPossible = (base?.besoin ?? 0) > 0.005
+  const cibleStock = Math.round((de + pourStock) * 100) / 100
+  const stockPossible = pourStock > 0.005 && cibleStock <= max + 0.05
+
+  // The first choice, once the order is read: the line's need when the order's stock part holds it,
+  // else that whole stock part. Never, by default, a quantity that takes from another client line.
+  // Nothing to take, or a share to adjust: the quantity held.
+  useEffect(() => {
+    if (!base || mode !== null) return
+    const besoin = Math.ceil(base.besoin - 0.005)
+    if (base.besoin > 0.005 && besoin <= base.pour_stock + 0.005) setMode('besoin')
+    else if (base.besoin > 0.005 && base.pour_stock > 0.005 && base.de + base.pour_stock <= base.max + 0.05) setMode('stock')
+    else { setMode('exacte'); setValueStr(base.de > 0 ? String(base.de).replace('.', ',') : '') }
+  }, [base, mode])
+
+  const parsed = parseFloat(valueStr.replace(',', '.'))
+  const saisi = Number.isFinite(parsed) ? Math.max(0, parsed) : 0
+  const value = mode === 'besoin' ? cibleBesoin : mode === 'stock' ? cibleStock : saisi
+  const delta = Math.round((value - de) * 100) / 100
+  const over = value > max + 0.05
+
+  // A typed quantity is asked once the typing stops.
+  const [demande, setDemande] = useState<number | null>(null)
+  useEffect(() => {
+    if (!base || mode === null) return
+    const t = window.setTimeout(() => setDemande(value), mode === 'exacte' ? 350 : 0)
+    return () => window.clearTimeout(t)
+  }, [base, mode, value])
+  const aDemander = demande !== null && Math.abs(demande - de) > 0.005 && demande <= max + 0.05
+  const { data: effet, error: refus, isFetching } = useQuery<PartTricotApercu>({
+    queryKey: ['commande-client-part-tricot', commandeId, ligneId, row.id, demande],
+    queryFn: () => apercu({ poids_affecte: demande ?? 0 }),
+    enabled: aDemander,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  })
+  const aJour = aDemander && demande === value && !isFetching
+  const refusMessage = aDemander && demande === value && refus
+    ? ((refus as { body?: { message?: string } })?.body?.message ?? 'Réservation impossible sur cette commande.')
+    : null
+  const vu = aJour && effet && !refusMessage ? effet : null
+
+  const sansChangement = Math.abs(delta) <= 0.005
+  const canSubmit = !busy && !!base && !over && !sansChangement && !!vu
+  const pourquoiGrise = busy || !base ? null
+    : over ? `Au plus ${fmtNum(max, 1)} kg : c'est ce que la ligne a encore à faire tricoter.`
+    : sansChangement ? (de > 0 ? 'Déjà enregistré : changez la quantité.' : 'Choisissez une quantité.')
+    : refusMessage
+  const projected = dim === 'metrage' ? reserved + delta * rendement : reserved + delta
+
+  // What another client line gives up when the choice goes beyond the stock part (shown below too).
+  const perdu = new Map<number, number>()
+  for (const l of (vu?.arbitrage?.effets ?? []).flatMap((e) => e.lignes)) {
+    if (l.ligne_id) perdu.set(l.ligne_id, (perdu.get(l.ligne_id) ?? 0) + l.perd)
+  }
+  const segments: PartCommande[] = [
+    { cle: 'moi', nom: 'Cette ligne', detail: '', article: articleLabel ?? '', kg: value, couleur: 'bg-accent', fort: true },
+    ...autres.map((a, i) => ({
+      cle: `a${i}`,
+      nom: a.client_nom ?? 'Autre client',
+      detail: a.commande_numero ? `N° ${a.commande_numero}` : '',
+      article: a.article ?? '',
+      kg: Math.max(0, (Number(a.poids) || 0) - (a.ligne_id ? perdu.get(a.ligne_id) ?? 0 : 0)),
+      couleur: COULEURS_AUTRES_LIGNES[i % COULEURS_AUTRES_LIGNES.length],
+    })),
+  ]
+  const stock = Math.max(0, quantite - segments.reduce((x, y) => x + Math.max(0, y.kg), 0))
+
+  const handleSubmit = async () => {
+    if (!canSubmit || !vu) return
+    setError(null)
+    setBusy(true)
+    try {
+      await apiFetch(url, {
+        method: 'PUT',
+        // The other lines' loss was shown right above (`arbitrage`): saving validates it.
+        body: JSON.stringify({ poids_affecte: value, toute_commande: mode === 'stock', arbitrage: !!vu.arbitrage }),
+      })
+      onSuccess()
+      onClose()
+    } catch (e) {
+      setError((e as { body?: { message?: string } })?.body?.message ?? (e instanceof Error ? e.message : 'Erreur'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const ligneFil = (x: { fil: string; lot: string; kg: number }, i: number) => (
+    <li key={i} className="flex items-baseline gap-2 tabular-nums min-w-0">
+      <span className="flex-1 min-w-0 truncate" title={x.fil}>{x.fil}</span>
+      <span className="flex-shrink-0 text-muted-foreground">lot {x.lot || '—'}</span>
+      <span className="w-16 flex-shrink-0 text-right font-semibold">{fmtNum(x.kg, 1)} kg</span>
+    </li>
+  )
+
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-4xl w-[94vw] p-0 border-0 bg-primary overflow-hidden max-h-[90dvh] flex flex-col">
-        <div className="flex-shrink-0 flex items-center gap-2.5 rounded-t-lg border-b-2 border-gold bg-primary px-4 py-2.5">
-          <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center shadow-sm bg-gold text-gold-foreground">
-            <KnitIcon className="h-[18px] w-[18px]" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">Réservations — Commande N° {row.commande_id}</h2>
-            <p className="text-xs text-white/70 truncate">
-              {[row.sous_traitant_nom, row.date_commande ? formatHfsqlDate(row.date_commande) : null, `${fmtNum(row.quantite, 1)} kg`,
-                row.date_livraison ? `délai ${formatHfsqlDate(row.date_livraison)}` : null].filter(Boolean).join(' · ')}
-            </p>
-          </div>
-          <Button variant="ghost" size="icon" title="Fermer" onClick={onClose}
-            className="h-8 w-8 flex-shrink-0 text-white/80 hover:bg-white/15 hover:text-white">
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-        <div className="flex-1 min-h-0 overflow-y-auto bg-zinc-100 p-4 space-y-2 scrollbar-transparent">
+    <Dialog open onOpenChange={(o) => { if (!o && !busy) onClose() }}>
+      <DialogContent className="max-w-lg p-0 border-0 bg-primary overflow-hidden max-h-[90dvh] flex flex-col">
+        <BandeauDialog
+          icon={KnitIcon}
+          titre={`Réservation — Commande N° ${row.commande_id}`}
+          sousTitre={<>{row.sous_traitant_nom || 'Tricoteur'} · {fmtSupplyDate(row.date_commande)} · {fmtNum(quantite, 1)} kg</>}
+          disabled={busy}
+          onClose={onClose}
+        />
+
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 bg-zinc-100 space-y-3 scrollbar-transparent">
           {isLoading && <div className="flex items-center justify-center py-10"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>}
           {isError && (
             <div className="flex flex-col items-center justify-center py-8 text-destructive">
@@ -5317,14 +5473,121 @@ function ReservationsTricotageDialog({ row, ligneId, onClose }: { row: SupplyTri
               <p className="text-sm">Erreur de chargement</p>
             </div>
           )}
-          {!isLoading && !isError && <ReservationsTricotage lecture={data?.lecture ?? null} ligneCourante={ligneId} />}
+          {base && mode !== null && (
+            <>
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground">Réserver pour {clientNom ?? 'cette commande'}</p>
+                <ChoixQuantite
+                  mode={mode}
+                  onChange={setMode}
+                  disabled={busy}
+                  options={[
+                    ...(besoinPossible ? [{ cle: 'besoin' as const, label: 'Besoin de la ligne', detail: `${fmtNum(cibleBesoin, 1)} kg` }] : []),
+                    {
+                      cle: 'stock' as const, label: 'Tout le stock', detail: `${fmtNum(cibleStock, 1)} kg`, off: !stockPossible,
+                      titre: stockPossible ? 'Tout ce que la commande tricote encore pour le stock'
+                        : pourStock > 0.005 ? 'Plus que ce que la ligne a encore à faire tricoter'
+                        : 'La commande ne tricote plus rien pour le stock',
+                    },
+                    { cle: 'exacte' as const, label: 'Autre quantité', detail: 'à saisir' },
+                  ]}
+                />
+                {mode === 'exacte' && (
+                  <div className="pt-1">
+                    <TricoWeightField
+                      label="Quantité réservée (0 libère la part)"
+                      value={valueStr}
+                      onChange={setValueStr}
+                      disabled={busy}
+                      rendement={rendement}
+                      refLabel={refLabel}
+                      autoFocus
+                    />
+                    {over && (
+                      <div className="flex items-baseline justify-between gap-2 text-[11px] tabular-nums text-destructive font-medium">
+                        <span>Maximum pour la ligne</span>
+                        <span>{fmtNum(Math.max(0, max), 1)} kg</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <RepartitionCommande
+                titre="Répartition de la commande de tricotage"
+                total={quantite}
+                parts={segments}
+                reste={{ nom: 'Stock', kg: stock }}
+              />
+
+              {/* What the choice moves, in yarn: the share IS the yarn held in the order. */}
+              {vu && (vu.fil.length > 0 || vu.liberes.length > 0) && (
+                <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card p-3 shadow-sm space-y-2.5 text-xs">
+                  {vu.fil.length > 0 && (
+                    <div>
+                      <p className="font-medium text-muted-foreground">
+                        {delta > 0 ? 'Fil de la commande réservé à la ligne' : 'Fil rendu au stock de la commande'}
+                      </p>
+                      <ul className="mt-1 space-y-1">{vu.fil.map(ligneFil)}</ul>
+                    </div>
+                  )}
+                  {vu.liberes.length > 0 && (
+                    <div>
+                      <p className="font-medium text-muted-foreground">Fil en stock que la ligne n'a plus à tenir : il redevient libre</p>
+                      <ul className="mt-1 space-y-1">{vu.liberes.map(ligneFil)}</ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Beyond the stock part: another client line of the order gives up some of its share.
+                  Shown before anything is written; saving validates it. */}
+              {vu?.arbitrage && (
+                <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card p-3 shadow-sm text-xs">
+                  <p className="text-sm font-semibold">{fmtNum(vu.arbitrage.kg, 1)} kg repris à une autre ligne client</p>
+                  <p className="mt-0.5 text-muted-foreground">
+                    La commande ne tricote que {fmtNum(vu.arbitrage.libre, 1)} kg pour le stock. Elle tricote autant, la part change de main :
+                  </p>
+                  <ul className="mt-1.5 space-y-1">
+                    {vu.arbitrage.effets.flatMap((e) => e.lignes).map((l, i) => (
+                      <li key={i} className="flex items-baseline gap-2 tabular-nums min-w-0">
+                        <span className="flex-1 min-w-0 truncate">
+                          <span className="font-medium">{l.client_nom || 'Client'}</span>
+                          {l.commande_numero ? <span className="text-muted-foreground"> · N° {l.commande_numero}</span> : null}
+                          {l.article ? <span> · {l.article}</span> : null}
+                        </span>
+                        <span className="flex-shrink-0 text-muted-foreground">{l.delai ? `prête le ${formatHfsqlDate(l.delai)}` : 'sans date'}</span>
+                        <span className="w-20 flex-shrink-0 text-right font-semibold">perd {fmtNum(l.perd, 1)} kg</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
         </div>
-        <div className="flex-shrink-0 flex items-center gap-3 rounded-b-lg border-t border-border/60 bg-zinc-200 px-4 py-3">
-          <p className="min-w-0 text-xs text-muted-foreground">
-            La part d'une ligne est le fil qu'elle tient dans la commande : elle se règle dans « Fil réservé », sur le lot en tricotage.
-          </p>
-          <div className="ml-auto flex items-center gap-2 flex-shrink-0">
-            <Button variant="outline" onClick={onClose}>Fermer</Button>
+
+        <div className="flex-shrink-0 rounded-b-lg px-4 py-3 border-t border-border/60 bg-zinc-200">
+          {!!error && (
+            <div className="mb-2 flex items-start gap-1.5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span className="break-words">{error}</span>
+            </div>
+          )}
+          {!error && pourquoiGrise && !sansChangement && (
+            <p className={cn('mb-2 text-right text-[11px]', refusMessage || over ? 'text-destructive' : 'text-muted-foreground')}>{pourquoiGrise}</p>
+          )}
+          <div className="flex items-center gap-3">
+            <AffecteGauge projected={projected} target={target} uniteLabel={uniteLabel} libelle="réservé pour la ligne" />
+            <div className="flex gap-2 flex-shrink-0">
+              <Button variant="outline" onClick={onClose} disabled={busy}>Annuler</Button>
+              <span title={pourquoiGrise ?? undefined}>
+                <Button onClick={handleSubmit} disabled={!canSubmit}>
+                  {busy
+                    ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Enregistrement…</>
+                    : <><Save className="h-3.5 w-3.5 mr-1.5" />Enregistrer</>}
+                </Button>
+              </span>
+            </div>
           </div>
         </div>
       </DialogContent>
@@ -6007,12 +6270,30 @@ function LigneMatiereGauge({ line, target }: { line: LigneCommande; target: numb
 // external tricoteurs start Non_Envoye (bon de commande sent from the sst screen).
 
 type TricoOrderYarn = FilALancer
+/** Another client line the knitting order may knit for too (LIVA #1398, API lib/trico-autres-lignes.ts):
+ *  same écru and coloris, its yarn reserved in stock at this knitter. */
+interface AutreLigneTricot {
+  ligneId: number
+  commandeId: number
+  numero: string
+  client_nom: string
+  article: string
+  /** YYYYMMDD or '' */
+  delai: string
+  /** écru kg its reserved yarn makes */
+  ecru_kg: number
+  lots: { id: number; kg: number }[]
+  meme_commande: boolean
+  /** why it cannot join; null = it can */
+  raison: string | null
+}
 interface TricoNewOrderContext {
   applicable: boolean
   ecru_ref_label?: string
   ecru_coloris_label?: string
   rendement?: number
   yarns?: TricoOrderYarn[]
+  autres_lignes?: AutreLigneTricot[]
 }
 
 function CreateTricotageOrderDialog({
@@ -6034,7 +6315,15 @@ function CreateTricotageOrderDialog({
   const ligneId = ligne.IDligne_commande_client
   const [affecteStr, setAffecteStr] = useState('')
   const [stockStr, setStockStr] = useState('')
-  const [choix, setChoix] = useState<ChoixLots>({})
+  // No lot to tick here (Vincent 2026-11-26): an order made from a line leaves with the yarn reserved to
+  // its lines, on the lots it was reserved on. The lots follow the weights (the reservations first, then
+  // the oldest lot for the stock part) and are shown as a reading. Choosing a lot is done by reserving
+  // it (« Réserver du fil »); a knitting for the stock alone is made on Sous-traitants › Tricotage.
+  const choix: ChoixLots = {}
+  // The other client lines the order knits for too (LIVA #1398): ticked, their reserved yarn leaves
+  // with this order and each keeps its share. Nothing is ticked by default: the person decides.
+  const [jointes, setJointes] = useState<number[]>([])
+  const ancreJointe = useRef<number | null>(null)
   // No date is asked of the knitter: it gives its délai (Attente délai). Pressed, the order goes out
   // « en urgence » with the date wished (API lib/urgence-sst.ts, Vincent 2026-11-16) — already on, with
   // its date, when the launch was planned « en urgence » (« Planifier »).
@@ -6048,6 +6337,32 @@ function CreateTricotageOrderDialog({
   })
   const rendement = ctx?.rendement ?? 0
   const yarns = ctx?.yarns ?? []
+  const autres = ctx?.autres_lignes ?? []
+  const joignables = autres.filter((a) => !a.raison && a.ecru_kg > 0)
+  const lignesJointes = joignables.filter((a) => jointes.includes(a.ligneId))
+  const kgJointes = Math.round(lignesJointes.reduce((s, a) => s + a.ecru_kg, 0) * 100) / 100
+  // The lots as this launch sees them: the yarn of the ticked lines is reserved to it too.
+  const yarnsVus = useMemo(
+    () => avecLignesJointes(ctx?.yarns ?? [], (ctx?.autres_lignes ?? []).filter((a) => !a.raison && jointes.includes(a.ligneId)).flatMap((a) => a.lots)),
+    [ctx, jointes],
+  )
+  // §44: plain click toggles and anchors, Shift+click applies the range over the lines that can join.
+  const cocherJointe = (id: number, shift: boolean) => {
+    const ordre = joignables.map((a) => a.ligneId)
+    const ancre = ancreJointe.current
+    setJointes((prev) => {
+      const next = new Set(prev)
+      if (shift && ancre !== null && ancre !== id && ordre.includes(ancre)) {
+        const [a, b] = [ordre.indexOf(ancre), ordre.indexOf(id)]
+        const [lo, hi] = a < b ? [a, b] : [b, a]
+        const retirer = prev.includes(id)
+        for (let i = lo; i <= hi; i++) { if (retirer) next.delete(ordre[i]); else next.add(ordre[i]) }
+      } else if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return ordre.filter((x) => next.has(x))
+    })
+    if (!shift || ancre === null) ancreJointe.current = id
+  }
 
   // « Affecté » = what the line still needs (in kg of écru, rounded up to the
   // 100 g so it covers it): filled when the dialog opens and, if it was emptied,
@@ -6081,14 +6396,8 @@ function CreateTricotageOrderDialog({
     prefilled.current = true
     if (resteKg) setAffecteStr(resteKg)
   }, [ctx, resteKg])
-  // A new weight re-picks the lots for it (the reservation first, then the
-  // oldest): ticks made by hand hold only until the weight changes.
-  const saisirAffecte = (v: string) => { setAffecteStr(v); setChoix({}) }
-  const saisirStock = (v: string) => { setStockStr(v); setChoix({}) }
-  const choisirLots = (next: ChoixLots) => {
-    setChoix(next)
-    if (affecteStr.trim() === '' || parseFloat(affecteStr.replace(',', '.')) === 0) setAffecteStr(resteKg)
-  }
+  const saisirAffecte = setAffecteStr
+  const saisirStock = setStockStr
 
   const parseKg = (s: string) => {
     const v = parseFloat(s.replace(',', '.'))
@@ -6096,11 +6405,11 @@ function CreateTricotageOrderDialog({
   }
   const affecte = parseKg(affecteStr)
   const stock = parseKg(stockStr)
-  const total = Math.round((affecte + stock) * 100) / 100
+  const total = Math.round((affecte + stock + kgJointes) * 100) / 100
   // Footer gauge: current affected + the new allocation, in the line's dim
   // (legacy: "801 / 800 Ml affecté à la commande de Le slip Français").
   const projected = dim === 'metrage' ? reserved + affecte * rendement : reserved + affecte
-  const fil = couvertureFils(yarns, total, choix)
+  const fil = couvertureFils(yarnsVus, total, choix)
   const surReserve = affecte > couvertKg + 0.05
   const urgenceManque = urgenceSaisieManque(urgence)
   const canSubmit = affecte > 0 && !surReserve && stock >= 0 && fil.couvert && !urgenceManque && !busy
@@ -6111,7 +6420,7 @@ function CreateTricotageOrderDialog({
       : surReserve
         ? `Au plus ${fmtNum(couvertKg, 1)} kg pour la commande : c’est ce que couvre le fil réservé`
         : !fil.couvert
-          ? 'Les lots cochés ne couvrent pas tout le fil'
+          ? `Pas assez de fil libre chez ${location.magasin_nom} : réduisez le poids pour le stock`
           : urgenceManque
 
   const handleSubmit = async () => {
@@ -6123,6 +6432,7 @@ function CreateTricotageOrderDialog({
         method: 'POST',
         body: JSON.stringify({
           IDsous_traitant: location.magasin_id, poids_affecte: affecte, poids_stock: stock, lots: fil.lots,
+          autres_lignes: lignesJointes.map((a) => a.ligneId),
           ...(urgence.active ? { urgence: { date_souhaitee: urgence.date } } : {}),
         }),
       })
@@ -6166,20 +6476,9 @@ function CreateTricotageOrderDialog({
             {/* What the user decides: the weight (gold edge = written by the confirm) */}
             <div className="rounded-lg border-l-4 border-l-accent/70 border border-border/60 bg-card shadow-sm overflow-hidden">
               <div className="p-4 space-y-4">
-                <div>
-                  <h3 className="text-sm font-semibold">Poids à tricoter</h3>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {(() => {
-                      const reste = target - reserved
-                      if (!(reste > 0)) return 'La ligne est déjà entièrement affectée.'
-                      const kg = dim === 'metrage' ? (rendement > 0 ? reste / rendement : 0) : reste
-                      return `Il reste ${fmtNum(reste, 1)} ${uniteLabel} à affecter${dim === 'metrage' && kg > 0 ? `, soit ${fmtNum(kg, 1)} kg` : ''}.`
-                    })()}
-                    {' '}Le fil réservé à la ligne ici couvre {fmtNum(couvertKg, 1)} kg ; le stock peut prendre du fil libre.
-                  </p>
-                </div>
+                <h3 className="text-sm font-semibold">Poids à tricoter</h3>
                 <TricoWeightField
-                  label={`Pour la commande${clientNom ? ` ${clientNom}` : ' client'}`}
+                  label="Pour cette ligne"
                   value={affecteStr}
                   onChange={saisirAffecte}
                   disabled={busy}
@@ -6188,13 +6487,23 @@ function CreateTricotageOrderDialog({
                   autoFocus
                 />
                 <TricoWeightField
-                  label="Pour le stock Ets Malterre"
+                  label="Pour le stock"
                   value={stockStr}
                   onChange={saisirStock}
                   disabled={busy}
                   rendement={rendement}
                   refLabel={ligne.ref_label}
                 />
+                {/* The other lines ticked on the right, each with its part: with the two fields above,
+                    this card IS the order's répartition. */}
+                {lignesJointes.map((a) => (
+                  <div key={a.ligneId} className="flex items-baseline justify-between gap-2 text-sm">
+                    <span className="min-w-0 truncate text-xs font-medium text-muted-foreground" title={`${a.client_nom} · N° ${a.numero}`}>
+                      Pour {a.article || `la commande ${a.numero}`}
+                    </span>
+                    <span className="flex-shrink-0 font-semibold tabular-nums">{fmtNum(a.ecru_kg, 1)} kg</span>
+                  </div>
+                ))}
               </div>
               <div className="px-4 py-3 border-t border-border/60 bg-zinc-50 flex items-baseline justify-between gap-2">
                 <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Total à tricoter</span>
@@ -6208,6 +6517,49 @@ function CreateTricotageOrderDialog({
               </div>
             </div>
 
+            <div className="min-w-0 space-y-4">
+            {/* Who else the order knits for (LIVA #1398): the other client lines of the same knit whose
+                yarn is reserved here. Shown only when there is one. */}
+            {autres.length > 0 && (
+              <section className="min-w-0 space-y-2">
+                <h3 className="text-sm font-semibold">Tricoter aussi pour</h3>
+                <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3 space-y-1.5">
+                  {autres.map((a) => {
+                    const off = !!a.raison || !(a.ecru_kg > 0)
+                    const coche = !off && jointes.includes(a.ligneId)
+                    // Another order: whose it is and when it is due. The same order: the article says it all.
+                    const dOu = a.meme_commande ? '' : [a.client_nom, `N° ${a.numero}`, a.delai ? `prête le ${formatHfsqlDate(a.delai)}` : ''].filter(Boolean).join(' · ')
+                    return (
+                      <div
+                        key={a.ligneId}
+                        role="checkbox"
+                        aria-checked={coche}
+                        title={a.raison
+                          ? `Ne peut pas partir sur cette commande : ${a.raison}`
+                          : `Son fil réservé chez ${location.magasin_nom} part sur cette commande, la ligne garde sa part`}
+                        onClick={(e) => { if (!off && !busy) cocherJointe(a.ligneId, e.shiftKey) }}
+                        className={cn(
+                          'flex items-center gap-2.5 rounded-md border px-2.5 py-1.5 select-none transition-colors',
+                          coche ? 'border-accent/50 bg-accent/[0.06]' : 'border-border/60 bg-zinc-50',
+                          off || busy ? 'opacity-50' : 'cursor-pointer hover:border-accent/50',
+                        )}
+                      >
+                        <input
+                          type="checkbox" checked={coche} disabled={off || busy} readOnly
+                          className="h-4 w-4 rounded border-input text-accent pointer-events-none flex-shrink-0"
+                        />
+                        <p className="min-w-0 flex-1 text-sm truncate">
+                          <span className="font-semibold">{a.article || `Commande ${a.numero}`}</span>
+                          {(a.raison || dOu) && <span className="text-muted-foreground"> · {a.raison ?? dOu}</span>}
+                        </p>
+                        <span className="flex-shrink-0 text-sm font-semibold tabular-nums">{fmtNum(a.ecru_kg, 1)} kg</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </section>
+            )}
+
             {/* What it takes: the yarn lots, read live from the weight */}
             <section className="min-w-0 space-y-2">
               <h3 className="text-sm font-semibold">
@@ -6217,11 +6569,12 @@ function CreateTricotageOrderDialog({
                 <div className="space-y-3">{[1, 2].map((i) => <div key={i} className="h-32 bg-card animate-pulse rounded-lg" />)}</div>
               ) : (
                 <LotsFilPicker
-                  yarns={yarns}
-                  kgCommande={affecte}
+                  yarns={yarnsVus}
+                  kgCommande={affecte + kgJointes}
                   kgStock={stock}
                   choix={choix}
-                  onChoix={choisirLots}
+                  onChoix={() => {}}
+                  lectureSeule
                   magasinNom={location.magasin_nom}
                   disabled={busy}
                   aideEnCommande="Réservez ce fil dans l’onglet Fil de la ligne : le tricotage se lance à son arrivée."
@@ -6229,6 +6582,7 @@ function CreateTricotageOrderDialog({
                 />
               )}
             </section>
+            </div>
           </div>
         </div>
 

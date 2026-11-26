@@ -2335,7 +2335,6 @@ function LignesSection({
                     <LotsFilPicker
                       yarns={lotsFil?.yarns ?? []}
                       kgCommande={quantiteForm}
-                      libelleCommande="Pour la ligne"
                       choix={choixLots}
                       onChoix={setChoixLots}
                       magasinNom="Tricotage Malterre"

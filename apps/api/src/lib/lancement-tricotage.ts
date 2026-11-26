@@ -59,6 +59,9 @@ export interface LotLibre {
   libre: number
   /** kg reserved on this lot for the client line launching (already inside `libre`) */
   reserveLigne: number
+  /** kg reserved on this lot for the OTHER client lines joining the launch (LIVA #1398), inside
+   *  `libre` too; `avecLignesJointes()` adds them to `reserveLigne` for the plan */
+  reserveJointes?: { ligne: number; kg: number }[]
   /** the open knitting lines holding yarn of the lot, with the kg each still needs */
   engagements?: { lsst: number; commande: number; ecru: number; coloris: number; kg: number }[]
 }
@@ -122,12 +125,29 @@ export function planLancement(p: { totalKg: number; paires: readonly PaireFil[];
     if (!(besoin > 0)) continue
     const reserve = p.emporterReserve ? round2(mesLots.reduce((x, l) => x + l.reserveLigne, 0)) : 0
     let reste = Math.max(besoin, reserve)
-    for (const l of [...mesLots].sort(ordreDeService)) {
+    const pris = new Map<number, number>()
+    // What is reserved on a chosen lot goes first, lot by lot: a reservation names the lot the line
+    // counted on, and two lines of one launch may hold the same yarn on two lots (LIVA #1398). Before,
+    // the oldest reserved lot took the whole need and the other lot's reservation stayed at home.
+    if (p.emporterReserve) {
+      for (const l of mesLots) {
+        const kg = round2(Math.min(l.libre, l.reserveLigne, reste))
+        if (!(kg > 0)) continue
+        pris.set(l.id, kg)
+        reste = round2(reste - kg)
+      }
+    }
+    const tries = [...mesLots].sort(ordreDeService)
+    for (const l of tries) {
       if (!(reste > 0.005)) break
-      const kg = round2(Math.min(l.libre, reste))
+      const kg = round2(Math.min(l.libre - (pris.get(l.id) ?? 0), reste))
       if (!(kg > 0)) continue
-      entrees.push({ lot: l.id, refFil: l.refFil, coloriFil: l.coloriFil, kg })
+      pris.set(l.id, round2((pris.get(l.id) ?? 0) + kg))
       reste = round2(reste - kg)
+    }
+    for (const l of tries) {
+      const kg = pris.get(l.id) ?? 0
+      if (kg > 0) entrees.push({ lot: l.id, refFil: l.refFil, coloriFil: l.coloriFil, kg })
     }
     if (reste > 0.005) manques.push({ refFil: paire.refFil, coloriFil: paire.coloriFil, besoin, couvert: round2(besoin - reste) })
   }
@@ -172,12 +192,32 @@ export function lotsParDefaut(lots: readonly LotLibre[], besoinKg: number): numb
   const out: number[] = []
   let reste = round2(besoinKg)
   for (const l of [...lots].sort(ordreDeService)) {
-    if (!(reste > 0.005)) break
+    // Every lot holding a reservation of the launch goes, even once the need is covered.
+    if (!(reste > 0.005) && !(l.reserveLigne > 0)) continue
     if (!(l.libre > 0)) continue
     out.push(l.id)
     reste = round2(reste - l.libre)
   }
   return out
+}
+
+/** Pure: the lots as a launch for SEVERAL client lines sees them (LIVA #1398): what the joining lines
+ *  hold on a lot counts as reserved to the launch, like the launching line's own yarn. */
+export function avecLignesJointes(lots: readonly LotLibre[], lignes: readonly number[]): LotLibre[] {
+  const set = new Set(lignes)
+  return lots.map((l) => ({
+    ...l,
+    reserveLigne: round2(Math.min(l.libre, l.reserveLigne + (l.reserveJointes ?? []).filter((x) => set.has(x.ligne)).reduce((s, x) => s + x.kg, 0))),
+  }))
+}
+
+/** Pure: the yarn ONE joining line holds on the chosen lots, as lots the pure rules read
+ *  (`reserveLigne` = that line's kg). */
+export function lotsDeLigneJointe(lots: readonly LotLibre[], ligne: number, choisis?: readonly number[]): LotLibre[] {
+  const set = choisis ? new Set(choisis) : null
+  return lots
+    .filter((l) => !set || set.has(l.id))
+    .map((l) => ({ ...l, reserveLigne: round2((l.reserveJointes ?? []).filter((x) => x.ligne === ligne).reduce((s, x) => s + x.kg, 0)) }))
 }
 
 const ymd = (d: unknown): string => {
@@ -190,8 +230,9 @@ const ymd = (d: unknown): string => {
 
 /** The yarn lots at a knitter for these pairs, with what is free on each (rules in the header).
  *  `ligneClient` = the client line launching (its own reservation is not « elsewhere »), 0 for a
- *  launch from Sous-traitants. */
-export async function lotsLibres(p: { magasin: number | null; paires: readonly PaireFil[]; ligneClient: number }, sql: Sql = mpsPg()): Promise<LotLibre[]> {
+ *  launch from Sous-traitants. `lignesJointes` = the other client lines the launch knits for
+ *  (LIVA #1398): their reservations are not « elsewhere » either, and come back per lot. */
+export async function lotsLibres(p: { magasin: number | null; paires: readonly PaireFil[]; ligneClient: number; lignesJointes?: readonly number[] }, sql: Sql = mpsPg()): Promise<LotLibre[]> {
   if (p.paires.length === 0) return []
   // magasin null = every knitter (the client line's Fil tab); a launch names its knitter.
   const params: unknown[] = []
@@ -252,7 +293,15 @@ export async function lotsLibres(p: { magasin: number | null; paires: readonly P
   const assoKg = new Map([...engagements].map(([lot, arr]) => [lot, arr.reduce((s, e) => s + e.kg, 0)]))
   const autres = new Map<number, number>()
   const miennes = new Map<number, number>()
+  const jointes = new Map<number, { ligne: number; kg: number }[]>()
+  const setJointes = new Set((p.lignesJointes ?? []).filter((x) => x > 0 && x !== p.ligneClient))
   for (const r of resas) {
+    if (setJointes.has(Number(r.ligne))) {
+      const arr = jointes.get(Number(r.lot)) ?? []
+      arr.push({ ligne: Number(r.ligne), kg: round2(Number(r.kg) || 0) })
+      jointes.set(Number(r.lot), arr)
+      continue
+    }
     const m = Number(r.ligne) === p.ligneClient && p.ligneClient > 0 ? miennes : autres
     m.set(Number(r.lot), (m.get(Number(r.lot)) ?? 0) + (Number(r.kg) || 0))
   }
@@ -273,45 +322,69 @@ export async function lotsLibres(p: { magasin: number | null; paires: readonly P
       stockInitial: round2(Number(l.stock_initial) || 0),
       libre,
       reserveLigne: round2(Math.min(libre, miennes.get(id) ?? 0)),
+      reserveJointes: jointes.get(id) ?? [],
       engagements: engagements.get(id) ?? [],
     }
   })
 }
 
-/** Writes the launch's asso rows; a client line's reservations on those lots are taken by the
- *  knitting order (« consommée », linked to the asso row), the kg it does not use stay reserved. */
-export async function ecrireAffectation(p: { sstLine: number; ligneClient: number; entrees: readonly EntreePlan[] }): Promise<void> {
+/** Writes the launch's asso rows; the client lines' reservations on those lots are taken by the
+ *  knitting order (« consommée », linked to the asso row), the kg it does not use stay reserved.
+ *  `autresLignes` = the other client lines the launch knits for (LIVA #1398): the launching line is
+ *  served first, then each of them, on what the order takes of the lot. */
+export async function ecrireAffectation(p: { sstLine: number; ligneClient: number; autresLignes?: readonly number[]; entrees: readonly EntreePlan[] }): Promise<void> {
   const sql = mpsPg()
+  const lignes = [p.ligneClient, ...(p.autresLignes ?? [])].filter((x, i, a) => x > 0 && a.indexOf(x) === i)
   await sql.begin(async (t) => {
     const tx = t as unknown as Sql
     for (const e of p.entrees) {
       const [row] = await tx<{ id: number }[]>`
         INSERT INTO asso_fil_lignecmdsst (idstock_fil, idligne_commande_sous_traitant, quantite)
         VALUES (${e.lot}, ${p.sstLine}, ${e.kg}) RETURNING idasso_fil_lignecmdsst AS id`
-      if (!(p.ligneClient > 0)) continue
-      const resas = await tx<{ id: number; quantite: number }[]>`
-        SELECT id, quantite::float8 AS quantite FROM reservation_fil
-         WHERE idligne_commande_client = ${p.ligneClient} AND idstock_fil = ${e.lot}
-           AND liberee_le IS NULL AND idasso_fil_lignecmdsst = 0
-         ORDER BY id`
       let reste = e.kg
-      for (const r of resas) {
+      for (const ligne of lignes) {
         if (!(reste > 0.005)) break
-        const pris = round2(Math.min(Number(r.quantite), reste))
-        if (pris < Number(r.quantite)) {
-          await tx`
-            INSERT INTO reservation_fil (idligne_commande_client, idref_fil, idcolori_fil, quantite, idref_fil_commande,
-                                         idstock_fil, cree_le, cree_par_id, cree_par)
-            SELECT idligne_commande_client, idref_fil, idcolori_fil, ${round2(Number(r.quantite) - pris)}, idref_fil_commande,
-                   idstock_fil, cree_le, cree_par_id, cree_par
-              FROM reservation_fil WHERE id = ${Number(r.id)}`
+        const resas = await tx<{ id: number; quantite: number }[]>`
+          SELECT id, quantite::float8 AS quantite FROM reservation_fil
+           WHERE idligne_commande_client = ${ligne} AND idstock_fil = ${e.lot}
+             AND liberee_le IS NULL AND idasso_fil_lignecmdsst = 0
+           ORDER BY id`
+        for (const r of resas) {
+          if (!(reste > 0.005)) break
+          const pris = round2(Math.min(Number(r.quantite), reste))
+          if (pris < Number(r.quantite)) {
+            await tx`
+              INSERT INTO reservation_fil (idligne_commande_client, idref_fil, idcolori_fil, quantite, idref_fil_commande,
+                                           idstock_fil, cree_le, cree_par_id, cree_par)
+              SELECT idligne_commande_client, idref_fil, idcolori_fil, ${round2(Number(r.quantite) - pris)}, idref_fil_commande,
+                     idstock_fil, cree_le, cree_par_id, cree_par
+                FROM reservation_fil WHERE id = ${Number(r.id)}`
+          }
+          await tx`UPDATE reservation_fil SET quantite = ${pris}, idligne_commande_sous_traitant = ${p.sstLine},
+                                              idasso_fil_lignecmdsst = ${Number(row.id)}
+                    WHERE id = ${Number(r.id)}`
+          reste = round2(reste - pris)
         }
-        await tx`UPDATE reservation_fil SET quantite = ${pris}, idligne_commande_sous_traitant = ${p.sstLine},
-                                            idasso_fil_lignecmdsst = ${Number(row.id)}
-                  WHERE id = ${Number(r.id)}`
-        reste = round2(reste - pris)
       }
     }
+  })
+}
+
+/** A knitting line goes away (its order or the line is deleted, its yarn is unaffected): the links
+ *  lot → line are removed and the yarn it held for client lines goes back to its lots, still
+ *  reserved to them; shares typed on it (the knitter brought the yarn) go with it.
+ *  Why one function (LIVA #1398): the line delete forgot both, and a client line kept 17 kg of yarn
+ *  « pris par le tricotage » on an order that no longer existed. */
+export async function rendreFilDesLignes(sstLines: readonly number[], sql: Sql = mpsPg()): Promise<void> {
+  const ids = [...new Set(sstLines.filter((x) => x > 0))]
+  if (ids.length === 0) return
+  await sql.begin(async (t) => {
+    const tx = t as unknown as Sql
+    await tx`DELETE FROM asso_fil_lignecmdsst WHERE idligne_commande_sous_traitant = ANY(${ids})`
+    await tx`
+      UPDATE reservation_fil SET idligne_commande_sous_traitant = 0, idasso_fil_lignecmdsst = 0
+       WHERE idligne_commande_sous_traitant = ANY(${ids}) AND liberee_le IS NULL`
+    await tx`DELETE FROM affectation_cmd_tricotage WHERE idligne_commande_sous_traitant = ANY(${ids})`
   })
 }
 
