@@ -394,16 +394,19 @@ export function fenetreCommande(
   return null
 }
 
-/** The lot's clock for the partner, ETM's own windows (cycle-ennoblissement.ts `depuisEtape`, RELANCE_J): a lot to
- *  finish after the « coloris validé » is due with its line's délai (`LotFait.tempsLigne`, Vincent 2026-11-26: a
- *  bon de livraison on the last day of the délai is on time) — three working days after the mail only when the
- *  line carries no délai; its controls are due 5 working days after the reception. A reprise and a reteinture
- *  have no date in ETM: no clock. */
+/** The lot's clock for the partner, from ETM's own facts:
+ *  - a lot to put on the stenter after the « coloris validé », and a lot back for a reprise, are due with their
+ *    line's délai (`LotFait.tempsLigne`, Vincent 2026-11-26): a bon de livraison on the last day of the délai is
+ *    on time, and a reprise usually comes with a délai pushed back — the segments then run to the new one; when
+ *    it was not pushed, the lot is late as its order is. A line without a délai: three working days after the
+ *    mail for the stenter (RELANCE_J.en_rame), no clock for a reprise;
+ *  - its controls are due 5 working days after the reception (RELANCE_J.controle);
+ *  - a reteinture has no clock. */
 export function fenetreLot(fait: LotFait, etape: EtapeLotPartenaire, today: string): Fenetre | null {
-  if (etape === 'coloris_valide') {
-    const depuis = fait.tempsLigne ? fait.tempsLigne.depuis ?? fait.okRamerLe : null
+  if (etape === 'coloris_valide' || etape === 'en_reprise') {
+    const depuis = fait.tempsLigne ? fait.tempsLigne.depuis ?? fait.okRamerLe ?? fait.reception : null
     if (fait.tempsLigne && depuis) return fenetre(depuis, fait.tempsLigne.echeance, today, true)
-    return fait.okRamerLe ? fenetre(fait.okRamerLe, plusJoursOuvres(fait.okRamerLe, RELANCE_J.en_rame), today, true) : null
+    return etape === 'coloris_valide' && fait.okRamerLe ? fenetre(fait.okRamerLe, plusJoursOuvres(fait.okRamerLe, RELANCE_J.en_rame), today, true) : null
   }
   if (etape === 'mesures_a_transmettre' && fait.reception) return fenetre(fait.reception, plusJoursOuvres(fait.reception, RELANCE_J.controle), today, true)
   return null

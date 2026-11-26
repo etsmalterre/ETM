@@ -33,7 +33,7 @@ describe('the partner’s time at a step', () => {
     expect(fenetreCommande('en_controle', { traitement }, '2026-11-02', '2026-11-25')).toBeNull()
     expect(fenetreCommande('terminee', { traitement }, '2026-11-02', '2026-11-25')).toBeNull()
   })
-  it('a lot: its line’s délai after the coloris validé, five days after the reception for its controls, no clock on a reprise', () => {
+  it('a lot: its line’s délai after the coloris validé and for a reprise, five days after the reception for its controls', () => {
     const lot = (p: Partial<LotFait>): LotFait => ({
       lot: 'MA1', idsuivilot: 1, etat: 1, reception: null, mesuresTeinturier: false, tirelleMesuree: false,
       coloris: SANS_SOUMISSION, stabilites: SANS_SOUMISSION, ...p,
@@ -45,6 +45,9 @@ describe('the partner’s time at a step', () => {
     // Only a line without a délai keeps the three days after the mail.
     expect(fenetreLot(lot({ okRamerLe: '2026-11-23' }), 'coloris_valide', '2026-11-24')).toMatchObject({ echeance: '2026-11-26', jours: 3, ecoules: 1, depassee: false })
     expect(fenetreLot(lot({ reception: '2026-11-18' }), 'mesures_a_transmettre', '2026-11-25')).toMatchObject({ echeance: '2026-11-25', jours: 5, ecoules: 5, depassee: true })
+    // A lot back for a reprise is due with its line's délai too (usually pushed back with the reprise).
+    expect(fenetreLot(lot({ reception: '2026-11-18', tempsLigne: temps }), 'en_reprise', '2026-11-25')).toMatchObject({ depuis: '2026-11-02', echeance: '2026-11-27', depassee: false })
+    expect(fenetreLot(lot({ reception: '2026-11-18', tempsLigne: { depuis: '2026-11-02', echeance: '2026-11-20' } }), 'en_reprise', '2026-11-25')!.depassee).toBe(true)
     expect(fenetreLot(lot({ reception: '2026-11-18' }), 'en_reprise', '2026-11-25')).toBeNull()
     expect(fenetreLot(lot({ reception: '2026-11-18' }), 'coloris_refuse', '2026-11-25')).toBeNull()
     // Malterre's own time on the lot is never told.
