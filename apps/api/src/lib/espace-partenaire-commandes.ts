@@ -15,6 +15,9 @@
 //    whose move a step is on Malterre's side or its chase date (`main`, `relance`, red / amber), Tricobot's
 //    readings, the target values copied from the client's fiche (`*_demandee`), the rapport de contrôle and
 //    which client a soumission went to.
+//  - Since 2026-11-26 (Vincent) an order whose matter is all back says whether its délai was kept (`respect`:
+//    the first délai given against the first lot received — the partner's own figures, those of « Qualité de
+//    service », lib/qualite-service-sst.ts). Never add the relances or the answer time to it.
 //  - Since 2026-11-26 (Vincent) the partner reads ITS OWN measures of a lot (the dyer side, suivilot `*_sst`:
 //    laize, poids, stabilités, vrillage — only those the reference asks it, lib/controles-lot.ts) with the
 //    tolerance each is judged by, exactly as Qualité › Suivi lots shows them (`tolerancesRef`), and types them
@@ -81,6 +84,9 @@ import {
   type CommandeFait, type EtapeLot, type EtatCommande, type LotFait,
 } from './cycle-ennoblissement.js'
 import { DELAI_PREMIERE_DEMANDE_J } from './delai-sst.js'
+import { fermetures as lireFermetures } from './delais-standards.js'
+import type { Periode } from './jours-ouvres.js'
+import { ecartDelai, promessesDesLignes } from './qualite-service-sst.js'
 import { ecruToutRevenu, ligneLivreeLe } from './ligne-sst-livree.js'
 import { familleOfTypeSst } from './sst-tricotage.js'
 import { urgencesLignes } from './urgence-sst.js'
@@ -159,6 +165,16 @@ export interface Fenetre {
   depassee: boolean
 }
 
+/** How an order kept its délai, once everything came back. */
+export interface Respect {
+  /** The first délai the partner gave, YYYY-MM-DD: the one « Qualité de service » judges. */
+  promis: string
+  /** The first lot received at Malterre. */
+  recuLe: string
+  /** Working days between the two, signed: negative = early, 0 = the day itself, positive = late. */
+  ecartJours: number
+}
+
 export interface CommandeResume {
   /** The number printed on the bon de commande (IDcommande_sous_traitant). */
   id: number
@@ -183,6 +199,9 @@ export interface CommandeResume {
   /** The partner's clock at this step (a délai to give, the treatment up to its délai); null when the step is
    *  not its own, or has no date. */
   fenetre: Fenetre | null
+  /** Once everything is back (« en contrôle », « terminée »): whether the délai was kept. null before that, or
+   *  when nothing can be measured (no délai recorded, no lot). */
+  respect: Respect | null
 }
 
 export interface Adresse {
@@ -689,10 +708,27 @@ function lignesVues(
   })
 }
 
+/**
+ * Whether an order kept its délai, by the rule of « Qualité de service » (lib/qualite-service-sst.ts, Vincent
+ * 2026-10-22: only the first promise is judged, in the partner's working days, its closures out), so the list of
+ * orders and that page never contradict each other. One answer per order: the line the most late speaks for it.
+ * null when no line has both a promise and a lot received. Pure.
+ */
+export function respectCommande(lignes: readonly { promis: string | null; recu: string | null }[], fermetures: readonly Periode[] = []): Respect | null {
+  let pire: Respect | null = null
+  for (const l of lignes) {
+    if (!l.promis || !l.recu) continue
+    const ecartJours = ecartDelai(l.promis, l.recu, fermetures).ecart
+    if (!pire || ecartJours > pire.ecartJours) pire = { promis: l.promis, recuLe: l.recu, ecartJours }
+  }
+  return pire
+}
+
 interface Vue {
   entete: Entete
   etape: EtapeCommandePartenaire
   fenetre: Fenetre | null
+  respect: Respect | null
   lignes: LigneVue[]
   lots: LotVu[]
   urgences: Map<number, string | null>
@@ -721,6 +757,11 @@ async function vues(idSousTraitant: number, idCommande?: number, lotsDepuis?: st
   const revenues = lotsDepuis && !idCommande ? [...(await recuesDepuis(entetes.filter((e) => e.soldee).map((e) => e.id), lotsDepuis))] : []
   const aLire = idCommande ? entetes.map((e) => e.id) : [...ouvertes, ...revenues]
   const lignesOuvertes = lignes.filter((l) => ouvertes.includes(l.cmd))
+  // The délai kept or not is the orders' business: the list of lots does not read it.
+  const [promesses, fermes] = lotsDepuis ? [new Map<number, { promis: string | null; recu: string | null }>(), [] as Periode[]] : await Promise.all([
+    promessesDesLignes(lignes.map((l) => l.id)),
+    lireFermetures([idSousTraitant], true).then((m) => m.get(idSousTraitant) ?? []),
+  ])
   const [faits, ecru, fini, urgences] = await Promise.all([
     lireCommandesEnnoblissement(aLire),
     // The pieces themselves only where their return is still followed (open orders).
@@ -747,6 +788,9 @@ async function vues(idSousTraitant: number, idCommande?: number, lotsDepuis?: st
     if (etape === 'terminee' && horsFenetre(entete)) continue // finished without being closed, out of the window
     out.push({
       entete, etape, lignes: lignesV, lots, fenetre: fenetreCommande(etape, etat, entete.envoyee, aujourdhui()),
+      // Judged once everything is back: before that the partner's clock (`fenetre`) says where it stands.
+      respect: etape === 'en_controle' || etape === 'terminee'
+        ? respectCommande(ls.map((l) => promesses.get(l.id) ?? { promis: null, recu: null }), fermes) : null,
       urgences: new Map(lignesV.filter((l) => !l.livree && urgences.has(l.row.id)).map((l) => [l.row.id, urgences.get(l.row.id)!.dateSouhaitee])),
     })
   }
@@ -769,6 +813,7 @@ function resume(v: Vue, noms: Map<number, { reference: string; coloris: string }
     lotsAVous: v.etape === 'terminee' ? 0 : v.lots.filter((l) => LOT_A_VOUS.has(l.etape)).length,
     articles: [...new Set(v.lignes.map((l) => article(noms.get(l.row.id)?.reference ?? '', noms.get(l.row.id)?.coloris ?? '')).filter(Boolean))],
     fenetre: v.fenetre,
+    respect: v.respect,
   }
 }
 

@@ -3,6 +3,7 @@ import { SANS_SOUMISSION, type EtapeLot, type LotFait } from './cycle-ennoblisse
 import {
   article, debutDouzeMois, etapeCommandePartenaire, etapeLignePartenaire, etapeLotPartenaire, lotsVus, LOT_A_VOUS,
   deuxMoisAvant, fenetre, fenetreCommande, fenetreLot, LOT_MESURABLE, mesuresDuLot, mesuresMalterre, sansMouvementDepuis, tolerancesRef,
+  respectCommande,
 } from './espace-partenaire-commandes.js'
 import { CONTROLES_PAR_DEFAUT, type ControlesRef } from './controles-lot.js'
 
@@ -103,6 +104,20 @@ describe('the partner’s control of a lot', () => {
   })
   it('measured once the partner finishes the lot, never before the stenter nor once validated', () => {
     expect([...LOT_MESURABLE].sort()).toEqual(['coloris_valide', 'en_controle', 'en_reprise', 'mesures_a_transmettre'])
+  })
+})
+
+describe('the délai kept or not', () => {
+  it('judges the first promise against the first lot, signed, in working days', () => {
+    expect(respectCommande([{ promis: '2026-12-02', recu: '2026-11-25' }])).toEqual({ promis: '2026-12-02', recuLe: '2026-11-25', ecartJours: -5 })
+    expect(respectCommande([{ promis: '2026-11-19', recu: '2026-11-25' }])?.ecartJours).toBe(4)
+    expect(respectCommande([{ promis: '2026-11-25', recu: '2026-11-25' }])?.ecartJours).toBe(0)
+  })
+  it('the line the most late speaks for the order; nothing without a promise and a lot', () => {
+    expect(respectCommande([{ promis: '2026-12-02', recu: '2026-11-25' }, { promis: '2026-11-19', recu: '2026-11-25' }, { promis: null, recu: '2026-11-25' }]))
+      .toEqual({ promis: '2026-11-19', recuLe: '2026-11-25', ecartJours: 4 })
+    expect(respectCommande([{ promis: '2026-11-19', recu: null }, { promis: null, recu: '2026-11-25' }])).toBeNull()
+    expect(respectCommande([])).toBeNull()
   })
 })
 

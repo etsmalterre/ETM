@@ -86,6 +86,34 @@ export function ecartDelai(promis: string, fin: string, fermetures: readonly Per
   return { retard: Math.max(0, ecart), ecart }
 }
 
+/**
+ * The promise and the first reception of given lines, by the rule of « Respect du délai » above: the FIRST délai
+ * given (the one recorded at the answer, else `date_delai`, else `date_livraison`) and the first lot received.
+ * The same expressions as the lines' query of `qualiteService` — change both together. Read by the espace
+ * partenaire's order list (lib/espace-partenaire-commandes.ts), so an order says there what its dot says here.
+ */
+export async function promessesDesLignes(idsLignes: readonly number[]): Promise<Map<number, { promis: string | null; recu: string | null }>> {
+  const out = new Map<number, { promis: string | null; recu: string | null }>()
+  const ids = [...new Set(idsLignes.filter((x) => x > 0))]
+  if (ids.length === 0) return out
+  const rows = await mpsPg()<{ id: number; promis: string | null; recu: string | null; donne: string | null }[]>`
+    SELECT l.idligne_commande_sous_traitant AS id,
+           to_char(COALESCE(l.date_delai, l.date_livraison), 'YYYY-MM-DD') AS promis,
+           to_char(s.premier, 'YYYY-MM-DD') AS recu,
+           to_char(d.donne, 'YYYY-MM-DD') AS donne
+    FROM ligne_commande_sous_traitant l
+    LEFT JOIN (SELECT idligne_commande_sous_traitant AS ligne, min(date) AS premier FROM suivilot
+               WHERE idligne_commande_sous_traitant = ANY(${ids}) GROUP BY 1) s
+      ON s.ligne = l.idligne_commande_sous_traitant
+    LEFT JOIN (SELECT DISTINCT ON (idligne_commande_sous_traitant) idligne_commande_sous_traitant AS ligne, delai_donne AS donne
+               FROM delai_sst_evenement
+               WHERE type = 'delai_recu' AND delai_donne IS NOT NULL AND idligne_commande_sous_traitant = ANY(${ids})
+               ORDER BY idligne_commande_sous_traitant, le) d ON d.ligne = l.idligne_commande_sous_traitant
+    WHERE l.idligne_commande_sous_traitant = ANY(${ids}) AND l.type = 2`
+  for (const r of rows) out.set(Number(r.id), { promis: r.donne ?? r.promis, recu: r.recu })
+  return out
+}
+
 export interface SyntheseQualite {
   reponse: {
     mesurees: number
