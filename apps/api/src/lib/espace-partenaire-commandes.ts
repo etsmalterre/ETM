@@ -10,11 +10,19 @@
 //    (« À envoyer ») is never listed;
 //  - only what the partner may see. Never add: prices and tariffs (line `prix`, the € total, pricing-sst), the
 //    Malterre customer (its name, its order, the client line the matter is reserved to — `IDcommande_client`,
-//    affectations), the order `commentaire` and `journal`, the LINE `commentaire`, the Journal tab's facts
-//    (journal_commande_sst, journal_lot), relances and reports of a délai (who was chased, motif, imputable),
+//    affectations), the order `commentaire` and `journal`, the LINE `commentaire`, the Journal tab's facts as
+//    ETM writes them (journal_commande_sst, journal_lot — since 2026-11-26 the order's page shows a journal of its
+//    own, a closed list of them re-worded and without authors: lib/espace-partenaire-journal.ts, where anything
+//    more is decided), relances and reports of a délai (who was chased, motif, imputable),
 //    whose move a step is on Malterre's side or its chase date (`main`, `relance`, red / amber), Tricobot's
 //    readings, the target values copied from the client's fiche (`*_demandee`), the rapport de contrôle and
 //    which client a soumission went to.
+//  - Since 2026-11-26 (Vincent: « il faut que le sous-traitant soit tenu au courant d'une action qualité dès le
+//    début, dès qu'on lui passe commande ») an order in hand carries the SENTENCE of each quality action it is
+//    under (`actionsQualite`: the mention, already printed on its bon de commande). Never its title or description.
+//  - Since 2026-11-26 (Vincent: « lister les pièces tombées de métier qu'on a mis dans l'article ») an order's
+//    page lists the écru pieces handed over: number and weight, what their labels read. Never add the rest of
+//    stock_ecru: `visiteur`, `observations` (knitting defects), `second_choix`, the knitting lot, the client line.
 //  - Since 2026-11-26 (Vincent) an order whose matter is all back says whether its délai was kept (`respect`:
 //    the first délai given against the first lot received — the partner's own figures, those of « Qualité de
 //    service », lib/qualite-service-sst.ts). Never add the relances or the answer time to it.
@@ -87,6 +95,7 @@ import { DELAI_PREMIERE_DEMANDE_J } from './delai-sst.js'
 import { fermetures as lireFermetures } from './delais-standards.js'
 import type { Periode } from './jours-ouvres.js'
 import { ecartDelai, promessesDesLignes } from './qualite-service-sst.js'
+import { journalPartenaire, type EntreeJournalPartenaire } from './espace-partenaire-journal.js'
 import { ecruToutRevenu, ligneLivreeLe } from './ligne-sst-livree.js'
 import { familleOfTypeSst } from './sst-tricotage.js'
 import { urgencesLignes } from './urgence-sst.js'
@@ -96,6 +105,7 @@ import type { MesuresSst } from './agents/flux-ennoblisseur/saisies.js'
 import { bornesRendement, rendementConforme, rendementPiece } from './rendement-lot.js'
 import { reprisesDuLot } from './reprises.js'
 import { actionsDesLots, actionsDuLot, type ActionDuLot } from './actions-lot.js'
+import { mentionsByLine } from './actions-qualite.js'
 import { buildCommandePdfData, renderCommandePdfBuffer } from '../routes/commandes-sous-traitant.js'
 
 // ── Steps (pure, tested) ────────────────────────────────────
@@ -202,6 +212,9 @@ export interface CommandeResume {
   /** Once everything is back (« en contrôle », « terminée »): whether the délai was kept. null before that, or
    *  when nothing can be measured (no délai recorded, no lot). */
   respect: Respect | null
+  /** The quality actions the order is under, from the day it is placed: the sentence of each, the one printed on
+   *  the bon de commande. [] once the order is finished (its lots carry their verdicts). */
+  actionsQualite: string[]
 }
 
 export interface Adresse {
@@ -227,6 +240,15 @@ export interface LigneCommande {
   recuMl: number
   livreeLe: string | null
   etape: EtapeLignePartenaire
+  /** The écru pieces handed over for this line, as their labels read: number and weight. */
+  pieces: PieceEcrue[]
+}
+
+/** An écru piece as its label reads. */
+export interface PieceEcrue {
+  /** « OF/n° » (stock_ecru.numero). */
+  numero: string
+  poidsKg: number
 }
 
 /** The dyer's measures of a lot. Units: laize cm, poids g/m², stabilités and vrillage %. */
@@ -307,6 +329,9 @@ export interface CommandeDetail extends Omit<CommandeResume, 'articles'> {
   adresseLivraison: Adresse | null
   lignes: LigneCommande[]
   lots: Lot[]
+  /** What happened on the order and its lots, newest first — the partner's own reading of ETM's journal
+   *  (lib/espace-partenaire-journal.ts, a closed list). */
+  journal: EntreeJournalPartenaire[]
 }
 
 // ── The partner's control of a lot (pure, tested) ───────────
@@ -605,6 +630,22 @@ async function ecruParLigne(ligneIds: number[], avecIds: number[]): Promise<Map<
   return out
 }
 
+/** The écru pieces of these lines, in the order they were knitted. Number and weight only (below). */
+async function piecesEcrues(ligneIds: number[]): Promise<Map<number, PieceEcrue[]>> {
+  const out = new Map<number, PieceEcrue[]>()
+  if (ligneIds.length === 0) return out
+  const rows = await mpsPg()<{ ligne: number; numero: string | null; poids: number }[]>`
+    SELECT idref_commande_affectation AS ligne, trim(numero::text) AS numero, COALESCE(poids, 0)::float8 AS poids
+    FROM stock_ecru WHERE idref_commande_affectation = ANY(${ligneIds})
+    ORDER BY idordre_fabrication, num_piece_of, idstock_ecru`
+  for (const r of rows) {
+    const arr = out.get(Number(r.ligne)) ?? []
+    arr.push({ numero: str(r.numero), poidsKg: round1(Number(r.poids) || 0) })
+    out.set(Number(r.ligne), arr)
+  }
+  return out
+}
+
 interface FiniRow { ligne: number; lot: string; metrage: number; jour: string | null }
 
 /** The rolls received back per line (stock_fini.IDref_commande_source). No roll number, no measure. */
@@ -729,6 +770,7 @@ interface Vue {
   etape: EtapeCommandePartenaire
   fenetre: Fenetre | null
   respect: Respect | null
+  actions: string[]
   lignes: LigneVue[]
   lots: LotVu[]
   urgences: Map<number, string | null>
@@ -762,6 +804,13 @@ async function vues(idSousTraitant: number, idCommande?: number, lotsDepuis?: st
     promessesDesLignes(lignes.map((l) => l.id)),
     lireFermetures([idSousTraitant], true).then((m) => m.get(idSousTraitant) ?? []),
   ])
+  // The quality actions an order still in hand is under (Vincent 2026-11-26: the dyer must know from the day the
+  // order is placed): the mentions of the OPEN actions that match its lines, as the bon de commande prints them
+  // (lib/actions-qualite.ts `mentionTextsForCommande`: same matching, read once for the whole list).
+  const mentions = lotsDepuis ? new Map<number, { mention: string }[]>() : await mentionsByLine(lignesOuvertes.map((l) => ({
+    IDligne_commande_sous_traitant: l.id, IDcommande_sous_traitant: l.cmd, type_kind: l.type,
+    IDreference: l.ref, IDColoris: l.coloris, IDsous_traitant: idSousTraitant,
+  })))
   const [faits, ecru, fini, urgences] = await Promise.all([
     lireCommandesEnnoblissement(aLire),
     // The pieces themselves only where their return is still followed (open orders).
@@ -791,6 +840,8 @@ async function vues(idSousTraitant: number, idCommande?: number, lotsDepuis?: st
       // Judged once everything is back: before that the partner's clock (`fenetre`) says where it stands.
       respect: etape === 'en_controle' || etape === 'terminee'
         ? respectCommande(ls.map((l) => promesses.get(l.id) ?? { promis: null, recu: null }), fermes) : null,
+      actions: etape === 'terminee' ? []
+        : [...new Set(ls.flatMap((l) => mentions.get(l.id) ?? []).map((m) => m.mention.trim()).filter(Boolean))],
       urgences: new Map(lignesV.filter((l) => !l.livree && urgences.has(l.row.id)).map((l) => [l.row.id, urgences.get(l.row.id)!.dateSouhaitee])),
     })
   }
@@ -814,6 +865,7 @@ function resume(v: Vue, noms: Map<number, { reference: string; coloris: string }
     articles: [...new Set(v.lignes.map((l) => article(noms.get(l.row.id)?.reference ?? '', noms.get(l.row.id)?.coloris ?? '')).filter(Boolean))],
     fenetre: v.fenetre,
     respect: v.respect,
+    actionsQualite: v.actions,
   }
 }
 
@@ -980,12 +1032,14 @@ export async function commandePartenaire(idSousTraitant: number, idCommande: num
   const { vues: vs, fini } = await vues(idSousTraitant, idCommande)
   const v = vs[0]
   if (!v) return null
-  const [noms, pdf, adresseLivraison, controles] = await Promise.all([
+  const [noms, pdf, adresseLivraison, controles, pieces, journal] = await Promise.all([
     libelles(v.lignes.map((l) => l.row)),
     // What the bon de commande prints of each reference: its designation, treatments and presentation.
     buildCommandePdfData(idCommande),
     lireAdresse(v.entete.idadresse),
     controlesDesLots(v.lots.map((l) => l.fait.idsuivilot)),
+    piecesEcrues(v.lignes.map((l) => l.row.id)),
+    journalPartenaire(idCommande),
   ])
   const imprime = new Map((pdf?.lignes ?? []).map((l) => [l.id ?? 0, l]))
   const enReprise = new Set(v.lots.filter((l) => l.etape === 'en_reprise').map((l) => `${l.idLigne}:${cleLot(l.fait.lot)}`))
@@ -1010,11 +1064,12 @@ export async function commandePartenaire(idSousTraitant: number, idCommande: num
       recuMl: round1(recus.reduce((s, f) => s + f.metrage, 0)),
       livreeLe: l.livreeLe,
       etape: etapeLignePartenaire(l.livree, l.row.delai),
+      pieces: pieces.get(l.row.id) ?? [],
     }
   })
   const lots = lotsDe(v, noms, fini, controles)
   const { articles: _articles, ...r } = resume(v, noms)
-  return { ...r, adresseLivraison, lignes, lots }
+  return { ...r, adresseLivraison, lignes, lots, journal }
 }
 
 /** The bon de commande PDF — the document Malterre e-mails the partner (Sous-traitants › Ennoblissement « PDF ») —
