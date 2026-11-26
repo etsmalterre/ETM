@@ -1,8 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import { SANS_SOUMISSION, type EtapeLot, type LotFait } from './cycle-ennoblissement.js'
 import {
-  article, etapeCommandePartenaire, etapeLignePartenaire, etapeLotPartenaire, lotsVus, LOT_A_VOUS,
+  article, debutDouzeMois, etapeCommandePartenaire, etapeLignePartenaire, etapeLotPartenaire, lotsVus, LOT_A_VOUS,
+  sansMouvementDepuis,
 } from './espace-partenaire-commandes.js'
+
+describe('twelve sliding months', () => {
+  it('the window opens the first day of the month, the current one included', () => {
+    expect(debutDouzeMois('2026-11-24')).toBe('2025-12-01')
+    expect(debutDouzeMois('2026-12-31')).toBe('2026-01-01')
+    expect(debutDouzeMois('2027-01-01')).toBe('2026-02-01')
+  })
+  it('an order moves while its bon de commande or a lot of it is in the window', () => {
+    const depuis = '2025-12-01'
+    // Sent in the window.
+    expect(sansMouvementDepuis('2025-12-01', false, depuis)).toBe(false)
+    // Sent before, a lot came back since: « Qualité de service » shows that line, its order must open.
+    expect(sansMouvementDepuis('2025-10-20', true, depuis)).toBe(false)
+    // Sent before, nothing since: out once finished.
+    expect(sansMouvementDepuis('2025-11-30', false, depuis)).toBe(true)
+    expect(sansMouvementDepuis(null, false, depuis)).toBe(true)
+  })
+})
 
 describe('etapeCommandePartenaire', () => {
   it('never shows an order whose bon de commande is not sent', () => {

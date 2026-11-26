@@ -4,7 +4,7 @@
 //
 // « Qualité de service »: the « Respect du délai » lines of Sous-traitants › Gestion › « Qualité de service »
 // (lib/qualite-service-sst.ts `qualiteService()`, reused: same lines, same working days, same first promise),
-// over twelve sliding months, with the gap SIGNED (ETM clamps its `retard` at 0; the partner is also told when
+// over twelve sliding months (`debutDouzeMois`, the window of the partner's order list too), with the gap SIGNED (ETM clamps its `retard` at 0; the partner is also told when
 // it was early) and limited to the orders the partner can open (bon de commande e-mailed: an order progressed
 // without one is not in its space, lib/espace-partenaire-commandes.ts).
 // Never add: « Réponse au délai » (how long the partner took to answer, the relances it took, the reports and
@@ -12,7 +12,7 @@
 // sous-traitant's lines, prices, the Malterre customer behind a line.
 
 import { qualiteService, type LigneRespect } from './qualite-service-sst.js'
-import { articlesDesLignes, commandesEnvoyees } from './espace-partenaire-commandes.js'
+import { articlesDesLignes, commandesEnvoyees, debutDouzeMois } from './espace-partenaire-commandes.js'
 
 export interface LigneService {
   idCommande: number
@@ -38,12 +38,6 @@ export interface QualiteServicePartenaire {
   objectifJours: number
   /** Newest first. */
   lignes: LigneService[]
-}
-
-/** First day of the twelve sliding months ending with the current one (2026-11-24 → 2025-12-01). Pure. */
-export function debutDouzeMois(aujourdhui: string): string {
-  const d = new Date(Date.UTC(Number(aujourdhui.slice(0, 4)), Number(aujourdhui.slice(5, 7)) - 12, 1))
-  return d.toISOString().slice(0, 10)
 }
 
 /** One ETM line as the partner reads it. Pure. */

@@ -445,14 +445,16 @@ webserviceSiteRouter.post('/espace/partenaires/activite', handle(async (req, res
 }))
 
 /** The partner's orders, newest first (lib/espace-partenaire-commandes.ts: ennoblissement orders whose bon de
- *  commande was e-mailed, and only what the partner may see). [] for a sous-traitant with none. */
+ *  commande was e-mailed, in progress or finished within twelve sliding months, and only what the partner may
+ *  see). [] for a sous-traitant with none. */
 webserviceSiteRouter.get('/espace/partenaires/:id/commandes', handle(async (req, res) => {
   const id = idParam(req.params.id)
   if (!id) { fault(res, 400, 'Identifiant partenaire invalide'); return }
   res.json({ commandes: await listeCommandesPartenaire(id) })
 }))
 
-/** One order of the partner — 404 when it isn't this partner's or was never sent (never says whose it is). */
+/** One order of the partner — 404 when it isn't this partner's, was never sent, or is finished and out of the
+ *  twelve sliding months (never says whose it is). */
 webserviceSiteRouter.get('/espace/partenaires/:id/commandes/:idCommande', handle(async (req, res) => {
   const id = idParam(req.params.id)
   const idCommande = idParam(req.params.idCommande)

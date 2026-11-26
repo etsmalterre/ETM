@@ -1,14 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { debutDouzeMois, ligneService } from './espace-partenaire-indicateurs.js'
+import { ligneService } from './espace-partenaire-indicateurs.js'
 import { ecartDelai, type LigneRespect } from './qualite-service-sst.js'
 
 describe('qualité de service du partenaire', () => {
-  it('twelve sliding months, the current one included', () => {
-    expect(debutDouzeMois('2026-11-24')).toBe('2025-12-01')
-    expect(debutDouzeMois('2026-12-31')).toBe('2026-01-01')
-    expect(debutDouzeMois('2027-01-01')).toBe('2026-02-01')
-  })
-
   it('the gap is signed where ETM’s retard is clamped at 0', () => {
     // Promised Friday 20/11, received Wednesday 18/11: two working days early.
     expect(ecartDelai('2026-11-20', '2026-11-18')).toEqual({ retard: 0, ecart: -2 })

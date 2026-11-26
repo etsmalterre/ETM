@@ -45,6 +45,13 @@
 //                        day whatever else is in progress on the lot), else en_controle: Malterre's controls,
 //                        soumissions, rapport de contrôle and validation are one step for the partner
 // A closed order shows every lot « validé »: nothing is expected of the partner any more.
+//
+// Twelve sliding months (Vincent 2026-11-26): the space serves the work in progress, not the archive. A finished
+// order leaves it — list, detail and bon de commande alike, « not found » — once it had no movement since the
+// first day of the twelve sliding months (`debutDouzeMois`): its bon de commande was sent before and no lot of it
+// came back since. An order that is not finished stays whatever its age. The window opens the same day as
+// « Qualité de service » (lib/espace-partenaire-indicateurs.ts) and a lot's return is read from the same suivi
+// lot rows, so every line shown there opens its order.
 
 import { mpsPg } from './mps-pg.js'
 import { consumedEcruIds } from './fini-sources.js'
@@ -190,6 +197,18 @@ function aujourdhui(): string {
   return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
 }
 
+/** First day of the twelve sliding months ending with the current one (2026-11-24 → 2025-12-01). Pure. */
+export function debutDouzeMois(aujourdhui: string): string {
+  const d = new Date(Date.UTC(Number(aujourdhui.slice(0, 4)), Number(aujourdhui.slice(5, 7)) - 12, 1))
+  return d.toISOString().slice(0, 10)
+}
+
+/** No movement in the twelve months: the bon de commande left before `depuis` and no lot came back since. Such an
+ *  order is shown only while it is not finished. Pure. */
+export function sansMouvementDepuis(envoyeeLe: string | null, recuDepuis: boolean, depuis: string): boolean {
+  return !recuDepuis && (envoyeeLe ?? '') < depuis
+}
+
 /** True when the sous-traitant exists and its orders are ennoblissement ones (not a knitter's). */
 async function estEnnoblisseur(idSousTraitant: number): Promise<boolean> {
   const rows = await mpsPg()<{ type: number }[]>`
@@ -213,6 +232,21 @@ async function entetesEnvoyees(idSousTraitant: number, idCommande?: number): Pro
       ${idCommande ? sql`AND c.idcommande_sous_traitant = ${idCommande}` : sql``}
     ORDER BY c.idcommande_sous_traitant DESC`
   return rows.map((r) => ({ id: Number(r.id), date: r.date, soldee: Number(r.soldee) === 1, idadresse: Number(r.idadresse), envoyee: r.envoyee }))
+}
+
+/** Of these orders, the ones a lot of which came back since `depuis`: a suivi lot row dated since (what « Qualité
+ *  de service » dates a line's first lot by), or a roll entered in stock since. */
+async function recuesDepuis(cmdIds: number[], depuis: string): Promise<Set<number>> {
+  if (cmdIds.length === 0) return new Set()
+  const rows = await mpsPg()<{ cmd: number }[]>`
+    SELECT DISTINCT l.idcommande_sous_traitant AS cmd
+    FROM ligne_commande_sous_traitant l
+    JOIN (SELECT idligne_commande_sous_traitant AS ligne FROM suivilot WHERE date >= ${depuis}::date
+          UNION
+          SELECT idref_commande_source AS ligne FROM stock_fini WHERE date_saisie >= ${depuis}::date) r
+      ON r.ligne = l.idligne_commande_sous_traitant
+    WHERE l.idcommande_sous_traitant = ANY(${cmdIds})`
+  return new Set(rows.map((r) => Number(r.cmd)))
 }
 
 interface LigneRow { id: number; cmd: number; type: number; ref: number; coloris: number; quantite: number; delai: string | null; termine: boolean }
@@ -390,7 +424,12 @@ interface Vue {
 async function vues(idSousTraitant: number, idCommande?: number): Promise<{ vues: Vue[]; fini: Map<number, FiniRow[]> }> {
   const vide = { vues: [] as Vue[], fini: new Map<number, FiniRow[]>() }
   if (!(await estEnnoblisseur(idSousTraitant))) return vide
-  const entetes = await entetesEnvoyees(idSousTraitant, idCommande)
+  const toutes = await entetesEnvoyees(idSousTraitant, idCommande)
+  // Twelve sliding months: a closed order without a movement since is dropped before anything else is read of it.
+  const depuis = debutDouzeMois(aujourdhui())
+  const recues = await recuesDepuis(toutes.filter((e) => (e.envoyee ?? '') < depuis).map((e) => e.id), depuis)
+  const horsFenetre = (e: Entete) => sansMouvementDepuis(e.envoyee, recues.has(e.id), depuis)
+  const entetes = toutes.filter((e) => !(e.soldee && horsFenetre(e)))
   if (entetes.length === 0) return vide
   const lignes = await lignesDe(entetes.map((e) => e.id))
   const parCommande = new Map<number, LigneRow[]>()
@@ -423,6 +462,7 @@ async function vues(idSousTraitant: number, idCommande?: number): Promise<{ vues
     const delaiManquant = lignesV.some((l) => !l.livree && !l.row.delai)
     const etape = terminee ? 'terminee' : etat ? etapeCommandePartenaire(etat, delaiManquant) : null
     if (!etape) continue // « À envoyer » again (lines back to Non_Envoye): not the partner's to see
+    if (etape === 'terminee' && horsFenetre(entete)) continue // finished without being closed, out of the window
     out.push({
       entete, etape, lignes: lignesV, lots,
       urgences: new Map(lignesV.filter((l) => !l.livree && urgences.has(l.row.id)).map((l) => [l.row.id, urgences.get(l.row.id)!.dateSouhaitee])),
@@ -449,7 +489,8 @@ function resume(v: Vue, noms: Map<number, { reference: string; coloris: string }
   }
 }
 
-/** Every order sent to the partner, newest first. [] for an unknown sous-traitant, a knitter, or none sent. */
+/** The partner's orders, newest first: those in progress, and those finished within the twelve sliding months.
+ *  [] for an unknown sous-traitant, a knitter, or none sent. */
 export async function listeCommandesPartenaire(idSousTraitant: number): Promise<CommandeResume[]> {
   const { vues: vs } = await vues(idSousTraitant)
   const noms = await libelles(vs.flatMap((v) => v.lignes.map((l) => l.row)))
@@ -467,7 +508,8 @@ async function lireAdresse(id: number): Promise<Adresse | null> {
   return { nom: str(r.nom), lignes: [r.adresse1, r.adresse2, r.adresse3].map(str).filter(Boolean), cp: str(r.cp), ville: str(r.ville), pays: str(r.pays) }
 }
 
-/** One order of the partner, or null — also when it exists but is another sous-traitant's, or was never sent. */
+/** One order of the partner, or null — also when it exists but is another sous-traitant's, was never sent, or is
+ *  finished and out of the twelve sliding months. */
 export async function commandePartenaire(idSousTraitant: number, idCommande: number): Promise<CommandeDetail | null> {
   const { vues: vs, fini } = await vues(idSousTraitant, idCommande)
   const v = vs[0]
