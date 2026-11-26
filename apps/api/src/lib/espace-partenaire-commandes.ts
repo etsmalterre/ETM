@@ -21,8 +21,12 @@
 //    début, dès qu'on lui passe commande ») an order in hand carries the SENTENCE of each quality action it is
 //    under (`actionsQualite`: the mention, already printed on its bon de commande). Never its title or description.
 //  - Since 2026-11-26 (Vincent: « lister les pièces tombées de métier qu'on a mis dans l'article ») an order's
-//    page lists the écru pieces handed over: number and weight, what their labels read. Never add the rest of
-//    stock_ecru: `visiteur`, `observations` (knitting defects), `second_choix`, the knitting lot, the client line.
+//    page lists the écru pieces handed over: number and weight, what their labels read, and (Vincent the same
+//    day: « faire part à notre sous-traitant de ce qu'on a déjà observé sur ces pièces ») the DEFECTS the
+//    visitage recorded on each — the tablet's closed vocabulary only (`libelleDefaut`). Never add the rest of
+//    stock_ecru: `observations` (a free field: instructions, but also lots, a company's name, a customer order
+//    number, notes for ourselves — measured that day on 340 pieces), `visiteur`, `second_choix`, the knitting
+//    lot, the client line; nor who spotted a defect.
 //  - Since 2026-11-26 (Vincent) an order whose matter is all back says whether its délai was kept (`respect`:
 //    the first délai given against the first lot received — the partner's own figures, those of « Qualité de
 //    service », lib/qualite-service-sst.ts). Never add the relances or the answer time to it.
@@ -107,6 +111,7 @@ import { reprisesDuLot } from './reprises.js'
 import { actionsDesLots, actionsDuLot, type ActionDuLot } from './actions-lot.js'
 import { mentionsByLine } from './actions-qualite.js'
 import { buildCommandePdfData, renderCommandePdfBuffer } from '../routes/commandes-sous-traitant.js'
+import { fetchDefectsByEcru } from '../routes/stock-ecru.js'
 
 // ── Steps (pure, tested) ────────────────────────────────────
 
@@ -249,6 +254,25 @@ export interface PieceEcrue {
   /** « OF/n° » (stock_ecru.numero). */
   numero: string
   poidsKg: number
+  /** The defects Malterre's visitage found on it before it left, one wording each (`libelleDefaut`). */
+  defauts: string[]
+}
+
+/**
+ * A visitage defect as the partner reads it — and as ETM's own screens do (web `texteDefauts`, the TRM avis
+ * d'expédition): the tablet's description (« Maille 1m - 3m »), else the type with its count or its length
+ * (« Trou ×2 », « Maille 25 cm »). The description is the tablet's closed vocabulary (30 wordings over twelve
+ * months, each opening with its type — checked 2026-11-26): one that does not open with its type is somebody's
+ * free text, and only the type is told. Pure.
+ */
+export function libelleDefaut(d: { type_defaut: string | null; description: string | null; taille_cm: number | null; nombre: number | null }): string {
+  const type = str(d.type_defaut).replace(/\s+/g, ' ')
+  const desc = str(d.description).replace(/\s+/g, ' ')
+  const base = type && desc.toLowerCase().startsWith(type.toLowerCase()) ? desc : type || 'Défaut'
+  if (base !== (type || 'Défaut')) return base // the description already says how long
+  const nombre = Number(d.nombre) || 0
+  const taille = Number(d.taille_cm) || 0
+  return nombre > 1 ? `${base} ×${nombre}` : taille > 0 ? `${base} ${taille} cm` : base
 }
 
 /** The dyer's measures of a lot. Units: laize cm, poids g/m², stabilités and vrillage %. */
@@ -630,17 +654,19 @@ async function ecruParLigne(ligneIds: number[], avecIds: number[]): Promise<Map<
   return out
 }
 
-/** The écru pieces of these lines, in the order they were knitted. Number and weight only (below). */
+/** The écru pieces of these lines, in the order they were knitted: number, weight, and the defects the visitage
+ *  recorded on each (defaut_qualite, read as Clients › Commandes reads them: routes/stock-ecru.ts). */
 async function piecesEcrues(ligneIds: number[]): Promise<Map<number, PieceEcrue[]>> {
   const out = new Map<number, PieceEcrue[]>()
   if (ligneIds.length === 0) return out
-  const rows = await mpsPg()<{ ligne: number; numero: string | null; poids: number }[]>`
-    SELECT idref_commande_affectation AS ligne, trim(numero::text) AS numero, COALESCE(poids, 0)::float8 AS poids
+  const rows = await mpsPg()<{ id: number; ligne: number; numero: string | null; poids: number }[]>`
+    SELECT idstock_ecru AS id, idref_commande_affectation AS ligne, trim(numero::text) AS numero, COALESCE(poids, 0)::float8 AS poids
     FROM stock_ecru WHERE idref_commande_affectation = ANY(${ligneIds})
     ORDER BY idordre_fabrication, num_piece_of, idstock_ecru`
+  const defauts = await fetchDefectsByEcru(rows.map((r) => Number(r.id)))
   for (const r of rows) {
     const arr = out.get(Number(r.ligne)) ?? []
-    arr.push({ numero: str(r.numero), poidsKg: round1(Number(r.poids) || 0) })
+    arr.push({ numero: str(r.numero), poidsKg: round1(Number(r.poids) || 0), defauts: (defauts.get(Number(r.id)) ?? []).map(libelleDefaut) })
     out.set(Number(r.ligne), arr)
   }
   return out

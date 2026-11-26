@@ -3,7 +3,7 @@ import { SANS_SOUMISSION, type EtapeLot, type LotFait } from './cycle-ennoblisse
 import {
   article, debutDouzeMois, etapeCommandePartenaire, etapeLignePartenaire, etapeLotPartenaire, lotsVus, LOT_A_VOUS,
   deuxMoisAvant, fenetre, fenetreCommande, fenetreLot, LOT_MESURABLE, mesuresDuLot, mesuresMalterre, sansMouvementDepuis, tolerancesRef,
-  respectCommande,
+  respectCommande, libelleDefaut,
 } from './espace-partenaire-commandes.js'
 import { CONTROLES_PAR_DEFAUT, type ControlesRef } from './controles-lot.js'
 
@@ -104,6 +104,22 @@ describe('the partner’s control of a lot', () => {
   })
   it('measured once the partner finishes the lot, never before the stenter nor once validated', () => {
     expect([...LOT_MESURABLE].sort()).toEqual(['coloris_valide', 'en_controle', 'en_reprise', 'mesures_a_transmettre'])
+  })
+})
+
+describe('a visitage defect as the partner reads it', () => {
+  const d = (type_defaut: string | null, description: string | null, taille_cm = 0, nombre = 0) => libelleDefaut({ type_defaut, description, taille_cm, nombre })
+  it('the tablet’s description, else the type with its count or its length', () => {
+    expect(d('Maille', 'Maille 1m - 3m', 200)).toBe('Maille 1m - 3m')
+    expect(d('Autre Barrure', 'Autre Barrure  Moins de 50 cm', 25)).toBe('Autre Barrure Moins de 50 cm')
+    expect(d('Trou', 'Trou', 0, 2)).toBe('Trou ×2')
+    expect(d('Trou', null, 0, 1)).toBe('Trou')
+    expect(d('Maille', null, 25)).toBe('Maille 25 cm')
+    expect(d('Démaillage', 'Démaillage', 0, 1)).toBe('Démaillage')
+  })
+  it('never somebody’s free text: only the type is told', () => {
+    expect(d('Autre', 'voir avec le client X', 0, 1)).toBe('Autre')
+    expect(d(null, 'tache près de la lisière', 0, 0)).toBe('Défaut')
   })
 })
 
