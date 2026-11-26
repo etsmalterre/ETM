@@ -2,9 +2,32 @@ import { describe, expect, it } from 'vitest'
 import { SANS_SOUMISSION, type EtapeLot, type LotFait } from './cycle-ennoblissement.js'
 import {
   article, debutDouzeMois, etapeCommandePartenaire, etapeLignePartenaire, etapeLotPartenaire, lotsVus, LOT_A_VOUS,
-  LOT_MESURABLE, mesuresDuLot, sansMouvementDepuis, tolerancesRef,
+  deuxMoisAvant, LOT_MESURABLE, mesuresDuLot, mesuresMalterre, sansMouvementDepuis, tolerancesRef,
 } from './espace-partenaire-commandes.js'
 import { CONTROLES_PAR_DEFAUT, type ControlesRef } from './controles-lot.js'
+
+describe('the lot’s page', () => {
+  it('the list of lots goes two months back, to the same day', () => {
+    expect(deuxMoisAvant('2026-11-26')).toBe('2026-09-26')
+    expect(deuxMoisAvant('2026-01-15')).toBe('2025-11-15')
+    // A day the earlier month does not have: its last one.
+    expect(deuxMoisAvant('2026-04-30')).toBe('2026-02-28')
+    expect(deuxMoisAvant('2026-08-31')).toBe('2026-06-30')
+  })
+  it('Malterre’s own measures: those asked of IT, same tolerances, the allongement by the fiche', () => {
+    const bornes = { laizeMin: 150, laizeMax: 160, poidsMin: 145, poidsMax: 155, stabHauteur: -5, stabLargeur: -5, allongementHMin: 50, allongementHMax: 0, allongementLMin: 80, allongementLMax: 120 }
+    const v = { laize: 156, poids: 0, stabH: -3, stabL: -1, vrillage: 7, allongementH: 60, allongementL: null }
+    // By default everything but the allongement.
+    expect(mesuresMalterre(v, bornes).map((m) => [m.cle, m.valeur, m.min, m.max])).toEqual([
+      ['laize', 156, 150, 160], ['poids', null, 145, 155], ['stabH', -3, -5, 5], ['stabL', -1, -5, 5], ['vrillage', 7, null, 5],
+    ])
+    const avecAllongement: ControlesRef = { ...CONTROLES_PAR_DEFAUT, mesures: { ...CONTROLES_PAR_DEFAUT.mesures, malterre: { ...CONTROLES_PAR_DEFAUT.mesures.malterre, allongement: true } } }
+    expect(mesuresMalterre(v, bornes, avecAllongement).slice(5)).toEqual([
+      { cle: 'allongementH', valeur: 60, min: 50, max: null }, { cle: 'allongementL', valeur: null, min: 80, max: 120 },
+    ])
+    expect(mesuresMalterre(v, bornes, { ...CONTROLES_PAR_DEFAUT, malterre: false })).toEqual([])
+  })
+})
 
 describe('the partner’s control of a lot', () => {
   const bornes = { laizeMin: 150, laizeMax: 160, poidsMin: 0, poidsMax: 165, stabHauteur: -5, stabLargeur: 0 }

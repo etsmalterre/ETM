@@ -22,13 +22,14 @@ import { auteur } from './agents-ia.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
 import { stripRtf } from '../lib/rtf-utils.js'
-import { actionsSansVerdict, prealableActions } from '../lib/actions-lot.js'
+import { actionsDuLot, actionsSansVerdict, prealableActions } from '../lib/actions-lot.js'
 import { ecrireVerdictLot, verdictsDesLots, type VerdictLot } from '../lib/conformite-lot.js'
 import { userHasPermission } from '../lib/permissions.js'
 import { lireBoite } from '../lib/tirelle-boites.js'
 import { lireBoites } from '../lib/tirelle-rangement.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
-import { loadActions, loadAllMentions, mentionsForLine } from '../lib/actions-qualite.js'
+import { loadAllMentions } from '../lib/actions-qualite.js'
+import { bornesRendement, rendementConforme, rendementPiece } from '../lib/rendement-lot.js'
 
 import { IS_WINDOWS, canNameAccented } from '../lib/sst-shared.js'
 import { ouvrirReprise, reprisesDuLot, RepriseRefusee } from '../lib/reprises.js'
@@ -548,37 +549,25 @@ suiviLotsRouter.get('/:id', async (req: Request, res: Response) => {
       for (const m of await fixEncoding(magRows, 'sous_traitant', 'IDsous_traitant', ['nom']))
         magMap.set(Number(m.IDsous_traitant), (m.nom ?? '').toString())
     }
-    // Rendement validity bounds (ports legacy gxRendementMini/Maxi).
-    // A piece is conforming when its rdt (metrage/poids) falls in [mini, maxi].
-    // Mini comes from the max weight/laize (→ lowest rendement), maxi from the min.
-    const rendementDemande = n(raw.rendement_demande)
-    const refPoidsMin = n(fixedRef?.poids_Min)
-    const refPoidsMax = n(fixedRef?.poids_Max)
-    const refLaizeMin = n(fixedRef?.laizeHT_Min)
-    const refLaizeMax = n(fixedRef?.laizeHT_Max)
-    const refFreinte = n(fixedRef?.freinte)
-    const refRendement = n(fixedRef?.rendement)
-    let rendementMini = rendementDemande
-    let rendementMaxi = rendementDemande
-    if (refPoidsMax > 0 && refLaizeMax > 0 && refRendement > 0) {
-      const rendementMiniNominal = (1 - refFreinte) / ((refPoidsMax * refLaizeMax) / 100000)
-      rendementMini = (rendementDemande * rendementMiniNominal) / refRendement
-    }
-    if (refPoidsMin > 0 && refLaizeMin > 0 && refRendement > 0) {
-      const rendementMaxiNominal = (1 - refFreinte) / ((refPoidsMin * refLaizeMin) / 100000)
-      rendementMaxi = (rendementDemande * rendementMaxiNominal) / refRendement
-    }
-    const hasBounds = rendementMini > 0 || rendementMaxi > 0
+    // Rendement validity bounds (the legacy's gxRendementMini / Maxi, lib/rendement-lot.ts): a piece is conforming
+    // when its rdt (metrage / poids) falls in [mini, maxi].
+    const bornesRdt = bornesRendement(n(raw.rendement_demande), {
+      poidsMin: n(fixedRef?.poids_Min), poidsMax: n(fixedRef?.poids_Max),
+      laizeMin: n(fixedRef?.laizeHT_Min), laizeMax: n(fixedRef?.laizeHT_Max),
+      freinte: n(fixedRef?.freinte), rendement: n(fixedRef?.rendement),
+    })
+    const hasBounds = bornesRdt !== null
+    const rendementMini = bornesRdt?.mini ?? 0
+    const rendementMaxi = bornesRdt?.maxi ?? 0
 
     let rdtSum = 0
     let rdtCount = 0
     const pieces = pieceRows.map((p) => {
       const poids = n(p.poids)
       const metrage = n(p.metrage)
-      const rdt = poids > 0 ? metrage / poids : null
+      const rdt = rendementPiece(metrage, poids)
       if (rdt != null) { rdtSum += rdt; rdtCount += 1 }
-      const valid =
-        rdt == null || !hasBounds ? null : rdt >= rendementMini && rdt <= rendementMaxi
+      const valid = rendementConforme(rdt, bornesRdt)
       return {
         IDstock_fini: Number(p.IDstock_fini),
         numero: (p.numero ?? '').toString() || `#${Number(p.IDstock_fini)}`,
@@ -1658,77 +1647,10 @@ suiviLotsRouter.get('/:id/actions', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
-
-    const baseRows = await query<{
-      IDligne_commande_sous_traitant: number | null
-      IDcommande_sous_traitant: number | null
-      IDsous_traitant: number | null
-    }>(
-      `SELECT IDligne_commande_sous_traitant, IDcommande_sous_traitant, IDsous_traitant
-       FROM suivilot WHERE IDsuivilot = ${id}`,
-    )
-    if (baseRows.length === 0) { res.status(404).json({ error: 'Lot not found' }); return }
-    const ligneId = Number(baseRows[0].IDligne_commande_sous_traitant) || 0
-    if (ligneId === 0) { res.json([]); return }
-
-    // The line's own matching key. `type` is a reserved word → always aliased.
-    const lineRows = await query<{ type_kind: number; refid: number; colid: number }>(
-      `SELECT type AS type_kind, IDreference AS refid, IDColoris AS colid
-       FROM ligne_commande_sous_traitant
-       WHERE IDligne_commande_sous_traitant = ${ligneId}`,
-    )
-    if (lineRows.length === 0) { res.json([]); return }
-    const line = {
-      IDligne_commande_sous_traitant: ligneId,
-      IDcommande_sous_traitant: Number(baseRows[0].IDcommande_sous_traitant) || 0,
-      type_kind: Number(lineRows[0].type_kind) || 0,
-      IDreference: Number(lineRows[0].refid) || 0,
-      IDColoris: Number(lineRows[0].colid) || 0,
-      IDsous_traitant: Number(baseRows[0].IDsous_traitant) || 0,
-    }
-
-    // The verdict is THIS lot's (lib/conformite-lot.ts, decision Vincent 2026-11-03).
-    const [allMentions, actions, verdicts] = await Promise.all([
-      loadAllMentions(),
-      loadActions(),
-      verdictsDesLots([id]),
-    ])
-    const actionById = new Map(actions.map((a) => [a.IDaction_qualite, a]))
-    const verdictByMention = new Map(verdicts.map((v) => [v.idmention, v]))
-
-    // Mentions of OPEN actions that match this line, plus any mention this lot
-    // already carries a verdict for. The second half matters: closing an action
-    // must not make the verdicts already recorded against it vanish from the lot
-    // that was judged under it.
-    const openMatches = mentionsForLine(
-      line,
-      allMentions.filter((m) => actionById.get(m.IDaction_qualite)?.termine === 0),
-    )
-    const seen = new Set(openMatches.map((m) => m.IDmention_qualite))
-    const historic = allMentions.filter(
-      (m) => !seen.has(m.IDmention_qualite) && verdictByMention.has(m.IDmention_qualite),
-    )
-
-    res.json(
-      [...openMatches, ...historic].map((m) => {
-        const action = actionById.get(m.IDaction_qualite)
-        return {
-          IDmention_qualite: m.IDmention_qualite,
-          IDaction_qualite: m.IDaction_qualite,
-          action_titre: action?.titre ?? '',
-          action_description: action?.description ?? '',
-          action_termine: action?.termine ?? 0,
-          mention: m.mention,
-          /** null = à juger. */
-          conformite: verdictByMention.get(m.IDmention_qualite)?.conformite ?? null,
-          par: verdictByMention.get(m.IDmention_qualite)?.par ?? null,
-          le: verdictByMention.get(m.IDmention_qualite)?.le ?? null,
-          /** false ⇒ shown only because a verdict already exists (action closed
-           *  or the line no longer matches); the UI greys it out. */
-          applicable: seen.has(m.IDmention_qualite),
-        }
-      }),
-    )
+    // The matching and the verdicts: lib/actions-lot.ts `actionsDuLot`, shared with the espace partenaire.
+    const actions = await actionsDuLot(id)
+    if (!actions) { res.status(404).json({ error: 'Lot not found' }); return }
+    res.json(actions)
   } catch (err) {
     console.error('Error loading suivi-lot actions:', err)
     res.status(500).json({ error: 'Internal server error' })

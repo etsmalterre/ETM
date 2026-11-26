@@ -21,7 +21,7 @@
 // Who typed: the portal names its signed-in contact (« Prénom Nom (MATEL, espace partenaire) »); it is not an ETM
 // user (par_id 0) and shows as written in the order's and the lot's Journal.
 
-import { commandePartenaire, lotsPartenaire, type CleMesure } from './espace-partenaire-commandes.js'
+import { commandePartenaire, lotPartenaire, type CleMesure } from './espace-partenaire-commandes.js'
 import { estUnReportDelai, refusAvanceDelai, dateDeReference } from './report-delai-sst.js'
 import { lireSaisieStab, StabInvalide } from './stabilites.js'
 import { lireSaisieVrillage, VrillageInvalide } from './vrillage.js'
@@ -139,7 +139,7 @@ export async function donnerDelaiPartenaire(
 export async function enregistrerMesuresPartenaire(
   idSousTraitant: number, idLot: number, saisie: Partial<Record<CleMesure, unknown>>, par: string,
 ): Promise<boolean> {
-  const lot = (await lotsPartenaire(idSousTraitant)).find((l) => l.idLot === idLot)
+  const lot = await lotPartenaire(idSousTraitant, idLot)
   if (!lot) throw new RefusSaisie(404, 'introuvable', 'Lot introuvable.')
   if (!lot.controle) throw new RefusSaisie(409, 'sans_controle', 'Aucune mesure ne vous est demandée pour ce lot.')
   if (!lot.controle.modifiable) {

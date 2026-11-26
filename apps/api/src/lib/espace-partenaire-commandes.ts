@@ -13,13 +13,21 @@
 //    affectations), the order `commentaire` and `journal`, the LINE `commentaire`, the Journal tab's facts
 //    (journal_commande_sst, journal_lot), relances and reports of a délai (who was chased, motif, imputable),
 //    whose move a step is on Malterre's side or its chase date (`main`, `relance`, red / amber), Tricobot's
-//    readings, MALTERRE's measures of the lot (the tirelle side, its allongement, its coloris verdict), the
-//    target values copied from the client's fiche (`*_demandee`), roll numbers, the rapport de contrôle and
+//    readings, the target values copied from the client's fiche (`*_demandee`), the rapport de contrôle and
 //    which client a soumission went to.
 //  - Since 2026-11-26 (Vincent) the partner reads ITS OWN measures of a lot (the dyer side, suivilot `*_sst`:
 //    laize, poids, stabilités, vrillage — only those the reference asks it, lib/controles-lot.ts) with the
 //    tolerance each is judged by, exactly as Qualité › Suivi lots shows them (`tolerancesRef`), and types them
-//    itself, as it types its délai (lib/espace-partenaire-saisies.ts). The bon de commande PDF is the document Malterre e-mails: it carries what was sent
+//    itself, as it types its délai (lib/espace-partenaire-saisies.ts).
+//  - The lot's page (`lotPartenaire`, Vincent 2026-11-26: « permettre aux partenaires de voir toute l'information
+//    qualité de ce lot ») adds what Malterre found: ITS measures of the tirelle against the same tolerances, its
+//    coloris verdict, the lot's comment (suivilot `observations`, the lab's free text — it is read by the partner
+//    now), the rolls with their rendement and whether it is in the band (lib/rendement-lot.ts), the reprises, and
+//    the quality instructions the lot is judged against with its verdict (the MENTION, the sentence already
+//    printed on the bon de commande). Never add there: an action's title or description (Malterre's own story
+//    of the problem: they name clients — checked 2026-11-26), who judged, a roll's notes (they carry the
+//    knitting defects and the visiteurs' names), the client a roll is reserved to, the lot's prices.
+//  - The LIST of lots (`lotsPartenaire`) is the work in progress plus two sliding months of what came back. The bon de commande PDF is the document Malterre e-mails: it carries what was sent
 //    (the partner's own prices included) and nothing is added to it here.
 //
 // Steps. ETM's cycle says where an order and its lots stand AND whose move it is at Malterre; the partner is told
@@ -70,6 +78,9 @@ import { urgencesLignes } from './urgence-sst.js'
 import { CONTROLES_PAR_DEFAUT, type ControlesRef } from './controles-lot.js'
 import { VRILLAGE_MAX } from './vrillage.js'
 import type { MesuresSst } from './agents/flux-ennoblisseur/saisies.js'
+import { bornesRendement, rendementConforme, rendementPiece } from './rendement-lot.js'
+import { reprisesDuLot } from './reprises.js'
+import { actionsDuLot } from './actions-lot.js'
 import { buildCommandePdfData, renderCommandePdfBuffer } from '../routes/commandes-sous-traitant.js'
 
 // ── Steps (pure, tested) ────────────────────────────────────
@@ -213,6 +224,36 @@ export interface LotPartenaire extends Lot {
   idCommande: number
 }
 
+/** Malterre's own control of the tirelle: the dyer's measures plus the allongement, ours only. */
+export type CleMesureMalterre = CleMesure | 'allongementH' | 'allongementL'
+export interface MesureMalterre { cle: CleMesureMalterre; valeur: number | null; min: number | null; max: number | null }
+
+export interface PieceLot {
+  /** The roll's number, as on the partner's own delivery note. */
+  numero: string
+  metrageMl: number
+  poidsKg: number
+  /** Ml per kg; null without a weight. */
+  rendement: number | null
+  /** In the lot's rendement band, out of it, or null when there is none. */
+  conforme: boolean | null
+}
+
+/** Everything the partner reads of one lot's quality. */
+export interface LotDetail extends LotPartenaire {
+  /** null when the reference asks Malterre no control. `coloris`: against the rond 0, null = not judged. */
+  controleMalterre: { mesures: MesureMalterre[]; coloris: 'conforme' | 'ecart' | null } | null
+  /** The lab's comment on the lot. */
+  commentaire: string | null
+  pieces: PieceLot[]
+  /** The rolls' mean rendement and the band they are judged by. */
+  rendement: { moyen: number | null; min: number | null; max: number | null }
+  /** Oldest first. Dates YYYY-MM-DD. */
+  reprises: { rang: number; nature: 'rame' | 'teinture'; motif: string | null; envoyeLe: string | null; retourLe: string | null }[]
+  /** The quality instructions the lot is judged against, with Malterre's verdict; null = not judged yet. */
+  consignes: { texte: string; verdict: 'conforme' | 'non_conforme' | null }[]
+}
+
 export interface CommandeDetail extends Omit<CommandeResume, 'articles'> {
   adresseLivraison: Adresse | null
   lignes: LigneCommande[]
@@ -259,6 +300,33 @@ export function mesuresDuLot(valeurs: MesuresSst | undefined, bornes: BornesRef 
   return CLES_MESURE.filter((c) => demandee[c]).map((cle) => ({ cle, valeur: valeur[cle], ...tol[cle] }))
 }
 
+/** Malterre's own measures of the tirelle, those the reference asks IT, against the same tolerances as the
+ *  partner's; the allongement against the fiche's min · max (lib/allongement.ts). Empty when it asks none. */
+export function mesuresMalterre(
+  v: { laize: number; poids: number; stabH: number | null; stabL: number | null; vrillage: number | null; allongementH: number | null; allongementL: number | null },
+  bornes: BornesRef & { allongementHMin: number; allongementHMax: number; allongementLMin: number; allongementLMax: number },
+  controles: ControlesRef = CONTROLES_PAR_DEFAUT,
+): MesureMalterre[] {
+  if (!controles.malterre) return []
+  const d = controles.mesures.malterre
+  const pos = (n: number) => (n > 0 ? n : null)
+  const tol = {
+    ...tolerancesRef(bornes),
+    allongementH: { min: pos(bornes.allongementHMin), max: pos(bornes.allongementHMax) },
+    allongementL: { min: pos(bornes.allongementLMin), max: pos(bornes.allongementLMax) },
+  }
+  const lignes: [CleMesureMalterre, boolean, number | null][] = [
+    ['laize', d.laize, v.laize > 0 ? v.laize : null],
+    ['poids', d.poids, v.poids > 0 ? v.poids : null],
+    ['stabH', d.stabilites, v.stabH],
+    ['stabL', d.stabilites, v.stabL],
+    ['vrillage', d.vrillage, v.vrillage],
+    ['allongementH', d.allongement, v.allongementH],
+    ['allongementL', d.allongement, v.allongementL],
+  ]
+  return lignes.filter(([, demandee]) => demandee).map(([cle, , valeur]) => ({ cle, valeur, ...tol[cle] }))
+}
+
 /** The steps of a lot at which the partner may type its measures: once it finishes the lot (coloris validé, or
  *  back for a reprise, which erased the controls) and while Malterre has not validated it. Never before the
  *  stenter (coloris soumis / refusé: the matter will still move), never once validated. */
@@ -281,6 +349,15 @@ function aujourdhui(): string {
 /** First day of the twelve sliding months ending with the current one (2026-11-24 → 2025-12-01). Pure. */
 export function debutDouzeMois(aujourdhui: string): string {
   const d = new Date(Date.UTC(Number(aujourdhui.slice(0, 4)), Number(aujourdhui.slice(5, 7)) - 12, 1))
+  return d.toISOString().slice(0, 10)
+}
+
+/** The same day two months earlier (2026-11-26 → 2026-09-26): how far back the list of lots goes. Pure. */
+export function deuxMoisAvant(aujourdhui: string): string {
+  const [a, m, j] = aujourdhui.split('-').map(Number)
+  const d = new Date(Date.UTC(a, m - 3, j))
+  // A day the earlier month does not have (31 → 30, 29, 28) rolls over: stay on its last day.
+  if (d.getUTCMonth() !== (((m - 3) % 12) + 12) % 12) d.setUTCDate(0)
   return d.toISOString().slice(0, 10)
 }
 
@@ -535,9 +612,10 @@ interface Vue {
   urgences: Map<number, string | null>
 }
 
-/** Every listed order of the partner with its step, lines and lots; one order (`idCommande`) also reads its rolls,
- *  as does `rouleauxOuverts` for the orders in progress (the list of lots). */
-async function vues(idSousTraitant: number, idCommande?: number, rouleauxOuverts = false): Promise<{ vues: Vue[]; fini: Map<number, FiniRow[]> }> {
+/** Every listed order of the partner with its step, lines and lots; one order (`idCommande`) also reads its rolls.
+ *  `lotsDepuis` (the list of lots) reads the rolls of the orders in progress, and the lots and rolls of the closed
+ *  orders a lot of which came back since that day. */
+async function vues(idSousTraitant: number, idCommande?: number, lotsDepuis?: string): Promise<{ vues: Vue[]; fini: Map<number, FiniRow[]> }> {
   const vide = { vues: [] as Vue[], fini: new Map<number, FiniRow[]>() }
   if (!(await estEnnoblisseur(idSousTraitant))) return vide
   const toutes = await entetesEnvoyees(idSousTraitant, idCommande)
@@ -554,14 +632,15 @@ async function vues(idSousTraitant: number, idCommande?: number, rouleauxOuverts
   // The cycle is read for the open orders only (a closed one is « terminée » whatever its lots say), which keeps a
   // long history to a handful of flat reads; the detail of a closed order still reads its lots.
   const ouvertes = entetes.filter((e) => !e.soldee).map((e) => e.id)
-  const aLire = idCommande ? entetes.map((e) => e.id) : ouvertes
+  const revenues = lotsDepuis && !idCommande ? [...(await recuesDepuis(entetes.filter((e) => e.soldee).map((e) => e.id), lotsDepuis))] : []
+  const aLire = idCommande ? entetes.map((e) => e.id) : [...ouvertes, ...revenues]
   const lignesOuvertes = lignes.filter((l) => ouvertes.includes(l.cmd))
   const [faits, ecru, fini, urgences] = await Promise.all([
     lireCommandesEnnoblissement(aLire),
     // The pieces themselves only where their return is still followed (open orders).
     ecruParLigne(lignes.map((l) => l.id), lignesOuvertes.map((l) => l.id)),
     idCommande ? finiParLigne(lignes.map((l) => l.id))
-      : rouleauxOuverts ? finiParLigne(lignesOuvertes.map((l) => l.id)) : Promise.resolve(new Map<number, FiniRow[]>()),
+      : lotsDepuis ? finiParLigne(lignes.filter((l) => aLire.includes(l.cmd)).map((l) => l.id)) : Promise.resolve(new Map<number, FiniRow[]>()),
     urgencesLignes(lignesOuvertes.map((l) => ({ id: l.id, delai: l.delai })), aujourdhui()),
   ])
   const revenus = await consumedEcruIds(lignesOuvertes.flatMap((l) => ecru.get(l.id)?.ids ?? []))
@@ -651,16 +730,110 @@ function lotsDe(v: Vue, noms: Map<number, { reference: string; coloris: string }
   })
 }
 
-/** The lots of the partner's orders in progress, newest order first: what its lot controller works from. A lot
- *  leaves the list with its order (finished: nothing is expected of the partner any more). */
+/** The partner's list of lots, newest order first: every lot of its orders in progress, and the lots that came
+ *  back in the last two sliding months whose order is finished (validated: nothing is expected of the partner). */
 export async function lotsPartenaire(idSousTraitant: number): Promise<LotPartenaire[]> {
-  const { vues: toutes, fini } = await vues(idSousTraitant, undefined, true)
-  const vs = toutes.filter((v) => v.etape !== 'terminee')
+  const depuis = deuxMoisAvant(aujourdhui())
+  const { vues: vs, fini } = await vues(idSousTraitant, undefined, depuis)
   const [noms, controles] = await Promise.all([
     libelles(vs.flatMap((v) => v.lignes.map((l) => l.row))),
     controlesDesLots(vs.flatMap((v) => v.lots.map((l) => l.fait.idsuivilot))),
   ])
-  return vs.flatMap((v) => lotsDe(v, noms, fini, controles).map((l) => ({ ...l, idCommande: v.entete.id })))
+  return vs.flatMap((v) =>
+    lotsDe(v, noms, fini, controles)
+      .filter((l) => v.etape !== 'terminee' || (l.recuLe ?? '') >= depuis)
+      .map((l) => ({ ...l, idCommande: v.entete.id })))
+}
+
+/** One lot of the partner with everything it reads of its quality, or null — the lot of an order it cannot open
+ *  (another sous-traitant's, never sent, out of the twelve months) is « not found ». */
+export async function lotPartenaire(idSousTraitant: number, idLot: number): Promise<LotDetail | null> {
+  const sql = mpsPg()
+  const [ou] = await sql<{ cmd: number }[]>`
+    SELECT l.idcommande_sous_traitant AS cmd
+    FROM suivilot s
+    JOIN ligne_commande_sous_traitant l ON l.idligne_commande_sous_traitant = s.idligne_commande_sous_traitant
+    JOIN commande_sous_traitant c ON c.idcommande_sous_traitant = l.idcommande_sous_traitant
+    WHERE s.idsuivilot = ${idLot} AND c.idsous_traitant = ${idSousTraitant}`
+  if (!ou) return null
+  const { vues: vs, fini } = await vues(idSousTraitant, Number(ou.cmd))
+  const v = vs[0]
+  const vu = v?.lots.find((l) => l.fait.idsuivilot === idLot)
+  if (!v || !vu) return null
+
+  type Row = Record<
+    'laize' | 'poids' | 'rendement_demande' | 'poids_min' | 'poids_max' | 'laize_min' | 'laize_max' | 'freinte' | 'rendement'
+    | 'stab_hauteur' | 'stab_largeur' | 'allh_min' | 'allh_max' | 'alll_min' | 'alll_max', number> &
+    Record<'stabh' | 'stabl' | 'vrillage' | 'allh' | 'alll', number | null> & { coloris: string | null; observations: string | null }
+  const [noms, controles, [r], pieces, reprises, actions] = await Promise.all([
+    libelles(v.lignes.map((l) => l.row)),
+    controlesDesLots([idLot]),
+    sql<Row[]>`
+      SELECT COALESCE(s.laize_tirelle, 0)::float8 AS laize, COALESCE(s.poids_tirelle, 0)::float8 AS poids,
+             s.stabh_tirelle::float8 AS stabh, s.stabl_tirelle::float8 AS stabl, s.vrillage_tirelle::float8 AS vrillage,
+             s.allongementh_tirelle::float8 AS allh, s.allongementl_tirelle::float8 AS alll,
+             s.coloris_tirelle AS coloris, trim(s.observations::text) AS observations,
+             COALESCE(s.rendement_demande, 0)::float8 AS rendement_demande,
+             COALESCE(r.poids_min, 0)::float8 AS poids_min, COALESCE(r.poids_max, 0)::float8 AS poids_max,
+             COALESCE(r.laizeht_min, 0)::float8 AS laize_min, COALESCE(r.laizeht_max, 0)::float8 AS laize_max,
+             COALESCE(r.freinte, 0)::float8 AS freinte, COALESCE(r.rendement, 0)::float8 AS rendement,
+             COALESCE(r.stab_hauteur, 0)::float8 AS stab_hauteur, COALESCE(r.stab_largeur, 0)::float8 AS stab_largeur,
+             COALESCE(r.allongementh_min, 0)::float8 AS allh_min, COALESCE(r.allongementh_max, 0)::float8 AS allh_max,
+             COALESCE(r.allongementl_min, 0)::float8 AS alll_min, COALESCE(r.allongementl_max, 0)::float8 AS alll_max
+      FROM suivilot s
+      LEFT JOIN ligne_commande_sous_traitant l ON l.idligne_commande_sous_traitant = s.idligne_commande_sous_traitant
+      LEFT JOIN ref_fini r ON r.idref_fini = CASE WHEN COALESCE(s.idref_fini, 0) > 0 THEN s.idref_fini ELSE l.idreference END
+      WHERE s.idsuivilot = ${idLot}`,
+    // The lot's rolls: number, length and weight — no note, no client.
+    sql<{ numero: string | null; lot: string | null; metrage: number; poids: number }[]>`
+      SELECT trim(numero::text) AS numero, lot::text AS lot, COALESCE(metrage, 0)::float8 AS metrage, COALESCE(poids, 0)::float8 AS poids
+      FROM stock_fini WHERE idref_commande_source = ${vu.idLigne}
+      ORDER BY numero::text, idstock_fini`,
+    reprisesDuLot(vu.idLigne, vu.fait.lot),
+    actionsDuLot(idLot),
+  ])
+  const base = lotsDe(v, noms, fini, controles).find((l) => l.idLot === idLot)
+  if (!base || !r) return null
+
+  const ouNull = (x: number | null) => (x == null ? null : Number(x))
+  const bornes = {
+    laizeMin: Number(r.laize_min) || 0, laizeMax: Number(r.laize_max) || 0, poidsMin: Number(r.poids_min) || 0, poidsMax: Number(r.poids_max) || 0,
+    stabHauteur: Number(r.stab_hauteur) || 0, stabLargeur: Number(r.stab_largeur) || 0,
+    allongementHMin: Number(r.allh_min) || 0, allongementHMax: Number(r.allh_max) || 0, allongementLMin: Number(r.alll_min) || 0, allongementLMax: Number(r.alll_max) || 0,
+  }
+  const malterre = mesuresMalterre(
+    { laize: Number(r.laize) || 0, poids: Number(r.poids) || 0, stabH: ouNull(r.stabh), stabL: ouNull(r.stabl), vrillage: ouNull(r.vrillage), allongementH: ouNull(r.allh), allongementL: ouNull(r.alll) },
+    bornes, vu.fait.controles,
+  )
+  const bande = bornesRendement(Number(r.rendement_demande) || 0, {
+    poidsMin: bornes.poidsMin, poidsMax: bornes.poidsMax, laizeMin: bornes.laizeMin, laizeMax: bornes.laizeMax,
+    freinte: Number(r.freinte) || 0, rendement: Number(r.rendement) || 0,
+  })
+  const round3 = (x: number) => Math.round(x * 1000) / 1000
+  const rouleaux: PieceLot[] = pieces.filter((p) => cleLot(str(p.lot)) === cleLot(vu.fait.lot)).map((p) => {
+    const rdt = rendementPiece(Number(p.metrage) || 0, Number(p.poids) || 0)
+    return {
+      numero: str(p.numero), metrageMl: round1(Number(p.metrage) || 0), poidsKg: round1(Number(p.poids) || 0),
+      rendement: rdt == null ? null : round3(rdt), conforme: rendementConforme(rdt, bande),
+    }
+  })
+  const mesures = rouleaux.map((p) => p.rendement).filter((x): x is number => x !== null)
+  const coloris = r.coloris === 'conforme' || r.coloris === 'ecart' ? r.coloris : null
+  return {
+    ...base,
+    idCommande: v.entete.id,
+    controleMalterre: malterre.length ? { mesures: malterre, coloris } : null,
+    commentaire: str(r.observations) || null,
+    pieces: rouleaux,
+    rendement: {
+      moyen: mesures.length ? round3(mesures.reduce((a, b) => a + b, 0) / mesures.length) : null,
+      min: bande ? round3(bande.mini) : null,
+      max: bande ? round3(bande.maxi) : null,
+    },
+    reprises: reprises.map((x) => ({ rang: x.rang, nature: x.nature, motif: x.motif?.trim() || null, envoyeLe: x.envoye_le?.slice(0, 10) ?? null, retourLe: x.retour_le?.slice(0, 10) ?? null })),
+    // The sentence already printed on the bon de commande, and this lot's verdict — nothing of the action itself.
+    consignes: (actions ?? []).filter((a) => a.mention.trim()).map((a) => ({ texte: a.mention.trim(), verdict: a.conformite })),
+  }
 }
 
 /** One order of the partner, or null — also when it exists but is another sous-traitant's, was never sent, or is

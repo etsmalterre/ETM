@@ -29,7 +29,7 @@ import { enregistrerActivite, EspaceIndisponible, listeAcces } from '../lib/espa
 import { ficheClient } from '../lib/espace-fiche.js'
 import { commandeClient, confirmationCommandePdf, listeCommandesClient } from '../lib/espace-commandes.js'
 import { enregistrerActivitePartenaires, listeAccesPartenaires, partenairesVisibles } from '../lib/espace-partenaire-acces.js'
-import { bonDeCommandePartenaire, commandePartenaire, listeCommandesPartenaire, lotsPartenaire } from '../lib/espace-partenaire-commandes.js'
+import { bonDeCommandePartenaire, commandePartenaire, listeCommandesPartenaire, lotPartenaire, lotsPartenaire } from '../lib/espace-partenaire-commandes.js'
 import { donnerDelaiPartenaire, enregistrerMesuresPartenaire, RefusSaisie } from '../lib/espace-partenaire-saisies.js'
 import { qualiteServicePartenaire } from '../lib/espace-partenaire-indicateurs.js'
 import { z } from 'zod'
@@ -510,7 +510,17 @@ webserviceSiteRouter.put('/espace/partenaires/:id/commandes/:idCommande/lignes/:
   res.json({ modifie: await donnerDelaiPartenaire(id, idCommande, idLigne, body.data, body.data.par) })
 }))
 
-/** The lots of the partner's orders in progress, each with its own control and the tolerances. */
+/** One lot of the partner with everything it reads of its quality — 404 when it isn't a lot it can open. */
+webserviceSiteRouter.get('/espace/partenaires/:id/lots/:idLot', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  const idLot = idParam(req.params.idLot)
+  if (!id || !idLot) { fault(res, 400, 'Identifiant invalide'); return }
+  const lot = await lotPartenaire(id, idLot)
+  if (!lot) { fault(res, 404, 'Lot introuvable'); return }
+  res.json(lot)
+}))
+
+/** The partner's list of lots: those of its orders in progress and two months of what came back. */
 webserviceSiteRouter.get('/espace/partenaires/:id/lots', handle(async (req, res) => {
   const id = idParam(req.params.id)
   if (!id) { fault(res, 400, 'Identifiant partenaire invalide'); return }
