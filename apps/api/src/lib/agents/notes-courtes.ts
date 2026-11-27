@@ -59,14 +59,6 @@ const NOTES_COURTES: readonly NoteCourte[] = [
     note: 'Chez TAD, seule la mise à disposition va à l’agent BL. Son bon de livraison est une expédition au client : il part en transport.',
   },
   {
-    slug: 'rapport-activite', version: 2, debut: 'Version 3 — moins sévère',
-    note: 'Moins sévère : un ton amical, une réponse pas encore faite dans l’heure ou un délai donné par mail ne sont plus des alertes. 3 alertes au plus.',
-  },
-  {
-    slug: 'rapport-activite', version: 3, debut: 'Version 4 — relecture des 45',
-    note: 'Un point d’attention = deux faits datés qui se contredisent. Les mails de Vincent et les échanges courants avec un fournisseur ne sont jamais des points.',
-  },
-  {
     slug: 'planning-atelier', version: 2, debut: 'Version 2 : dans un binôme',
     note: 'Dans un binôme, les heures de début s’échangent d’une semaine sur l’autre, pour que ce ne soit pas toujours le même qui finisse tard.',
   },

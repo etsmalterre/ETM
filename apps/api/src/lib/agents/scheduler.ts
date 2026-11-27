@@ -12,14 +12,14 @@
 // One minute tick for every agent, each on its own trigger (catalog.ts):
 //   - `releve`: polled every `intervalleMs` (BL Ennoblisseur, 2 min);
 //   - `quotidien`: once a day at `heure` (Paris) on `jours` — or once per hour
-//     when `heure` lists several (Rapport d'activité); the slot is written in
+//     when `heure` lists several (Superviseur); the slot is written in
 //     state.json BEFORE the run (at most once a slot even if the process dies
 //     mid-run; after a restart later the same day it catches up the latest);
 //   - `ecran`: never — a person starts it from a screen (Planning atelier).
 //
 // Plus, once an hour, the observation pass (flux-ennoblisseur/observation.ts,
-// 2026-11-09): the mails a skill in observation waited on are read once a
-// person has reacted to them, and compared with what was typed.
+// 2026-11-09): the BLs a skill in observation read are compared with the rolls
+// a person received since.
 //
 // One lock per agent shared by the tick, the manual run and the Triage's
 // hand-off (verrous.ts): two runs of the same agent never overlap (they would

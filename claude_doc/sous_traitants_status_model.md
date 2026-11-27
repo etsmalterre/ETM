@@ -261,11 +261,12 @@ three weeks without a date nor an alert (9127, cols / bandes). So:
   turns its card red, and the send writes, dossier by dossier, the relance its
   own mail button writes (`noterRelanceGroupee()`), read again before the mail
   leaves. Not in it: what waits on the client or on us, an étude coloris
-  (chased from its client line), anything not due. The Point's sub-menu, screen,
-  routes and automate were removed on 2026-11-27 (the Journal keeps reading
-  `point_sst` for the history). Still to do: the Délais / Contrôles skills of
-  Flux Ennoblisseur, which read replies to « Point du JJ/MM » (to be replaced by
-  the espace partenaire, where the partner types them itself).
+  (chased from its client line), anything not due. Done on 2026-11-27:
+  the Point tab, its API and its automate are removed (the Journal and the
+  délai relances keep reading `point_sst` for the history), and so are the
+  Délais / Contrôles skills of Flux Ennoblisseur, which read replies to
+  « Point du JJ/MM » (replaced by the espace partenaire, where the partner
+  types them itself).
   Once answered the line stays « urgente » until delivered: the siren
   (`components/sst/UrgenceIcon.tsx`) on the line (a plain mention) and in the
   bottom-right corner of the list card.

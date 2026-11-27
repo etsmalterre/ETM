@@ -4,9 +4,8 @@
 // 2026-11-05 — « une vraie nouvelle entité qui vient par-dessus le
 // logiciel »). The DETAIL goes dark — header, lines, right panel — while the
 // list of cards on the left stays usable, so the person can move to another
-// order. Only what he wrote stays lit (the line's délai, ringed in red).
-// Tricobot stands on the left, big, and speaks: his bubble starts at his head.
-// The mail he read fills the right-hand side, the words he relied on marked.
+// order. Tricobot stands on the left, big, and speaks: his bubble starts at
+// his head. The BL he read fills the right-hand side.
 //
 // Positions are read from the page:
 //   [data-tricobot-liste]           the left list — the veil starts after it
@@ -16,7 +15,7 @@
 // all followed every frame (scroll, resize, a drawer opening).
 // Escape or « Plus tard » lets the person look at the order first.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertCircle, Check, Eye, FileText, Loader2, Mail, Maximize2, Pencil, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -25,7 +24,7 @@ import { TricobotMascot } from '@/components/icons/TricobotMascot'
 import { cn } from '@/lib/utils'
 import { fmtNum } from '@/lib/format'
 import {
-  CHAMP_RECEPTION, CHAMPS_MESURES, GesteDialog, jj, lireMesures, lireReception, MailTricobotDialog, messageErreur, urlFichierMail, useGeste, useMailLu,
+  GesteDialog, lireReception, MailTricobotDialog, messageErreur, urlFichierMail, useGeste, useMailLu,
   type Geste, type SaisieTricobot,
 } from './SaisiesTricobot'
 
@@ -72,29 +71,6 @@ function useMesures(idlignes: number[]): Zone[] {
   return mesures
 }
 
-/** The mail body with the words Tricobot relied on marked. */
-function TexteMarque({ texte, citations }: { texte: string; citations: string[] }) {
-  const morceaux = useMemo(() => {
-    const cs = [...new Set(citations.map((c) => c.trim()).filter((c) => c.length >= 2))]
-    if (!cs.length) return [texte]
-    const re = new RegExp(`(${cs.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi')
-    return texte.split(re)
-  }, [texte, citations])
-  const cs = citations.map((c) => c.trim().toLowerCase())
-  return (
-    <>
-      {morceaux.map((m, i): ReactNode => (cs.includes(m.toLowerCase())
-        ? <mark key={i} className="rounded bg-red-500 px-0.5 font-semibold text-white">{m}</mark>
-        : <span key={i}>{m}</span>))}
-    </>
-  )
-}
-
-const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
-const heure = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '')
-
-/** The conversation Tricobot read: our Point (the question, §5 only, the
- *  orders he wrote on lit), then the dyer's reply (the words he relied on lit). */
 /** One tab of the BL panel when an order holds several BLs: its OF / bordereau, read from its mail. */
 function OngletBl({ runId, rang, actif, onClick }: { runId: string; rang: number; actif: boolean; onClick: () => void }) {
   const q = useMailLu(runId)
@@ -108,21 +84,20 @@ function OngletBl({ runId, rang, actif, onClick }: { runId: string; rang: number
   )
 }
 
-function MailPanneau({ runId, citations, idlignes, section, runs = [], onRun }: {
-  runId: string | null; citations: string[]; idlignes: number[]; section: 2 | 5
+/** The BL Tricobot read, where the right-hand panel was. */
+function MailPanneau({ runId, runs = [], onRun }: {
+  runId: string | null
   /** Several BLs on one order: every one of them, in the bubble's order, as tabs. */
   runs?: string[]; onRun?: (r: string) => void
 }) {
   const q = useMailLu(runId)
-  const point = q.data?.point ?? null
-  const question = point ? (point.sections?.[String(section) as '2' | '5'] ?? (section === 5 ? { titre: point.titre, lignes: point.lignes } : null)) : null
-  // A BL: the mail is its document (several scanned pages = several files).
-  const fichiers = q.data?.competence === 'bl' ? q.data.fichiers ?? [] : []
+  // The mail is its document (several scanned pages = several files).
+  const fichiers = q.data?.fichiers ?? []
   const [page, setPage] = useState(0)
   /** « Agrandir »: the document alone, as large as the screen allows (§18.B viewer). */
   const [grand, setGrand] = useState(false)
   const fichier = fichiers[Math.min(page, fichiers.length - 1)] ?? null
-  if (q.data?.competence === 'bl') {
+  if (q.data) {
     return (
       <div className="flex h-full flex-col overflow-hidden rounded-xl bg-white shadow-2xl ring-1 ring-black/10">
         <div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5">
@@ -178,102 +153,33 @@ function MailPanneau({ runId, citations, idlignes, section, runs = [], onRun }: 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-xl bg-white shadow-2xl ring-1 ring-black/10">
       <div className="flex-shrink-0 flex items-center gap-2.5 border-b-2 border-gold bg-primary px-4 py-2.5">
-        <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center bg-gold text-gold-foreground shadow-sm"><Mail className="h-[18px] w-[18px]" /></div>
+        <div className="h-8 w-8 flex-shrink-0 rounded-lg flex items-center justify-center bg-gold text-gold-foreground shadow-sm"><FileText className="h-[18px] w-[18px]" /></div>
         <div className="min-w-0 flex-1">
-          <p className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">Les mails que j’ai lus</p>
-          <p className="text-xs text-white/70 truncate">{q.data ? q.data.sujet : '…'}</p>
+          <p className="text-base font-heading font-bold tracking-tight truncate text-primary-foreground">Le BL que j’ai lu</p>
+          <p className="text-xs text-white/70 truncate">…</p>
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto scrollbar-transparent bg-zinc-100 p-3 space-y-3">
         {q.isLoading && <div className="flex justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>}
         {q.isError && <p className="text-sm text-destructive">{messageErreur(q.error)}</p>}
-        {point && (
-          <div className="rounded-lg border bg-white p-3 shadow-sm">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">La question · notre Point du {jjmm(point.jour)}</p>
-            <p className="text-xs text-muted-foreground">Envoyé{point.envoyeLe ? ` à ${heure(point.envoyeLe)}` : ''}{point.envoyePar ? ` par ${point.envoyePar}` : ''}</p>
-            <p className="mt-2 text-sm font-medium">{section}) {question?.titre}</p>
-            <ul className="mt-1 space-y-0.5">
-              {(question?.lignes ?? []).map((l, i) => {
-                const lue = idlignes.includes(l.idligne)
-                return (
-                  <li key={i} className={cn('rounded px-1.5 py-0.5 text-sm', lue ? 'bg-red-500 font-semibold text-white' : 'text-muted-foreground')}>
-                    Cde {l.commande} · {l.article}{l.commentaire ? ` · ${l.commentaire}` : ''}
-                  </li>
-                )
-              })}
-              {(question?.lignes.length ?? 0) === 0 && <li className="text-sm italic text-muted-foreground">Aucune commande en section {section}.</li>}
-            </ul>
-          </div>
-        )}
-        {q.data && (
-          <div className="rounded-lg border bg-white p-3 shadow-sm">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">La réponse · {q.data.de.replace(/<.*>/, '').trim() || q.data.de}</p>
-            <p className="text-xs text-muted-foreground">Reçue le {new Date(q.data.date).toLocaleString('fr-FR')}</p>
-            <pre className="mt-2 whitespace-pre-wrap font-sans text-sm leading-relaxed"><TexteMarque texte={q.data.texte || '(mail vide)'} citations={citations} /></pre>
-          </div>
-        )}
       </div>
     </div>
   )
 }
 
-/** How Tricobot got from the mail to this line, step by step — the chain the
- *  code really follows (lib/agents/flux-ennoblisseur/delais.ts), so a person
- *  can check it: which question, which answer, which rule. */
+/** How Tricobot got from the mail to this line, step by step, so a person can
+ *  check it: the document, what to know about it, then the rule (or the doubt). */
 function Raisonnement({ s }: { s: SaisieTricobot }) {
   const q = useMailLu(s.runId)
-  const point = q.data?.point ?? null
   const etapes: ReactNode[] = []
-  if (s.champ === CHAMP_RECEPTION) {
-    // A BL: the document, what to know about it, then the rule (or the doubt).
-    const p = lireReception(s.proposition)
-    const bl = q.data?.bl ?? null
-    const de = q.data ? q.data.de.replace(/<.*>/, '').trim() || q.data.de : null
-    etapes.push(<>C’est le BL <span className="font-semibold">{p?.bordereau || bl?.bordereau || '(numéro illisible)'}</span>{p?.ennoblisseur ? <> de {p.ennoblisseur}</> : null}{de && q.data ? <>, joint au mail de {de} reçu le {new Date(q.data.date).toLocaleDateString('fr-FR')}</> : null}{bl?.commande ? <>. Il porte la commande <span className="font-semibold">{bl.commande}</span></> : null}.</>)
-    for (const a of bl?.avertissements ?? []) etapes.push(<>À savoir : {a}</>)
-    etapes.push(s.decision === 'aide'
-      ? <span className="font-medium text-red-700">Je ne suis pas sûr : {s.explication.split('\n').map((l, i) => <span key={i} className="block">{l}</span>)}</span>
-      : <>{s.explication}</>)
-    return (
-      <ol className="mt-1 space-y-1">
-        {etapes.map((e, i) => (
-          <li key={i} className="flex gap-2 text-sm">
-            <span className="mt-0.5 h-4 w-4 flex-shrink-0 rounded-full bg-zinc-200 text-[10px] font-semibold flex items-center justify-center text-muted-foreground">{i + 1}</span>
-            <span className="min-w-0">{e}</span>
-          </li>
-        ))}
-      </ol>
-    )
-  }
-  if (s.competence === 'controles') {
-    // Contrôles: §2 « Puis-je avoir vos contrôles… », the lot's line in the reply.
-    const lu = q.data?.controles?.find((c) => c.idsuivilot === s.idsuivilot)
-    const n = point?.sections?.['2']?.lignes.length ?? 0
-    if (point) {
-      etapes.push(lu?.demande === false
-        ? <>C’est la réponse à notre <span className="font-semibold">Point du {jjmm(point.jour)}</span>. Ce lot n’y était pas demandé : l’ennoblisseur a donné ses mesures de lui-même.</>
-        : <>C’est la réponse à notre <span className="font-semibold">Point du {jjmm(point.jour)}</span>, qui demandait en section 2 les contrôles de {n > 1 ? <>{n} commandes, dont celle de ce lot</> : <>la commande de ce lot</>}.</>)
-    }
-    if (s.citation) etapes.push(<>En section 2, il a écrit : <span className="font-semibold">« {s.citation.replace(/\s+/g, ' ')} »</span>.</>)
-  } else {
-    // Délais: §5 « Pouvez-vous me confirmer les délais… ».
-    const lu = q.data?.delais.find((d) => d.idligne === s.idligne)
-    const commande = point?.lignes.find((l) => l.idligne === s.idligne)?.commande ?? lu?.commande ?? null
-    const n = point?.lignes.length ?? 0
-    if (point) {
-      etapes.push(<>C’est la réponse à notre <span className="font-semibold">Point du {jjmm(point.jour)}</span>, qui demandait en section 5 le délai de {n > 1 ? <>{n} commandes, dont la <span className="font-semibold">{commande}</span></> : <>la commande <span className="font-semibold">{commande}</span></>}.</>)
-    }
-    if (s.citation) {
-      etapes.push(
-        lu?.nommee === true
-          ? <>Sa réponse nomme la commande {commande} : <span className="font-semibold">« {s.citation} »</span>.</>
-          : lu?.nommee === false && n > 1
-          ? <>Sa réponse, <span className="font-semibold">« {s.citation} »</span>, ne nomme aucune commande : elle vaut pour les {n}.</>
-          : <>L’ennoblisseur a répondu <span className="font-semibold">« {s.citation} »</span>.</>,
-      )
-    }
-  }
-  etapes.push(<span className={s.decision === 'aide' ? 'font-medium text-red-700' : undefined}>{s.decision === 'aide' ? 'Je ne suis pas sûr : ' : ''}{s.explication}</span>)
+  const p = lireReception(s.proposition)
+  const bl = q.data?.bl ?? null
+  const de = q.data ? q.data.de.replace(/<.*>/, '').trim() || q.data.de : null
+  etapes.push(<>C’est le BL <span className="font-semibold">{p?.bordereau || bl?.bordereau || '(numéro illisible)'}</span>{p?.ennoblisseur ? <> de {p.ennoblisseur}</> : null}{de && q.data ? <>, joint au mail de {de} reçu le {new Date(q.data.date).toLocaleDateString('fr-FR')}</> : null}{bl?.commande ? <>. Il porte la commande <span className="font-semibold">{bl.commande}</span></> : null}.</>)
+  for (const a of bl?.avertissements ?? []) etapes.push(<>À savoir : {a}</>)
+  etapes.push(s.decision === 'aide'
+    ? <span className="font-medium text-red-700">Je ne suis pas sûr : {s.explication.split('\n').map((l, i) => <span key={i} className="block">{l}</span>)}</span>
+    : <>{s.explication}</>)
   return (
     <ol className="mt-1 space-y-1">
       {etapes.map((e, i) => (
@@ -286,17 +192,10 @@ function Raisonnement({ s }: { s: SaisieTricobot }) {
   )
 }
 
-/** A proposal he could apply as is: a date, or every measure read (laize, poids, both stabilités). */
+/** A proposal he could apply as is: every roll has its métrage, on a line and a lot he knows. */
 function propositionComplete(s: SaisieTricobot): boolean {
-  if (!s.proposition) return false
-  if (s.champ === CHAMP_RECEPTION) {
-    // Every roll has its métrage, on a line and a lot he knows.
-    const p = lireReception(s.proposition)
-    return !!p && s.idligne > 0 && !!p.lot && p.pieces.length > 0 && p.pieces.every((x) => !!x.numero && x.metrage != null)
-  }
-  if (s.champ !== 'mesures_sst') return /^\d{4}-\d{2}-\d{2}$/.test(s.proposition)
-  const m = lireMesures(s.proposition)
-  return !!m && [m.laize, m.poids, m.stabH, m.stabL].every((v) => typeof v === 'number')
+  const p = lireReception(s.proposition)
+  return !!p && s.idligne > 0 && !!p.lot && p.pieces.length > 0 && p.pieces.every((x) => !!x.numero && x.metrage != null)
 }
 
 /** The rolls of a BL as he proposes to receive them. */
@@ -337,55 +236,6 @@ function RouleauxBl({ s }: { s: SaisieTricobot }) {
   )
 }
 
-/** What he wrote: a délai (before → after), or the dyer's measures (a small table). */
-function Valeur({ s }: { s: SaisieTricobot }) {
-  if (s.champ === 'mesures_sst') {
-    // Two rows: what is on the lot today, then what he proposes. Only the values
-    // he would change are struck and in red; the same value stays plain.
-    const avant = lireMesures(s.valeurAvant)
-    const apres = lireMesures(s.proposition)
-    // In a proposal, a measure he could not read is « ? » (never a 0); an absent vrillage is « — ».
-    const fmt = (v: number | null | undefined, cle?: string, proposee = false) =>
-      v == null ? (proposee && s.decision === 'aide' && cle !== 'vrillage' ? '?' : '—') : String(v).replace('.', ',')
-    const change = (cle: keyof NonNullable<typeof avant>) => !!avant && !!apres && (avant[cle] ?? null) !== (apres[cle] ?? null)
-    return (
-      <div className="ml-auto grid grid-cols-[auto_repeat(5,minmax(0,1fr))] items-baseline gap-x-3 text-right text-xs tabular-nums">
-        <span />
-        {CHAMPS_MESURES.map((c) => <span key={c.cle} className="text-[10px] uppercase tracking-wide text-muted-foreground">{c.libelle}</span>)}
-        {avant && (
-          <>
-            <span className="text-left text-[10px] text-muted-foreground">sur le lot</span>
-            {CHAMPS_MESURES.map((c) => (
-              <span key={c.cle} className={cn('text-muted-foreground', change(c.cle) && 'line-through')}>{fmt(avant[c.cle])}</span>
-            ))}
-          </>
-        )}
-        <span className="text-left text-[10px] text-muted-foreground">{s.decision === 'saisie' ? 'je saisis' : 'je propose'}</span>
-        {CHAMPS_MESURES.map((c) => {
-          const inconnue = apres?.[c.cle] == null && c.cle !== 'vrillage'
-          return (
-            <span key={c.cle} className={cn('font-semibold', (avant ? change(c.cle) : s.decision === 'saisie') || inconnue ? 'text-red-600' : 'text-foreground')}>
-              {fmt(apres?.[c.cle], c.cle, true)}
-            </span>
-          )
-        })}
-      </div>
-    )
-  }
-  // A délai: what the line says today (struck) → what he writes or proposes.
-  const avant = s.valeurAvant ? jj(s.valeurAvant) : 'sans délai'
-  if (!s.proposition) return null
-  return (
-    <span className="ml-auto flex items-center gap-1.5 text-sm tabular-nums">
-      <span className="text-muted-foreground line-through">{avant}</span>
-      <span>→</span>
-      <span className={cn('rounded px-1.5 font-semibold', s.decision === 'saisie' ? 'bg-red-500 text-white' : 'border border-red-500 text-red-600')}>
-        {s.decision === 'aide' && <span className="mr-1 text-[10px] font-normal">je propose</span>}{jj(s.proposition)}
-      </span>
-    </span>
-  )
-}
-
 /** A click that would WRITE (an action, a field, a status) — as opposed to
  *  reading (scroll, hover, a tab). Elements of reading that happen to be
  *  buttons are marked `data-tricobot-lecture` (or are ARIA tabs). */
@@ -413,14 +263,12 @@ function Queue() {
   )
 }
 
-/** `libelle(s)` names what he wrote on (« 029A - vert sauge », « Lot MA109516 »). */
-export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'commande', onReception, receptionFaitePour }: {
+/** `libelle(s)` names the line his BL is for (« 029A - vert sauge »). */
+export function TricobotPriseEnMain({ saisies, libelle, onChanged, onReception, receptionFaitePour }: {
   saisies: SaisieTricobot[]
   libelle: (s: SaisieTricobot) => string
   onChanged?: () => void
-  /** What he took over: « cette commande » (Délais, BL) or « ce lot » (Contrôles). */
-  sujet?: 'commande' | 'lot'
-  /** A BL: open the roll-by-roll réception on its rolls, his values filled (« Modifier », on a saisie and on an aide). */
+  /** Open the roll-by-roll réception on its rolls, his values filled (« Modifier », on a saisie and on an aide). */
   onReception?: (s: SaisieTricobot) => void
   /** A BL he asked about, whose rolls the person just received by hand (its
    *  saisie id): what is left is « avais-je raison de demander ? ». */
@@ -428,13 +276,14 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
 }) {
   const geste = useGeste(onChanged)
   // The mail on the right is the one these saisies came from: it follows the
-  // card opened (the screens key this component by order / lot). Several BLs
+  // card opened (the screen keys this component by order). Several BLs
   // on one order (TAD mails one per OF): the person picks which one is shown.
   const [runChoisi, setRunChoisi] = useState<string | null>(null)
   const mailRun = (runChoisi && saisies.some((s) => s.runId === runChoisi) ? runChoisi : saisies[0]?.runId) ?? null
   const runsMails = [...new Set(saisies.map((s) => s.runId).filter((r): r is string => !!r))]
   const nbMails = runsMails.length
-  const [dialog, setDialog] = useState<{ s: SaisieTricobot; action: Geste['action'] } | null>(null)
+  /** « Pas à réceptionner »: the BL whose why is being asked. */
+  const [dialog, setDialog] = useState<SaisieTricobot | null>(null)
   const [erreur, setErreur] = useState<string | null>(null)
   /** Narrow screens: no room for the mail beside him, it opens in a dialog. */
   const [mailDialog, setMailDialog] = useState<string | null>(null)
@@ -500,13 +349,9 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
   }
   if (!zone) return null
   const aRevoir = saisies.filter((s) => s.statut === 'a_revoir')
-  const citations = saisies.filter((s) => s.runId === mailRun).map((s) => s.citation)
-  const controles = saisies[0]?.competence === 'controles'
-  // Delivery notes only: the bubble speaks of rolls to receive, the panel shows the BL.
-  const bl = saisies.length > 0 && saisies.every((s) => s.champ === CHAMP_RECEPTION)
-  const rouleauxBl = bl ? saisies.reduce((t, s) => t + (lireReception(s.proposition)?.pieces.length ?? 0), 0) : 0
-  const ennoblisseurBl = bl ? lireReception(saisies[0].proposition)?.ennoblisseur ?? null : null
-  const ce = sujet === 'lot' ? 'ce lot' : 'cette commande'
+  // The bubble speaks of rolls to receive, the panel shows the BL.
+  const rouleauxBl = saisies.reduce((t, s) => t + (lireReception(s.proposition)?.pieces.length ?? 0), 0)
+  const ennoblisseurBl = saisies.length ? lireReception(saisies[0].proposition)?.ennoblisseur ?? null : null
 
   // Inside the zone: the mail on the right when there is room, Tricobot and
   // his bubble under the lit values on the left.
@@ -514,15 +359,13 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
   const gauche = 16
   const largeurTexte = Math.min(LARGEUR_MAIL, zone.width * 0.34)
   // A BL is a document to read, figures to compare: its panel takes all the
-  // width the bubble leaves (a mail's text reads better on short lines and
-  // keeps the narrow panel). Wide enough, Chrome's viewer shows its zoom buttons.
+  // width the bubble leaves. Wide enough, Chrome's viewer shows its zoom buttons.
   const largeurMail = !avecMail ? 0
-    : bl ? Math.max(largeurTexte, Math.min(LARGEUR_BL_MAX, zone.width - (gauche + MASCOTTE + LARGEUR_BULLE) - 2 * 16))
-    : largeurTexte
+    : Math.max(largeurTexte, Math.min(LARGEUR_BL_MAX, zone.width - (gauche + MASCOTTE + LARGEUR_BULLE) - 2 * 16))
   const largeurParole = Math.min(MASCOTTE + LARGEUR_BULLE, zone.width - largeurMail - 3 * 16)
   const basCibles = cibles.length ? Math.max(...cibles.map((r) => r.top + r.height)) - zone.top : 80
-  // A BL's bubble is taller (its rolls): it starts higher when the detail is short.
-  const haut = Math.max(16, Math.min(basCibles + PAD + 20, zone.height - (bl ? 640 : 460)))
+  // The bubble is tall (the BL's rolls): it starts higher when the detail is short.
+  const haut = Math.max(16, Math.min(basCibles + PAD + 20, zone.height - 640))
 
   if (consultation) {
     // Reading the detail: only the pill, at the bottom left of the detail.
@@ -552,7 +395,7 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
       style={{ left: zone.left, top: zone.top, width: zone.width, height: zone.height }}
       role="dialog"
       aria-modal
-      aria-label={`Tricobot a pris la main sur ${ce}`}
+      aria-label="Tricobot a pris la main sur cette commande"
     >
       {/* The veil over the detail: a click on it = look at the detail. */}
       <div
@@ -580,49 +423,32 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
           <div className={cn(BULLE, 'relative overflow-y-auto scrollbar-transparent')} style={{ maxHeight: zone.height - haut - 16 }}>
             {/* No title (Vincent, 2026-11-11): the mascot, the veil and the red card already say he took over. */}
             <p className="text-sm font-semibold">
-              {bl
-                ? (aRevoir.length > 0 && aRevoir.every((x) => x.decision === 'aide')
-                  ? `Je n’ai rien réceptionné : j’ai besoin de ton avis sur ${nbMails > 1 ? `ces ${nbMails} BL` : 'ce BL'}${ennoblisseurBl ? ` de ${ennoblisseurBl}` : ''}${avecMail ? (nbMails > 1 ? ` (les ${nbMails} à droite)` : ' (à droite)') : ''}.`
-                  : aRevoir.length
-                  ? `${ennoblisseurBl ?? 'L’ennoblisseur'} a livré : je te propose de réceptionner ${rouleauxBl > 1 ? `ces ${rouleauxBl} rouleaux` : 'ce rouleau'}, d’après ${nbMails > 1 ? `ses ${nbMails} BL${avecMail ? ` (les ${nbMails} à droite)` : ''}` : `son BL${avecMail ? ' à droite' : ''}`}. Rien n’est écrit tant que tu n’as pas validé.`
-                  : 'J’ai réceptionné ce BL seul. Tu peux encore le corriger.')
-                : aRevoir.length > 0 && aRevoir.every((x) => x.decision === 'aide')
-                ? `Je n’ai rien ${controles ? 'reporté' : 'saisi'} : j’ai besoin de ton avis sur ${controles ? 'les contrôles' : aRevoir.length > 1 ? 'les délais' : 'le délai'} de l’ennoblisseur${avecMail ? ' (son mail, à droite)' : ''}.`
-                : controles
-                ? (aRevoir.length
-                  ? `Je te propose les contrôles de l’ennoblisseur, d’après son mail${avecMail ? ' à droite' : ''}. Rien n’est écrit tant que tu n’as pas validé.`
-                  : 'J’ai reporté ces contrôles seul. Tu peux encore les corriger.')
-                : (aRevoir.length
-                  ? `Je te propose ${aRevoir.length > 1 ? `${aRevoir.length} délais` : 'ce délai'}, d’après le mail de l’ennoblisseur${avecMail ? ' à droite' : ''}. Rien n’est écrit tant que tu n’as pas validé.`
-                  : 'J’ai saisi ce délai seul. Tu peux encore le corriger.')}
+              {aRevoir.length > 0 && aRevoir.every((x) => x.decision === 'aide')
+                ? `Je n’ai rien réceptionné : j’ai besoin de ton avis sur ${nbMails > 1 ? `ces ${nbMails} BL` : 'ce BL'}${ennoblisseurBl ? ` de ${ennoblisseurBl}` : ''}${avecMail ? (nbMails > 1 ? ` (les ${nbMails} à droite)` : ' (à droite)') : ''}.`
+                : aRevoir.length
+                ? `${ennoblisseurBl ?? 'L’ennoblisseur'} a livré : je te propose de réceptionner ${rouleauxBl > 1 ? `ces ${rouleauxBl} rouleaux` : 'ce rouleau'}, d’après ${nbMails > 1 ? `ses ${nbMails} BL${avecMail ? ` (les ${nbMails} à droite)` : ''}` : `son BL${avecMail ? ' à droite' : ''}`}. Rien n’est écrit tant que tu n’as pas validé.`
+                : 'J’ai réceptionné ce BL seul. Tu peux encore le corriger.'}
             </p>
 
             {saisies.map((s) => (
               <div key={s.id} className="mt-3">
-                {/* What he wrote. */}
-                {s.champ === CHAMP_RECEPTION ? (
-                  <div
-                    className={cn(
-                      'rounded-lg border bg-zinc-50 px-2.5 py-2 space-y-2',
-                      avecMail && nbMails > 1 && (s.runId === mailRun ? 'ring-2 ring-gold border-gold' : 'cursor-pointer hover:border-gold/60'),
-                    )}
-                    onClick={avecMail && nbMails > 1 && s.runId !== mailRun ? () => setRunChoisi(s.runId) : undefined}
-                    title={avecMail && nbMails > 1 && s.runId !== mailRun ? 'Voir ce BL à droite' : undefined}
-                  >
-                    <div className="flex items-center gap-2">
-                      <p className="min-w-0 flex-1 truncate text-sm font-medium">{libelle(s)}</p>
-                      {avecMail && nbMails > 1 && (s.runId === mailRun
-                        ? <span className="flex flex-shrink-0 items-center gap-1 text-[11px] font-semibold text-primary"><FileText className="h-3.5 w-3.5" />BL à droite</span>
-                        : <span className="flex flex-shrink-0 items-center gap-1 text-[11px] text-muted-foreground underline underline-offset-2"><FileText className="h-3.5 w-3.5" />Voir ce BL</span>)}
-                    </div>
-                    <RouleauxBl s={s} />
+                {/* What he proposes. */}
+                <div
+                  className={cn(
+                    'rounded-lg border bg-zinc-50 px-2.5 py-2 space-y-2',
+                    avecMail && nbMails > 1 && (s.runId === mailRun ? 'ring-2 ring-gold border-gold' : 'cursor-pointer hover:border-gold/60'),
+                  )}
+                  onClick={avecMail && nbMails > 1 && s.runId !== mailRun ? () => setRunChoisi(s.runId) : undefined}
+                  title={avecMail && nbMails > 1 && s.runId !== mailRun ? 'Voir ce BL à droite' : undefined}
+                >
+                  <div className="flex items-center gap-2">
+                    <p className="min-w-0 flex-1 truncate text-sm font-medium">{libelle(s)}</p>
+                    {avecMail && nbMails > 1 && (s.runId === mailRun
+                      ? <span className="flex flex-shrink-0 items-center gap-1 text-[11px] font-semibold text-primary"><FileText className="h-3.5 w-3.5" />BL à droite</span>
+                      : <span className="flex flex-shrink-0 items-center gap-1 text-[11px] text-muted-foreground underline underline-offset-2"><FileText className="h-3.5 w-3.5" />Voir ce BL</span>)}
                   </div>
-                ) : (
-                  <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-zinc-50 px-2.5 py-2">
-                    <span className="min-w-0 truncate text-sm font-medium">{libelle(s)}</span>
-                    <Valeur s={s} />
-                  </div>
-                )}
+                  <RouleauxBl s={s} />
+                </div>
 
                 {/* Why — its own section. */}
                 <div className="mt-3 border-t border-border/60 pt-3">
@@ -635,9 +461,9 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
                       <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setMailDialog(s.runId)}><Mail className="mr-1 h-3.5 w-3.5" />Voir le mail</Button>
                     )}
                     <span className="ml-auto" />
-                    {s.champ === CHAMP_RECEPTION && s.decision === 'saisie' && (
+                    {s.decision === 'saisie' && (
                       <>
-                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs text-destructive hover:text-destructive" disabled={geste.isPending} onClick={() => setDialog({ s, action: 'supprimer' })}><Trash2 className="mr-1 h-3.5 w-3.5" />Pas à réceptionner</Button>
+                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs text-destructive hover:text-destructive" disabled={geste.isPending} onClick={() => setDialog(s)}><Trash2 className="mr-1 h-3.5 w-3.5" />Pas à réceptionner</Button>
                         {onReception && (
                           <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} title="Corriger un rouleau, couper, ajouter un commentaire…" onClick={() => onReception(s)}><Pencil className="mr-1 h-3.5 w-3.5" />Modifier</Button>
                         )}
@@ -651,7 +477,7 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
                         })()}
                       </>
                     )}
-                    {s.champ === CHAMP_RECEPTION && s.decision === 'aide' && choix?.id !== s.id && (
+                    {s.decision === 'aide' && choix?.id !== s.id && (
                       <>
                         <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => choisir({ id: s.id, valeur: null, quoi: 'tu ne réceptionnes rien' })}>Ne rien réceptionner</Button>
                         {onReception && (
@@ -659,24 +485,6 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
                         )}
                         {propositionComplete(s) && (
                           <Button size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => choisir({ id: s.id, valeur: s.proposition, quoi: 'tu réceptionnes ces rouleaux comme je le propose' })}><Check className="mr-1 h-3.5 w-3.5" />Appliquer ma proposition</Button>
-                        )}
-                      </>
-                    )}
-                    {s.champ !== CHAMP_RECEPTION && s.decision === 'saisie' && (
-                      <>
-                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs text-destructive hover:text-destructive" disabled={geste.isPending} onClick={() => setDialog({ s, action: 'supprimer' })}><Trash2 className="mr-1 h-3.5 w-3.5" />Supprimer</Button>
-                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => setDialog({ s, action: 'corriger' })}><Pencil className="mr-1 h-3.5 w-3.5" />Modifier</Button>
-                        {s.statut === 'a_revoir' && (
-                          <Button size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => lancer({ id: s.id, action: 'valider' })}><Check className="mr-1 h-3.5 w-3.5" />Valider</Button>
-                        )}
-                      </>
-                    )}
-                    {s.champ !== CHAMP_RECEPTION && s.decision === 'aide' && choix?.id !== s.id && (
-                      <>
-                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => choisir({ id: s.id, valeur: null, quoi: 'tu ne saisis rien' })}>Ne rien saisir</Button>
-                        <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => setDialog({ s, action: 'trancher' })}><Pencil className="mr-1 h-3.5 w-3.5" />Saisir autre chose</Button>
-                        {propositionComplete(s) && (
-                          <Button size="sm" className="h-7 px-2 text-xs" disabled={geste.isPending} onClick={() => choisir({ id: s.id, valeur: s.proposition, quoi: 'tu appliques ma proposition' })}><Check className="mr-1 h-3.5 w-3.5" />Appliquer ma proposition</Button>
                         )}
                       </>
                     )}
@@ -727,30 +535,22 @@ export function TricobotPriseEnMain({ saisies, libelle, onChanged, sujet = 'comm
       </div>
       )}
 
-      {/* The mail he read, where the right-hand panel was. */}
+      {/* The BL he read, where the right-hand panel was. */}
       {avecMail && (
         <div className="absolute bottom-4 right-4 top-4 animate-in slide-in-from-right-6 fade-in-0 duration-500" style={{ width: largeurMail }}>
-          <MailPanneau key={mailRun ?? ''} runId={mailRun} citations={citations} idlignes={saisies.filter((x) => x.runId === mailRun).map((x) => x.idligne)} section={controles ? 2 : 5} runs={bl ? runsMails : []} onRun={setRunChoisi} />
+          <MailPanneau key={mailRun ?? ''} runId={mailRun} runs={runsMails} onRun={setRunChoisi} />
         </div>
       )}
     </div>
       {/* Dialogs outside the veiled zone: they centre on the screen, above it. */}
       <GesteDialog
         open={!!dialog}
-        titre={dialog?.s.champ === CHAMP_RECEPTION ? 'Ce BL n’est pas à réceptionner' : dialog?.action === 'supprimer' ? 'Supprimer la saisie de Tricobot' : controles ? (dialog?.action === 'trancher' ? 'Saisir les mesures de l’ennoblisseur' : 'Corriger les mesures') : dialog?.action === 'trancher' ? 'Saisir le délai' : 'Corriger le délai'}
-        avecDate={dialog?.action !== 'supprimer'}
-        dateInitiale={dialog?.s.proposition}
-        mesuresInitiales={controles ? lireMesures(dialog?.s.proposition ?? null) : undefined}
-        pourquoiFacultatif={dialog?.action === 'trancher'}
-        libelle={dialog?.s.champ === CHAMP_RECEPTION ? 'Envoyer à Tricobot' : dialog?.action === 'supprimer' ? 'Supprimer' : 'Enregistrer'}
+        titre="Ce BL n’est pas à réceptionner"
+        libelle="Envoyer à Tricobot"
         isPending={geste.isPending}
         error={dialog ? erreur : null}
         onClose={() => { setDialog(null); setErreur(null) }}
-        onConfirm={(date, pourquoi) => {
-          if (!dialog) return
-          if (dialog.action === 'trancher') { choisir({ id: dialog.s.id, valeur: date, quoi: 'tu saisis autre chose', commentaire: pourquoi }); setDialog(null); return }
-          lancer({ id: dialog.s.id, action: dialog.action, valeur: date, commentaire: pourquoi })
-        }}
+        onConfirm={(pourquoi) => { if (dialog) lancer({ id: dialog.id, action: 'supprimer', commentaire: pourquoi }) }}
       />
       <MailTricobotDialog runId={mailDialog} onClose={() => setMailDialog(null)} />
     </>,

@@ -5,7 +5,7 @@
 // execution.ts. Adding an automate = one entry here + its module.
 
 import type { Declenchement } from '../agents/catalog.js'
-import { declarerEtatInitial, type AutomateMode, type AutomateRun, type AutomateState, type AutomateStatut } from './store.js'
+import { declarerEtatInitial, type AutomateMode, type AutomateState, type AutomateStatut } from './store.js'
 import * as videosurveillance from './videosurveillance/videosurveillance.js'
 import * as rapportsPointage from './rapports-pointage/rapports-pointage.js'
 import * as tachesRouges from './taches-rouges/taches-rouges.js'
@@ -45,8 +45,6 @@ export interface AutomateDef {
   quitterActif?(resultat: Record<string, unknown>): Promise<Issue>
   /** Live view of what the automate drives (« État » tab). Read-only. */
   etat?(): Promise<unknown>
-  /** What a run's dialog shows beyond its result, read now. Read-only. */
-  detailRun?(run: AutomateRun): Promise<unknown>
   /** It mails subscribers: the « Destinataires » tab edits them (abonnement.ts). */
   abonnement?: AbonnementAutomate
   /** State before the first one is stored (default: « off »), store.ts. */

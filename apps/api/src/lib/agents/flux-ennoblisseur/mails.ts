@@ -1,8 +1,8 @@
 // « Flux Ennoblisseur », the level above its skills (Vincent 2026-11-11): the
 // mails the agent received and where each one went. The agent itself reads
 // nothing: it recognises the dyer and hands the mail to its skills by rule (the
-// PDFs to the BL, the body of a reply to the Point to Délais and Contrôles).
-// One mail can feed several skills, or none: this is the one place that shows it.
+// PDFs to the BL). A mail can feed a skill, or none: this is the one place that
+// shows it.
 //
 // The agents shown in its group (catalog.ts `groupe`: « Factures », 2026-11-11) read the
 // same mailbox on their own: the Triage, or their own poll, hands them their mails. Their
@@ -13,13 +13,12 @@
 
 import type { AgentRun, RunStatut } from '../store.js'
 import { competenceDuRun, SANS_COMPETENCE } from './competences-flux.js'
-import type { ResultatFlux } from './delais.js'
 
 /** One run a mail gave to a skill. */
 export interface RunDuMail {
   id: string
   statut: RunStatut
-  /** What it read, in a few words: « BL 109547A », « 3 délais », « 2 lots ». */
+  /** What it read, in a few words: « BL 109547A ». */
   titre: string
   le: string
   /** The agent the run belongs to, when it is not the flux itself (an agent of its group). */
@@ -41,35 +40,26 @@ export interface MailFlux {
   sujet: string
   /** Its runs, by skill (a skill it gave nothing to is absent). */
   runs: Record<string, RunDuMail[]>
-  /** Skills in observation that hold the mail until a person has reacted. */
-  enAttente: string[]
-  /** Why it went to no skill (« Aucun PDF à lire… »); null when it went to one, or waits. */
+  /** Why it went to no skill (« Aucun PDF à lire… »); null when it went to one. */
   sansSuite: string | null
 }
 
-const pluriel = (n: number, mot: string) => `${n} ${mot}${n > 1 ? 's' : ''}`
-
-/** What a run read, as the mails list prints it. */
+/** What a BL run read, as the mails list prints it. */
 export function titreDuRun(r: AgentRun): string {
-  const cle = competenceDuRun(r)
-  if (cle === 'delais' || cle === 'controles') {
-    const res = r.resultat as Partial<ResultatFlux>
-    const n = cle === 'delais' ? (res.delais ?? []).filter((p) => p.reponse).length : (res.controles ?? []).length
-    return cle === 'delais' ? pluriel(n, 'délai') : pluriel(n, 'lot')
-  }
   const res = r.resultat as { typeDocument?: string | null; extraction?: { numero_bordereau?: string; numero_of?: string } }
   if (r.statut === 'ignore') return 'Pas un BL'
   if (res.typeDocument === 'mise_a_dispo') return `Mise à dispo${res.extraction?.numero_of ? ` OF ${res.extraction.numero_of}` : ''}`
   return res.extraction?.numero_bordereau ? `BL ${res.extraction.numero_bordereau}` : 'BL illisible'
 }
 
-/** The skills a waiting run names: stored since 2026-11-11, read from its summary before. */
-function enAttenteDe(r: AgentRun): string[] {
-  const stocke = (r.resultat as { enAttente?: unknown }).enAttente
-  if (Array.isArray(stocke)) return stocke.filter((x): x is string => typeof x === 'string')
-  if (!/en observation : lu une fois/.test(r.resume)) return []
-  return [/Délais/.test(r.resume) ? 'delais' : null, /Contrôles/.test(r.resume) ? 'controles' : null].filter((x): x is string => !!x)
-}
+/** Why a mail went to no skill, from the run that says so. The summary repeats the subject
+ *  (« Aucun PDF à lire dans « … » »): the list already shows it. Until 2026-11-27 a reply to
+ *  our Point was held by the skills Délais and Contrôles (removed since) and its run says
+ *  so: it had no PDF to read either. */
+const raisonSansSuite = (r: AgentRun): string =>
+  Array.isArray((r.resultat as { enAttente?: unknown }).enAttente) || /en observation : lu une fois/.test(r.resume)
+    ? 'Aucun PDF à lire'
+    : r.resume.replace(/ (dans|à) « .* »$/, '')
 
 /** The mails of the agent, newest first, each with the runs it gave per skill. A run read
  *  again (« Retraiter ») is replaced by its re-run. `cles`: the agent's skills. `membres`:
@@ -107,13 +97,10 @@ export function mailsDuFlux(runs: readonly AgentRun[], cles: readonly string[], 
       })
     }
     const sans = tries.filter((r) => colonneDe(r) === SANS_COMPETENCE)
-    // A skill that has read the mail since no longer waits for it.
-    const enAttente = [...new Set(sans.flatMap(enAttenteDe))].filter((c) => cles.includes(c) && !parCle[c])
     const aucunRun = Object.keys(parCle).length === 0
     mails.push({
-      messageId, date: m.date, de: m.de, sujet: m.sujet, runs: parCle, enAttente,
-      // The summary repeats the subject (« Aucun PDF à lire dans « … » »): the list already shows it.
-      sansSuite: aucunRun && enAttente.length === 0 ? (sans[sans.length - 1]?.resume.replace(/ (dans|à) « .* »$/, '') ?? null) : null,
+      messageId, date: m.date, de: m.de, sujet: m.sujet, runs: parCle,
+      sansSuite: aucunRun && sans.length ? raisonSansSuite(sans[sans.length - 1]) : null,
     })
   }
   return mails.sort((a, b) => b.date.localeCompare(a.date))

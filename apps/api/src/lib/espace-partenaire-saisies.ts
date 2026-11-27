@@ -3,15 +3,15 @@
 //   PUT /api/site/espace/partenaires/:id/commandes/:idCommande/lignes/:idLigne/delai
 //   PUT /api/site/espace/partenaires/:id/lots/:idLot/mesures
 // (routes/webservice-site.ts). Nothing is re-derived here: each write goes through the path ETM already has for
-// « the dyer said so » — the one Tricobot uses when it reads the dyer's mail (lib/agents/flux-ennoblisseur/
-// saisies.ts `ecrireDelai` / `ecrireMesures`) — so the engagement rules, the report, the urgency's answer, the
-// lot's Journal and Tricobot's own scoring all see the partner's entry as they see a person's.
+// « the dyer said so » (lib/agents/flux-ennoblisseur/saisies.ts `ecrireDelai` / `ecrireMesures`, written for
+// Tricobot's reading of the dyer's mail, removed 2026-11-27: this portal replaces it) — so the engagement rules,
+// the report, the urgency's answer and the lot's Journal all see the partner's entry as they see a person's.
 //
 // Guards, before any write:
 //  - the order / the lot is one the partner can open (lib/espace-partenaire-commandes.ts: its own, bon de
 //    commande e-mailed, in the twelve months) — anything else is « not found », never « not yours »;
 //  - a délai: the order is in progress and the line not delivered; a real date, from today, at most
-//    DELAI_MAX_J ahead (Tricobot's own doubt); earlier than the one given only as an announcement, a date
+//    DELAI_MAX_J ahead; earlier than the one given only as an announcement, a date
 //    still to come (the engagement rule, lib/report-delai-sst.ts `refusAvanceDelai`, with its exceptions:
 //    today's date is a delivery, read on the reception); a later one is a report, due to the sous-traitant,
 //    and needs the partner's reason;
@@ -28,18 +28,15 @@ import { lireSaisieStab, StabInvalide } from './stabilites.js'
 import { lireSaisieVrillage, VrillageInvalide } from './vrillage.js'
 import { lireMesuresCotes, noterMesures } from './journal-lot.js'
 import {
-  aDesMesures, ecrireDelai, ecrireMesures, lireEtatLigne, lireMesuresLot, ligneModifiee, lotModifie, texteMesures,
+  ecrireDelai, ecrireMesures, lireEtatLigne, lireMesuresLot, texteMesures,
   type Auteur, type MesuresSst,
 } from './agents/flux-ennoblisseur/saisies.js'
-import { noterSaisieHumaine } from './agents/flux-ennoblisseur/observation.js'
-import { DELAI_MAX_J } from './agents/flux-ennoblisseur/delais.js'
 
 /** A refusal the partner reads: its HTTP status, a code for the portal, a sentence for the person. */
 export class RefusSaisie extends Error {
   constructor(public status: 400 | 404 | 409, public code: string, message: string) { super(message) }
 }
 
-const DEPUIS = 'l’espace partenaire'
 const auteur = (par: string): Auteur => ({ id: 0, nom: par.replace(/\s+/g, ' ').trim().slice(0, 200) || 'Espace partenaire' })
 const jjmmaaaa = (d: string) => { const x = d.replace(/-/g, ''); return `${x.slice(6, 8)}/${x.slice(4, 6)}/${x.slice(0, 4)}` }
 
@@ -55,6 +52,9 @@ function plusJours(iso: string, n: number): string {
 }
 
 // ── Pure readers of what was typed (tested) ─────────────────
+
+/** A délai further than this many days ahead is refused: a typo guard, not a rule of the order. */
+export const DELAI_MAX_J = 180
 
 /** A délai as typed → 'YYYY-MM-DD'. A real date, from today, at most DELAI_MAX_J ahead. */
 export function lireSaisieDelai(v: unknown, aujourdhui: string): string {
@@ -130,9 +130,6 @@ export async function donnerDelaiPartenaire(
 
   const qui = auteur(par)
   await ecrireDelai(idLigne, delai, qui, report ? motif : null)
-  // As a délai typed on the line in ETM: Tricobot's open saisie on it is judged by it, and kept for its observation.
-  const juges = await ligneModifiee(idLigne, digits, qui, DEPUIS)
-  await noterSaisieHumaine({ competence: 'delais', idligne: idLigne, valeur: delai, avant, par: qui, juges })
   return true
 }
 
@@ -156,13 +153,7 @@ export async function enregistrerMesuresPartenaire(
   const qui = auteur(par)
   const cotesAvant = await lireMesuresCotes(idLot)
   await ecrireMesures(idLot, apres)
-  // As measures typed on Suivi lots: Tricobot's open saisie is judged by them, the observation keeps them, and
-  // the lot's Journal tells what changed.
-  const juges = await lotModifie(idLot, qui, DEPUIS)
-  const ecrites = await lireMesuresLot(idLot)
-  if (ecrites && aDesMesures(ecrites)) {
-    await noterSaisieHumaine({ competence: 'controles', idsuivilot: idLot, valeur: texteMesures(ecrites), avant, par: qui, juges })
-  }
+  // As measures typed on Suivi lots: the lot's Journal tells what changed.
   await noterMesures(idLot, cotesAvant, await lireMesuresCotes(idLot), qui)
   return true
 }

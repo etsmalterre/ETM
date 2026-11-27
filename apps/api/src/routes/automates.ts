@@ -136,9 +136,8 @@ routes.get('/:slug/runs/:id', async (req, res) => {
   const run = await lireRun(def.slug, req.params.id)
   if (!run) { res.status(404).json({ error: 'exécution introuvable' }); return }
   try {
-    const detail = def.detailRun ? await def.detailRun(run) : null
     const notes = (await lireEtat(def.slug)).retours.filter((r) => r.runId === run.id)
-    res.json({ run, detail, notes })
+    res.json({ run, notes })
   } catch (err) {
     console.error('[automates] run detail failed:', err)
     res.status(500).json({ error: 'Internal server error' })

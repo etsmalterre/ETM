@@ -67,18 +67,10 @@ export interface AgentState {
   /** The agent's options a pilot switched (AgentDef.options), absent = its default. */
   options?: Record<string, boolean>
   /** Each skill's mode and autonomy draw (AgentDef.competences, competences.ts),
-   *  absent = the skill's default mode. */
+   *  absent = the skill's default mode. An entry of a skill the agent no longer
+   *  has (Flux Ennoblisseur › Délais, Contrôles, removed 2026-11-27) is ignored,
+   *  like the stored `promptsCompetences` those two skills had. */
   competences?: Record<string, EtatCompetence>
-  /** The prompt versions of each skill that has its own prompt (Flux
-   *  Ennoblisseur › Délais, Contrôles; doctrine §0 « le modèle lit »). Absent =
-   *  the skill's shipped versions (CompetenceDef.versionsLivrees). The agent's
-   *  own `versions` stay the first skill's (the BL). */
-  promptsCompetences?: Record<string, PromptsCompetence>
-}
-
-export interface PromptsCompetence {
-  activeVersion: number
-  versions: AgentVersion[]
 }
 
 // ── Runs ─────────────────────────────────────────────────
@@ -101,8 +93,7 @@ export type RunStatut =
 
 /** « triage »: a mail the Triage agent handed over (lib/agents/triage/). */
 /** « triage »: a mail the Triage agent handed over (lib/agents/triage/). */
-/** 'observation': a reply to the Point read late by the hourly pass, once a person reacted (2026-11-09). */
-export type RunSource = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel' | 'triage' | 'observation'
+export type RunSource = 'gmail' | 'essai_manuel' | 'retraitement' | 'planifie' | 'manuel' | 'triage'
 
 export interface RunFichier {
   nom: string
@@ -404,7 +395,8 @@ export function changerModeCompetence(
       changePar: par,
     }
     s.competences = competences
-    const mode = modeDerive(Object.values(competences).map((x) => x.mode))
+    // Only the skills the agent has: a stored entry of a removed one never keeps it running.
+    const mode = modeDerive(Object.keys(defauts).map((k) => competences[k].mode))
     if (mode !== s.mode) { s.mode = mode; s.modeChangedAt = le; s.modeChangedBy = par }
     if (mode !== 'off' && !s.startedAt) s.startedAt = le
   })
@@ -430,48 +422,6 @@ export async function tirerCompetence(slug: string, initiale: VersionInitiale, c
     if (t.etat.mode === 'autonomie') s.competences = { ...(s.competences ?? {}), [cle]: t.etat }
   })
   return seul
-}
-
-// ── A skill's own prompt versions ───────────────────────
-
-/** A skill's prompt versions as stored, else seeded from the ones it ships
- *  with (the last shipped one active). Once stored, a prompt shipped later is
- *  only offered (« prompt livré », estPublie): publishing it stays a pilot's gesture. */
-export function promptsCompetence(s: AgentState, cle: string, livrees: readonly VersionInitiale[]): PromptsCompetence {
-  const stocke = s.promptsCompetences?.[cle]
-  if (stocke) return stocke
-  const versions = livrees.map((v, i) => ({ version: i + 1, ...v, createdBy: null, createdAt: new Date(0).toISOString() }))
-  return { activeVersion: versions.length, versions }
-}
-
-export function versionCompetenceActive(p: PromptsCompetence): AgentVersion {
-  return p.versions.find((v) => v.version === p.activeVersion) ?? p.versions[p.versions.length - 1]
-}
-
-export function publierVersionCompetence(
-  slug: string,
-  initiale: VersionInitiale,
-  cle: string,
-  livrees: readonly VersionInitiale[],
-  v: { model: string; prompt: string; note: string },
-  par: Auteur,
-): Promise<AgentState> {
-  return modifierEtat(slug, initiale, (s) => {
-    const p = promptsCompetence(s, cle, livrees)
-    const version = Math.max(0, ...p.versions.map((x) => x.version)) + 1
-    s.promptsCompetences = {
-      ...(s.promptsCompetences ?? {}),
-      [cle]: { activeVersion: version, versions: [...p.versions, { version, ...v, createdBy: par, createdAt: new Date().toISOString() }] },
-    }
-  })
-}
-
-export function activerVersionCompetence(slug: string, initiale: VersionInitiale, cle: string, livrees: readonly VersionInitiale[], version: number): Promise<AgentState> {
-  return modifierEtat(slug, initiale, (s) => {
-    const p = promptsCompetence(s, cle, livrees)
-    if (!p.versions.some((v) => v.version === version)) throw new Error(`version ${version} inconnue`)
-    s.promptsCompetences = { ...(s.promptsCompetences ?? {}), [cle]: { ...p, activeVersion: version } }
-  })
 }
 
 export function marquerPlanification(slug: string, initiale: VersionInitiale, jour: string): Promise<AgentState> {

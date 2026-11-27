@@ -37,7 +37,6 @@ describe('a version note is one or two short sentences', () => {
     const livrees = AGENTS.flatMap((a) => [
       { qui: `${a.slug} (initiale)`, note: a.versionInitiale.note },
       ...(a.promptLivre ? [{ qui: `${a.slug} (livrée)`, note: a.promptLivre.note }] : []),
-      ...(a.competences ?? []).flatMap((c) => (c.versionsLivrees ?? []).map((v, i) => ({ qui: `${a.slug}/${c.cle} v${i + 1}`, note: v.note }))),
     ])
     expect(livrees.length).toBeGreaterThan(5)
     for (const l of livrees) expect(l.note.length, l.qui).toBeLessThanOrEqual(NOTE_MAX)

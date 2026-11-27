@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentRun } from '../store.js'
-import { competenceDuRun, SANS_COMPETENCE } from './competences-flux.js'
+import { competenceDuRun, runsDesCompetences, SANS_COMPETENCE } from './competences-flux.js'
 import { mailsDuFlux } from './mails.js'
 
-const CLES = ['bl', 'delais', 'controles']
+const CLES = ['bl']
 let n = 0
 const run = (mail: string, o: Partial<AgentRun>): AgentRun => ({
   id: `r${++n}`, slug: 'bl-ennoblisseur', createdAt: `2026-11-10T10:00:${String(n).padStart(2, '0')}Z`, source: 'triage', mode: 'actif',
@@ -16,8 +16,12 @@ const sansPdf = (mail: string, resume: string, o: Partial<AgentRun> = {}) => run
 
 describe('the skill a run belongs to', () => {
   it('is the one it names, else the BL', () => {
-    expect(competenceDuRun(run('1', { competence: 'delais' }))).toBe('delais')
+    expect(competenceDuRun(run('1', { competence: 'bl' }))).toBe('bl')
     expect(competenceDuRun(bl('1', '109547A'))).toBe('bl')
+  })
+  it('a stored run of a skill removed since (Délais, Contrôles, 2026-11-27) is ignored', () => {
+    const runs = [bl('1', '109547A'), run('2', { competence: 'delais' }), run('2', { competence: 'controles' }), sansPdf('3', 'Aucun PDF à lire dans « Palettes »')]
+    expect(runsDesCompetences(runs, CLES).map((r) => r.message?.id)).toEqual(['1', '3'])
   })
   it('is none for a mail no file was read from', () => {
     expect(competenceDuRun(sansPdf('1', 'Aucun PDF à lire dans « Palettes »'))).toBe(SANS_COMPETENCE)
@@ -32,13 +36,9 @@ describe('the mails of the flux', () => {
     const mails = mailsDuFlux([
       bl('03', '109547A'),
       bl('05', '109600A'), bl('05', '109601A'),
-      run('05', { competence: 'delais', resultat: { delais: [{ reponse: 's 47' }, { reponse: '' }, { reponse: '12/11' }] } }),
-      run('05', { competence: 'controles', resultat: { controles: [{}, {}] } }),
     ], CLES)
     expect(mails.map((m) => m.messageId)).toEqual(['05', '03'])
     expect(mails[0].runs.bl.map((r) => r.titre)).toEqual(['BL 109600A', 'BL 109601A'])
-    expect(mails[0].runs.delais.map((r) => r.titre)).toEqual(['2 délais'])
-    expect(mails[0].runs.controles.map((r) => r.titre)).toEqual(['2 lots'])
     expect(mails[1].runs).toEqual({ bl: [expect.objectContaining({ titre: 'BL 109547A', statut: 'ecrit' })] })
     expect(mails[1].sansSuite).toBeNull()
   })
@@ -47,23 +47,17 @@ describe('the mails of the flux', () => {
     const [m] = mailsDuFlux([sansPdf('02', 'Aucun PDF à lire dans « Palettes »')], CLES)
     expect(m.runs).toEqual({})
     expect(m.sansSuite).toBe('Aucun PDF à lire')
-    expect(m.enAttente).toEqual([])
   })
 
-  it('shows a reply to the Point held by the skills in observation, until they have read it', () => {
+  it('a reply to the Point the removed skills held, and read, went to no skill: it had no PDF', () => {
+    // As stored until 2026-11-27: the run that held the mail, then the late reading of a skill.
     const attente = sansPdf('09', 'Délais et Contrôles en observation : lu une fois qu’une personne aura réagi')
-    const [avant] = mailsDuFlux([attente], CLES)
-    expect(avant.enAttente).toEqual(['delais', 'controles'])
-    expect(avant.sansSuite).toBeNull()
-    // The hourly pass read it for the Délais once a person typed a délai: only Contrôles still waits.
-    const [apres] = mailsDuFlux([attente, run('09', { competence: 'delais', source: 'observation', resultat: { delais: [{ reponse: 's 47' }] } })], CLES)
-    expect(apres.enAttente).toEqual(['controles'])
-    expect(apres.runs.delais.map((r) => r.titre)).toEqual(['1 délai'])
-  })
-
-  it('reads the waiting skills from the run when it stores them', () => {
-    const [m] = mailsDuFlux([sansPdf('09', 'peu importe', { resultat: { enAttente: ['controles'] } })], CLES)
-    expect(m.enAttente).toEqual(['controles'])
+    const lecture = run('09', { competence: 'delais', fichiers: [], statut: 'simule', resultat: { delais: [{ reponse: 's 47' }] } })
+    for (const runs of [[attente], [attente, lecture], [sansPdf('09', 'peu importe', { resultat: { enAttente: ['controles'] } })]]) {
+      const [m] = mailsDuFlux(runs, CLES)
+      expect(m.runs).toEqual({})
+      expect(m.sansSuite).toBe('Aucun PDF à lire')
+    }
   })
 
   it('names what the BL made of a PDF: a document set aside, a mise à dispo', () => {

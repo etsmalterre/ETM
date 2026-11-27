@@ -1,7 +1,7 @@
 // Skills (« compétences »), supervision and autonomy of an AI agent — the pure
 // rules of claude_doc/agents_autonomie.md (decided with Vincent 2026-11-05).
 //
-// An agent has skills (Flux Ennoblisseur: BL, Délais, Contrôles), each with its
+// An agent has skills (Flux Ennoblisseur: BL), each with its
 // own mode and its own three measures:
 //   - Fiabilité   when it acts alone, is it right?
 //   - Autonomie   does it act without asking?

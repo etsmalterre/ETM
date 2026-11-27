@@ -115,7 +115,7 @@ app.use(cookieParser())
 // Never 401s — routes keep working without a cookie, same as before.
 app.use(attachUser())
 // Who did what: every write of an identified account + every 5xx
-// (lib/journal-activite.ts, read by the agent « Rapport d'activité »).
+// (lib/journal-activite.ts).
 app.use(journaliserActivite())
 
 // Liveness by default. `?db=1` upgrades it to a readiness probe that actually

@@ -27,8 +27,8 @@ export interface FaitsRaisonSst {
   tricoteur: boolean
 }
 
-/** What Tricobot wrote or asked on the order (lib/agents/flux-ennoblisseur/saisies.ts compteursParCommande). */
-export interface CompteurTricobotSst { aValider: number; aide: number; bl?: number }
+/** What Tricobot proposed or asked on the order (lib/agents/flux-ennoblisseur/saisies.ts compteursParCommande). */
+export interface CompteurTricobotSst { aValider: number; aide: number }
 
 /** Tricobot waits for a person on the order: a Malterre action now, red. */
 export const tricobotAttend = (c: CompteurTricobotSst | undefined | null): c is CompteurTricobotSst =>
@@ -45,9 +45,8 @@ const jjmm = (v: string | null | undefined): string => {
 export function raisonCommandeSst(f: FaitsRaisonSst, urgence: 'late' | 'soon' | null, tricobot?: CompteurTricobotSst | null): string | null {
   if (tricobotAttend(tricobot)) {
     if (tricobot.aide > 0 && tricobot.aValider === 0) return 'Tricobot demande ton avis'
-    // Delivery notes only: a réception to validate, not a délai.
-    if ((tricobot.bl ?? 0) >= tricobot.aValider + tricobot.aide) return 'Tricobot : réception à valider'
-    return `Tricobot : ${tricobot.aValider + tricobot.aide > 1 ? 'délais à valider' : 'délai à valider'}`
+    // His points are delivery notes: a réception to validate.
+    return 'Tricobot : réception à valider'
   }
   // An urgency asked of the sous-traitant whose answer did not come (lib/urgence-sst.ts).
   if (f.urgenceDemandee === 'a_relancer') return `Urgence demandée : relancer ${f.tricoteur ? 'le tricoteur' : 'l’ennoblisseur'}`

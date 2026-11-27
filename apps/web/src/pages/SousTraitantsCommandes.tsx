@@ -1139,7 +1139,7 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
     // Réception creates a suivilot, reprise re-syncs its état — both surface on
     // Qualité › Suivi des lots, so refresh both screens (not just this one).
     invalidateLotQualityCaches(queryClient)
-    // A délai typed on a line judges Tricobot's saisie on it (API ligneModifiee).
+    // A réception, or a roll corrected, judges Tricobot's BL on the line (API receptionFaite, rouleauCorrige).
     queryClient.invalidateQueries({ queryKey: ['tricobot-saisies'] })
   }, [queryClient])
 
@@ -1547,7 +1547,7 @@ function CommandeList({
   /** True while the next page is currently in-flight. */
   isFetchingNextPage: boolean
 }) {
-  // What Tricobot wrote or asked on each order (Flux Ennoblisseur › Délais, claude_doc/agents_autonomie.md).
+  // What Tricobot proposed or asked on each order (Flux Ennoblisseur › BL, claude_doc/agents_autonomie.md).
   const { data: compteursTricobot } = useCompteursTricobot(famille === 'ennoblissement')
   // IntersectionObserver-driven infinite scroll. The sentinel sits at the
   // bottom of the list's scroll container; the moment it enters the
@@ -2320,7 +2320,7 @@ function LignesSection({
                   data-tricobot-ligne={parTricobot ? l.IDligne_commande_sous_traitant : undefined}
                 >
                 {parTricobot && !enRevue && (
-                  <span className="absolute right-2 top-2 z-10" title="Délai saisi par Tricobot"><TricobotMascot className="h-7 w-7" /></span>
+                  <span className="absolute right-2 top-2 z-10" title="BL réceptionné seul par Tricobot"><TricobotMascot className="h-7 w-7" /></span>
                 )}
                 <LineCard
                   line={l}
@@ -8277,7 +8277,7 @@ function JournalTab({ commande }: { commande: CommandeDetail }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['commande-sst-journal', commandeId],
     queryFn: () => apiFetch<{ entrees: EntreeJournal[] }>(`/commandes-sous-traitant/${commandeId}/journal`),
-    // Suivi lots, the reception and the Point write it from other screens.
+    // Suivi lots and the reception write it from other screens.
     staleTime: 0,
     refetchOnMount: 'always',
   })

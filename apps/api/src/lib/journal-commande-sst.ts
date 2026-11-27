@@ -5,7 +5,8 @@
 //
 // Same two kinds of source as the lot's journal:
 //   - facts that already carry who + when are READ where they live: the délai
-//     question (`delai_sst_evenement`), the Points sent (`point_sst`), the
+//     question (`delai_sst_evenement`), the Points sent (`point_sst`: history,
+//     the daily Point was removed on 2026-11-27 and its 33 mails stay), the
 //     lots' facts;
 //   - the gestures with no author anywhere (creation, bon de commande — whose
 //     `envoi_email` rows say when and to whom, never by whom — closing /
@@ -85,7 +86,7 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
       LEFT JOIN ref_fini rf ON rf.idref_fini = l.idreference AND l.type = 2
       WHERE e.idcommande_sous_traitant = ${idcommande} ORDER BY e.le`,
     // A Point sent with the order in it (any section, not removed): its lines, grouped per Point below
-    // so the entry says WHAT the Point asked about this order (Vincent 2026-11-10).
+    // so the entry says WHAT the Point asked about this order (Vincent 2026-11-10). History only.
     sql<{ id: number; le: Date; jour: string; par: string | null; section: number; date_prevue: string | null; commentaire: string; reference: string }[]>`
       SELECT p.idpoint_sst AS id, p.envoye_le AS le, to_char(p.jour, 'YYYY-MM-DD') AS jour, p.envoye_par_nom AS par,
              l.section, to_char(l.date_prevue, 'YYYY-MM-DD') AS date_prevue, l.commentaire, l.reference

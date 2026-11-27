@@ -95,9 +95,8 @@ import { noterLot } from '../lib/journal-lot.js'
 import { lireJournalCommandeSst, noterCommandeSst } from '../lib/journal-commande-sst.js'
 import { journaliserEnvoiRc } from '../lib/rapport-controle-lot.js'
 import { adressesDuClient, clientEnCopie, nomFichierRc, PHRASE_RC_SOUMISSION, PIECE_RC, rcPourSoumission, renderRapportControle } from '../lib/rc-soumission.js'
-import { compteursParCommande, ligneModifiee, rouleauCorrige } from '../lib/agents/flux-ennoblisseur/saisies.js'
+import { compteursParCommande, rouleauCorrige } from '../lib/agents/flux-ennoblisseur/saisies.js'
 import { correctionsRouleau } from '../lib/agents/flux-ennoblisseur/reception-bl.js'
-import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { attendUnDelai, contexteMailRelanceDelai, DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, mailRelanceDelai, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
 import { contexteMailUrgence, demanderUrgence, GESTES_MAIL, joursReponseUrgence, leverUrgence, noterMailUrgence, noterReponseUrgence, refuserUrgence, refusUrgenceNouvelleLigne, texteMailUrgence, urgenceEnAttente, UrgenceRefusee, urgencesLignes, type UrgenceLigne } from '../lib/urgence-sst.js'
 import { fermetures } from '../lib/delais-standards.js'
@@ -1325,7 +1324,7 @@ async function computeUrgencyBuckets(famille: SstFamille | null = null): Promise
   return avecTricobot({ late, soon }, openIds)
 }
 
-/** Tricobot waits for a person on an order (a délai to validate, an aide): a
+/** Tricobot waits for a person on an order (a réception to validate, an aide): a
  *  Malterre action now — red, in the counter and its filter like any other
  *  (claude_doc/agents_autonomie.md §6). Never fails the buckets. */
 async function avecTricobot(b: { late: Set<number>; soon: Set<number> }, openIds: number[]): Promise<{ late: Set<number>; soon: Set<number> }> {
@@ -5444,24 +5443,6 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
         par: req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null,
       })
     }
-    // A délai Tricobot wrote on this line and nobody judged yet: the hand-typed
-    // value judges it (same = validée, another = corrigée — claude_doc/agents_autonomie.md §4).
-    if (d.date_livraison !== undefined) {
-      const par = req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null
-      const juges = await ligneModifiee(lineId, delaiApres ?? '', par)
-      // Flux Ennoblisseur › Délais in observation: the délai a person typed is
-      // what the dyer's mail will be compared with (observation.ts, hourly).
-      const chiffres = (v: unknown) => (typeof v === 'string' ? v.replace(/\D/g, '').slice(0, 8) : '')
-      const apres = chiffres(delaiApres)
-      if (/^\d{8}$/.test(apres) && apres !== chiffres(cur.date_livraison)) {
-        await noterSaisieHumaine({
-          competence: 'delais', idligne: lineId, par, juges,
-          valeur: `${apres.slice(0, 4)}-${apres.slice(4, 6)}-${apres.slice(6, 8)}`,
-          avant: { idcommande: commandeId, dateLivraison: chiffres(cur.date_livraison), dateDelai: chiffres(cur.date_delai), sstatut: (cur.sstatut ?? '').trim() },
-        })
-      }
-    }
-
     // Auto-close on "all lines done" was removed when we moved to the
     // computed-phase model — the operator now uses the Clôturer button in
     // the sidebar footer to flip est_soldee manually. `maybeAutoCloseCommande`

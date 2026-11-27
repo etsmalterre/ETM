@@ -1,8 +1,8 @@
 // Agent « Flux Ennoblisseur » (ex-« BL Ennoblisseur » until 2026-11-05, slug,
 // Gmail labels and notification kept) — the dyers' mail to contact@, skill by
 // skill (flux-ennoblisseur/competences-flux.ts, claude_doc/agents_autonomie.md):
-// BL (this file), Délais and Contrôles (flux-ennoblisseur/delais.ts, a reply to
-// our « Point du JJ/MM »). Each skill has its own mode, inside the agent's.
+// BL (this file), the only one since Délais and Contrôles were removed
+// (2026-11-27). A skill has its own mode, inside the agent's.
 //
 // The BL skill reads the delivery notes (bordereaux de livraison)
 // the dyers (MATEL, Bontemps, TAD — bl-profils.ts) mail to contact@ and feeds
@@ -25,12 +25,9 @@
 
 import { ocrPdf, chatJson } from '../mistral.js'
 import { notify } from '../notify.js'
-import { listerMessages, lireMessage, lireFil, lirePieceJointe, assurerLibelle, ajouterLibelle, retirerLibelle, type MessageInfo } from '../gmail-reader.js'
-import { traiterReponsePoint } from './flux-ennoblisseur/delais.js'
+import { listerMessages, lireMessage, lirePieceJointe, assurerLibelle, ajouterLibelle, retirerLibelle, type MessageInfo } from '../gmail-reader.js'
 import { enregistrerPointBl, propositionDuBl, receptionnerProposition, seulPossible } from './flux-ennoblisseur/reception-bl.js'
 import { TRICOBOT } from './flux-ennoblisseur/saisies.js'
-import { CONTROLES_VERSIONS_LIVREES, DELAIS_VERSIONS_LIVREES } from './flux-ennoblisseur/lecture.js'
-import type { ModeCompetence } from './competences.js'
 import { relaisTriage, triesParTriage } from './triage/relais.js'
 import {
   BL_PROMPT_V1,
@@ -70,8 +67,6 @@ import {
   nouvelIdRun,
   optionDe,
   modePlafonne,
-  promptsCompetence,
-  versionCompetenceActive,
   type AgentMode,
   type AgentRun,
   type AgentState,
@@ -427,7 +422,7 @@ export async function sonderBoite(state: AgentState, version: AgentVersion, lanc
   const termes = termesExpediteurs(cs.map((c) => c.mail))
   if (termes.length === 0) return []
   const apres = Math.floor(new Date(state.startedAt).getTime() / 1000)
-  // Every mail of the dyers: a reply to the Point carries no PDF (Délais skill).
+  // Every mail of the dyers: one without a PDF still leaves its run (never read twice).
   const q = `${requeteExpediteurs(termes)} after:${apres}`
   const ids = await listerMessages(BL_ENNOBLISSEUR_BOITE, q, 50)
   const deja = await messagesTraites(BL_ENNOBLISSEUR_SLUG)
@@ -453,48 +448,18 @@ export async function traiterMessage(
   const message = { id: m.id, threadId: m.threadId, de: m.de, sujet: m.sujet, date: m.date }
   const state = await lireEtat(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE)
   const sst = sousTraitantExpediteur(m.de, await contacts())
-  const runs: AgentRun[] = []
-  // Skills in observation that put this mail on hold (observation-attente.ts).
-  let enAttente: string[] = []
-
-  // Délais / Contrôles: the body of a reply to our Point (no PDF needed).
-  const modeDe = (cle: string, defaut: ModeCompetence) => effectif(mode, etatCompetence(state, cle, defaut).mode)
-  const delais = modeDe('delais', 'essai')
-  const controles = modeDe('controles', 'essai')
-  if (sst != null && (delais !== 'off' || controles !== 'off')) {
-    try {
-      const complet = (await lireFil(BL_ENNOBLISSEUR_BOITE, m.threadId)).find((x) => x.id === m.id)
-      if (complet) {
-        const r = await traiterReponsePoint(complet, {
-          delais, controles, source, lancePar, slug: BL_ENNOBLISSEUR_SLUG, idsousTraitant: sst,
-          promptDelais: versionCompetenceActive(promptsCompetence(state, 'delais', DELAIS_VERSIONS_LIVREES)),
-          promptControles: versionCompetenceActive(promptsCompetence(state, 'controles', CONTROLES_VERSIONS_LIVREES)),
-          tirerSeul: () => tirerCompetence(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE, 'delais', 'essai'),
-          tirerSeulControles: () => tirerCompetence(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE, 'controles', 'essai'),
-        })
-        runs.push(...r.runs)
-        enAttente = r.enAttente
-      }
-    } catch (err) {
-      console.error(`[agents] ${BL_ENNOBLISSEUR_SLUG}: délais of ${m.id} failed:`, err)
-    }
-  }
 
   // BL: the PDF attachments.
-  const bl = modeDe('bl', 'supervise')
+  const bl = effectif(mode, etatCompetence(state, 'bl', 'supervise').mode)
   const pjs = bl === 'off' ? [] : m.piecesJointes.filter(estPieceCandidate)
   if (pjs.length === 0) {
-    if (runs.length) return runs
     const run: AgentRun = {
       id: nouvelIdRun(), slug: BL_ENNOBLISSEUR_SLUG, createdAt: new Date().toISOString(), source, mode,
       lancePar, message, fichiers: [], version: version.version, model: version.model, statut: 'ignore',
       // No skill had this mail (competences-flux.ts SANS_COMPETENCE): it is listed with the
-      // agent's mails, with the skills in observation that hold it (mails.ts).
-      resultat: enAttente.length ? { enAttente } : {},
-      // Observation: the mail waits for a person's reaction, read then (hourly pass).
-      resume: enAttente.length
-        ? `${enAttente.map((c) => (c === 'delais' ? 'Délais' : 'Contrôles')).join(' et ')} en observation : lu une fois qu’une personne aura réagi`
-        : `Aucun PDF à lire dans « ${m.sujet} »`,
+      // agent's mails (mails.ts).
+      resultat: {},
+      resume: `Aucun PDF à lire dans « ${m.sujet} »`,
       coutUsd: 0, dureeMs: 0,
     }
     await ajouterRun(run)
@@ -508,7 +473,7 @@ export async function traiterMessage(
   })
   await etiqueter(m.id, blRuns)
   await prevenir(blRuns)
-  return [...runs, ...blRuns]
+  return blRuns
 }
 
 /** A skill's mode under the agent's: an agent in essai runs every skill in

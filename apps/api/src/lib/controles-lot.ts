@@ -14,8 +14,7 @@
 // derived « any » (written by the PUT), kept for the readers that only ask
 // « is this side controlled at all ». A measure asked is due: one missing keeps
 // the lot from « Valider le lot » (lib/cycle-ennoblissement.ts). A measure not
-// asked is never asked: not by the cycle, nor the Point to the dyer, nor a
-// relance. The vrillage (lib/vrillage.ts, #1332) joined as a fourth measure the
+// asked is never asked: not by the cycle, nor a relance. The vrillage (lib/vrillage.ts, #1332) joined as a fourth measure the
 // same day, asked everywhere by default (Vincent): until then nothing waited for it.
 // Never a « nc » typed on the lot: not measuring is a decision on the
 // article, taken once, not a way out of one lot.

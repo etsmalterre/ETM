@@ -74,7 +74,7 @@
 //   non_envoye    → not listed (the bon de commande is not sent)
 //   attente_delai → delai_a_donner
 //   en_teinture   → en_traitement — or delai_a_donner while a line still to deliver has no délai: ETM asks it
-//                   line by line too (the daily Point, « délai pas encore donné »)
+//                   line by line too (« délai pas encore donné »)
 //   en_controle   → en_controle when everything came back (no écru left at the partner, no lot in reprise);
 //                   with a solde or a lot in reprise the partner still holds matter of the order: en_traitement
 //                   (ETM prints « En contrôle » from the first lot received; the portal's step means « every

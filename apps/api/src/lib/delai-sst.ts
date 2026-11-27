@@ -9,9 +9,10 @@
 // morning's Point (9117, 22/10). Now the question is a series of dated facts:
 //
 //   - asked:     the first bon de commande email (envoi_email type 13);
-//   - relances:  every Point sent with the order in its « délais » section
-//                (point_sst_ligne — derived, never copied) and every
-//                « Relancer » gesture (e-mail / phone, `delai_sst_evenement`);
+//   - relances:  every « Relancer » gesture (e-mail / phone, `delai_sst_evenement`),
+//                and every Point sent with the order in its « délais » section
+//                (point_sst_ligne — derived, never copied). The daily Point was
+//                removed on 2026-11-27: those sent before stay relances of their day;
 //   - reports:   « Repousser » — a new échéance, a motif, and who the wait is
 //                imputable to (the dyer, or us: yarn not there, client undecided);
 //   - answered:  a line leaving Attente_Delai with a date (PUT lignes, TRM's
@@ -135,10 +136,10 @@ export function derniereRelance(f: FaitsDelai): Relance | null {
   return rs.length ? rs.reduce((a, b) => (b.jour > a.jour ? b : a)) : null
 }
 
-/** When it is ours to chase: the working day AFTER the échéance — on the
- *  échéance itself the Point of 17:00 asks, nobody has anything to do
- *  (Vincent 2026-11-02) — or RELANCE_SUIVANTE_J working days after the latest
- *  relance if later. Pure. */
+/** When it is ours to chase: the working day AFTER the échéance (Vincent
+ *  2026-11-02: on the échéance itself the Point of 17:00 asked, nobody had
+ *  anything to do; the rule outlived the Point, removed 2026-11-27) — or
+ *  RELANCE_SUIVANTE_J working days after the latest relance if later. Pure. */
 export function relanceDue(f: FaitsDelai): string | null {
   const e = echeanceDelai(f)
   const r = derniereRelance(f)
@@ -168,8 +169,9 @@ export async function lireFaitsDelai(ids: number[], sql: Sql = mpsPg()): Promise
     sql<{ id: number; jour: string }[]>`
       SELECT idreference AS id, to_char(min(date), 'YYYY-MM-DD') AS jour FROM envoi_email
       WHERE idtype_doc = ${TYPE_DOC_BON} AND idreference = ANY(${cmdIds}) GROUP BY idreference`,
-    // A Point sent with the order in its « délais » section (§5) is a relance.
-    // A lot in reprise sits in §5 too (cle « reprise: ») — not a délai question.
+    // A Point sent with the order in its « délais » section (§5) is a relance (history:
+    // no Point is sent since 2026-11-27). A lot in reprise sat in §5 too (cle « reprise: »)
+    // — not a délai question.
     sql<{ id: number; jour: string; par: string | null }[]>`
       SELECT DISTINCT l.idcommande_sous_traitant AS id,
              to_char(p.envoye_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS jour, p.envoye_par_nom AS par
@@ -258,7 +260,7 @@ export function mailRelanceDelai(p: {
 }
 
 /** What the relance mail is written from: the order's date and our latest own relance (a call or a
- *  mail — the daily Point asks every day, it is not « notre relance du … »). Null = unknown order. */
+ *  mail — a Point of the days it was sent asked every day, it is not « notre relance du … »). Null = unknown order. */
 export async function contexteMailRelanceDelai(idcommande: number, sql: Sql = mpsPg()): Promise<{ commandeLe: string | null; derniereRelance: string | null } | null> {
   const [c] = await sql<{ le: string | null }[]>`
     SELECT to_char(date_commande, 'YYYY-MM-DD') AS le FROM commande_sous_traitant WHERE idcommande_sous_traitant = ${idcommande}`

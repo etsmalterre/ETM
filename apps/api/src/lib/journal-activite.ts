@@ -10,10 +10,13 @@
 //     technical errors a person ran into).
 // Plain reads are NOT journaled (decision Vincent 2026-10-06: writes + errors).
 //
-// Read by the agent « Rapport d'activité » (lib/agents/rapport-activite/).
+// Its reader, the agent « Rapport d'activité », was removed on 2026-11-27; the
+// lots' and orders' history scripts still read the table.
 // ⚠️ Recording people's work is a monitoring device: the people concerned are
 // informed (Code du travail L1222-4) — keep the scope to what is written here,
-// and the purge (one year) running.
+// and the purge (one year) running. ⚠️ That agent ran the purge at each report:
+// since its removal NOTHING calls `purgerJournal` (first rows are a year old on
+// 2027-10-06).
 //
 // Never blocks nor fails a request: the insert runs after the answer is sent,
 // and a database error is logged at most once a minute.
@@ -195,34 +198,6 @@ export function journaliserActivite(): RequestHandler {
     if (avantP) void avantP.then(() => next())
     else next()
   }
-}
-
-// ── Reads ────────────────────────────────────────────────
-
-export interface LigneJournal {
-  le: Date
-  voir_comme: number | null
-  appareil: string | null
-  methode: string
-  chemin: string
-  statut: number
-  duree_ms: number
-  origine: string | null
-  ecran: string | null
-  corps: string | null
-  erreur: string | null
-  ip: string | null
-  /** What the save changed on the row (SUIVIS routes, since 2026-10-14), else null. */
-  changements: Changements | null
-}
-
-/** One person's journal over [du, au), oldest first. */
-export async function journalDe(idutilisateur: number, du: Date, au: Date): Promise<LigneJournal[]> {
-  return mpsPg()<LigneJournal[]>`
-    SELECT le, voir_comme, appareil, methode, chemin, statut, duree_ms, origine, ecran, corps, erreur, ip, changements
-    FROM journal_activite
-    WHERE idutilisateur = ${idutilisateur} AND le >= ${du} AND le < ${au}
-    ORDER BY le, id`
 }
 
 /** Deletes rows past the retention period. Returns how many went. */

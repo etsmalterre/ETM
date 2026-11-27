@@ -16,8 +16,6 @@
 //  - Empty FK columns store 0, not NULL: guard with (col IS NULL OR col = 0).
 //  - Driver returns état ids as BigInt → coerce with Number().
 
-import { aDesMesures, compteursParLot, lireMesuresLot, lotModifie, texteMesures } from '../lib/agents/flux-ennoblisseur/saisies.js'
-import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { auteur } from './agents-ia.js'
 import { Router, type Request, type Response, type Router as RouterType } from 'express'
 import { query, queryRaw, fixEncoding } from '../lib/hfsql-auto.js'
@@ -57,11 +55,6 @@ import { lireJournalLot, lireMesuresCotes, noterLot, noterMesures } from '../lib
 import { lireSaisieStab, StabInvalide, valeurStab } from '../lib/stabilites.js'
 import { AllongementInvalide, lireSaisieAllongement, valeurAllongement, type ChampAllongement } from '../lib/allongement.js'
 import { colorisAControler, colorisDemande, historiqueColoris, lireVerdictColoris, rondsZero, rondZeroDe } from '../lib/coloris-lot.js'
-
-/** Tricobot waits for a person on a lot. */
-const tricobotAttend = (c: { aValider: number; aide: number } | undefined) => !!c && c.aValider + c.aide > 0
-const tricobotRaison = (c: { aValider: number; aide: number }) =>
-  c.aide > 0 && c.aValider === 0 ? 'Tricobot demande ton avis' : 'Tricobot : contrôles à valider'
 
 export const suiviLotsRouter: RouterType = Router()
 
@@ -261,8 +254,6 @@ async function lotsAvecUrgence(status: string, q: string) {
 
     const t = new Date()
     const today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
-    // What Tricobot wrote or asked on each lot's dyer measures (Flux Ennoblisseur › Contrôles).
-    const tricobot = await compteursParLot().catch((err) => { console.error('[suivi-lots] Tricobot counts:', err); return {} as Awaited<ReturnType<typeof compteursParLot>> })
     return (
       fixed.map((r) => {
         const etat = r.IDetatLot != null ? Number(r.IDetatLot) : null
@@ -277,11 +268,7 @@ async function lotsAvecUrgence(status: string, q: string) {
           etape: e?.etape ?? (etat === 3 || etat === 4 ? 'valide' : null),
           rc_a_envoyer: (e?.fait.rcAEnvoyer ?? []).length > 0,
           // Red / amber card (§41): the lot's own relance, the rule of Sous-traitants › Ennoblissement.
-          // Tricobot waiting on its dyer measures is a Malterre action now (agents_autonomie.md §6).
-          urgence: tricobotAttend(tricobot[Number(r.IDsuivilot)])
-            ? { niveau: 'rouge' as const, raison: tricobotRaison(tricobot[Number(r.IDsuivilot)]!) }
-            : e ? urgenceLot(e.fait, today) : null,
-          tricobot: tricobot[Number(r.IDsuivilot)] ?? null,
+          urgence: e ? urgenceLot(e.fait, today) : null,
           date: r.DATE ?? null,
         }
       })
@@ -1138,8 +1125,6 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
       }
     }
 
-    // The dyer measures before, for Flux Ennoblisseur › Contrôles in observation.
-    const mesuresAvant = await lireMesuresLot(id)
     // Both sides before, for the lot's Journal (lib/journal-lot.ts).
     const cotesAvant = await lireMesuresCotes(id)
     await query(
@@ -1155,14 +1140,7 @@ suiviLotsRouter.put('/:id', async (req: Request, res: Response) => {
       if (col === 'allongementh_tirelle') await mpsPg()`UPDATE suivilot SET allongementh_tirelle = ${v} WHERE idsuivilot = ${id}`
       else await mpsPg()`UPDATE suivilot SET allongementl_tirelle = ${v} WHERE idsuivilot = ${id}`
     }
-    // Dyer measures typed by hand judge Tricobot's open saisie on them (same = validée).
     const parLot = req.userId !== undefined ? await auteur(req.userId) : null
-    const juges = await lotModifie(id, parLot)
-    // Contrôles in observation: what the dyer's mail will be compared with (observation.ts, hourly).
-    const mesuresApres = await lireMesuresLot(id)
-    if (mesuresApres && aDesMesures(mesuresApres) && (!mesuresAvant || texteMesures(mesuresAvant) !== texteMesures(mesuresApres))) {
-      await noterSaisieHumaine({ competence: 'controles', idsuivilot: id, valeur: texteMesures(mesuresApres), avant: mesuresAvant, par: parLot, juges })
-    }
     // The coloris verdict (#1332): 'conforme' | 'ecart' | null; left as is when absent.
     if ('coloris_tirelle' in b) {
       if (b.coloris_tirelle !== null && b.coloris_tirelle !== '' && !lireVerdictColoris(b.coloris_tirelle)) {

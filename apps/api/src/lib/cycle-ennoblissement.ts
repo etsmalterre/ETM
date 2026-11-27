@@ -603,7 +603,7 @@ function chasseTraitement(c: CommandeFait, t: EtatTraitement | undefined): { mai
 export interface EtatDelai {
   /** The day the délai was asked (first bon de commande sent), 'YYYY-MM-DD'. */
   demandeLe: string | null
-  /** From when the délai is due (the Point asks from that day), 'YYYY-MM-DD'. */
+  /** From when the délai is due, 'YYYY-MM-DD'. */
   echeance: string | null
   /** Latest relance: day and channel. */
   derniereRelance: { jour: string; canal: string } | null
@@ -659,7 +659,7 @@ function etatSansUrgence(c: CommandeFait): EtatCommande {
   // A received lot still open = « en contrôle ». The order carries no chase of its own
   // then (Vincent 2026-11-03): each lot has its 5-working-day control window and
   // turns red on Qualité › Suivi lots (urgenceLot), the one place the work is
-  // done; the dyer's measures are asked by the daily Point. Only écru still at
+  // done (the dyer types its measures in the espace partenaire, and is chased from the lot). Only écru still at
   // the dyer (a solde) keeps the order on the dyer's délai. Every lot validated:
   // back « en traitement » while écru is still at the dyer, else ours to close
   // (Vincent 2026-11-02). A lot in reprise beside a lot in control keeps the
@@ -688,7 +688,7 @@ export function urgenceCommande(e: EtatCommande, today: string): 'late' | 'soon'
   if (!e.relance) return null
   // A passed délai chased by mail is calm until the next working day (lib/relance-retard-sst.ts).
   if (e.relance <= today) return retardChasse(e, today) ? null : 'late'
-  // Waiting for the délai: nothing to get ahead on — the Point asks by itself (2026-11-02).
+  // Waiting for the délai: nothing to get ahead on (2026-11-02; the dyer gives it in the espace partenaire).
   if (e.etape === 'attente_delai') return null
   if (e.relance <= plusJoursOuvres(today, 1)) return 'soon'
   return null

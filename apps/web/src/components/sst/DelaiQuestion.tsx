@@ -9,7 +9,7 @@ import { invalidateSstCommandeCaches } from '@/lib/cache-sync'
 
 /** The délai question of a sous-traitant order (API lib/delai-sst.ts, LIVA #1314). */
 export interface DelaiCycle {
-  /** From when the délai is due — the Point asks from that day. 'YYYY-MM-DD' */
+  /** From when the délai is due. 'YYYY-MM-DD' */
   echeance: string | null
   /** The day the délai was asked (first bon de commande sent). 'YYYY-MM-DD' */
   demandeLe?: string | null

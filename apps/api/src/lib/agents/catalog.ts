@@ -23,17 +23,6 @@ import {
   executer as executerSuperviseur,
 } from './superviseur/superviseur.js'
 import { CONTROLES } from './superviseur/controles/index.js'
-import {
-  DESTINATAIRES as RAPPORT_ACTIVITE_DESTINATAIRES,
-  HEURES_RAPPORT as RAPPORT_ACTIVITE_HEURES,
-  HEURES_TEXTE as RAPPORT_ACTIVITE_HEURES_TEXTE,
-  PERSONNE_SUIVIE,
-  RAPPORT_ACTIVITE_JOURS,
-  RAPPORT_ACTIVITE_SLUG,
-  RAPPORT_ACTIVITE_VERSION_INITIALE,
-  RAPPORT_ACTIVITE_PROMPT_LIVRE,
-  executer as executerRapportActivite,
-} from './rapport-activite/agent.js'
 import { resultatTriage, sonderBoite as sonderTriage, TRIAGE_BOITE, TRIAGE_PROMPT_LIVRE, TRIAGE_SLUG, TRIAGE_VERSION_INITIALE } from './triage/agent.js'
 import { CATEGORIES } from './triage/categories.js'
 import { DESTINATAIRES } from './triage/transmission.js'
@@ -77,7 +66,7 @@ export interface AgentDef {
   app?: AppIa
   nom: string
   /** The agent whose group shows this one, as one more of its agents (Vincent 2026-11-11:
-   *  « Factures » under « Flux Ennoblisseur », beside BL, Délais and Contrôles). Presentation
+   *  « Factures » under « Flux Ennoblisseur », beside its skills). Presentation
    *  only: its state, runs, prompt, mode and score stay its own. Its `nom` is then read
    *  under the group's (« Flux Ennoblisseur › Factures »). */
   groupe?: string
@@ -219,15 +208,13 @@ export const AGENTS: readonly AgentDef[] = [
     slug: BL_ENNOBLISSEUR_SLUG,
     nom: 'Flux Ennoblisseur',
     description:
-      `Traite les mails des ennoblisseurs (${PROFILS.map((p) => p.nom).join(', ')}), compétence par compétence : BL, Délais, Contrôles — chacune avec son mode (supervisé, autonomie X %) et ses mesures (fiabilité, autonomie, discernement). BL : lit les bordereaux de livraison et prépare la réception : chaque pièce (métrage, observations, et le poids pour MATEL) est enregistrée pour pré-remplir le dialogue de réception de Sous-traitants › Commandes, et le PDF est classé dans les documents de la commande. Les autres pièces jointes de ces expéditeurs (palettes, plans de charge, factures, nos propres documents renvoyés) sont écartées sans alerte.`,
+      `Traite les mails des ennoblisseurs (${PROFILS.map((p) => p.nom).join(', ')}), compétence par compétence, chacune avec son mode (supervisé, autonomie X %) et ses mesures (fiabilité, autonomie, discernement). BL : lit les bordereaux de livraison et prépare la réception : chaque pièce (métrage, observations, et le poids pour MATEL) est enregistrée pour pré-remplir le dialogue de réception de Sous-traitants › Commandes, et le PDF est classé dans les documents de la commande. Les autres pièces jointes de ces expéditeurs (palettes, plans de charge, factures, nos propres documents renvoyés) sont écartées sans alerte.`,
     declenchement: { type: 'releve', intervalleMs: 2 * 60_000 },
     declencheur: `Relève toutes les 2 minutes la boîte ${BL_ENNOBLISSEUR_BOITE} : mails venant des contacts de ${PROFILS.map((p) => p.nom).join(', ')} (Sous-traitants › Gestion › Contacts — une nouvelle adresse du même domaine est prise d’office). C’est le texte du PDF qui décide s’il s’agit d’un BL. Tant que le Triage est en service, il ne relève pas la boîte : il traite les mails que le Triage lui transmet (relevé de secours si le Triage est en panne).${((essai) => (essai.length ? ` ${essai.join(' et ')} : en essai quel que soit le mode de l’agent, le temps de valider leur lecture.` : ''))(PROFILS.filter((p) => p.modeMax === 'essai').map((p) => p.nom))}`,
     ecritures: [
       'Le PDF dans les documents de la commande sous-traitant (type « BL retour ennoblisseur »), nommé comme le lot (un 2e bordereau du même lot MATEL prend sa lettre : MA109269B). Un document dont toutes les pièces sont déjà importées est seulement classé — c’est le cas du BL TAD qui suit la mise à dispo : la preuve de l’expédition au client.',
       'Une ligne par pièce dans les données de réception (table data_bl_tricotbot). Lot : « MA » + n° de BL (MATEL), « BON » + n° de BL (Bontemps), « TA » + n° d’OF (TAD, mise à dispo comme BL). Poids : celui du BL pour MATEL, aucun pour les autres (Malterre pèse).',
       'Un libellé Gmail « ETM/BL traité » ou « ETM/BL à vérifier » sur le mail (mode actif seulement).',
-      'Délais (réponse au « Point du JJ/MM », section 5) : le délai sur chaque ligne demandée (« s N » = mercredi de la semaine N), comme si une personne l’avait saisi. En supervisé, chaque délai attend sa validation sur la carte de la commande (Sous-traitants › Ennoblissement) ; un doute n’écrit rien et demande l’avis d’une personne.',
-      'Contrôles (section 2 de la même réponse) : lus et rapprochés des lots, rien d’écrit pour l’instant (essai).',
     ],
     abstention:
       'Rien n’est enregistré si un contrôle bloque : numéro de commande, de bordereau ou d’OF illisible, commande inconnue ou chez un autre ennoblisseur, pièce introuvable (avec le numéro probable quand un seul écru de la commande est à un caractère près), affectée à aucune commande ou à une autre commande (nommée — « BL probablement mal numéroté » quand toutes les pièces y sont), BL commun à plusieurs commandes (« 9040+9045 » : quelle pièce va sur quelle commande, réception à la main), somme des poids ou des métrages différente des totaux imprimés. L’exécution passe alors « à vérifier » et les abonnés à la notification « Flux Ennoblisseur — BL à vérifier » reçoivent un email (Paramètres › Utilisateurs › Notifications).',
@@ -263,7 +250,7 @@ export const AGENTS: readonly AgentDef[] = [
     description:
       'Contrôle les factures des ennoblisseurs comme le faisait Pierre-Emmanuel avec « Lire facture » dans l’ancien Suivi lots : pour chaque lot facturé, le poids envoyé, le rendement et les traitements qui donnent le prix, comparés au tarif ETM du sous-traitant. La facture est enregistrée une seule fois dans Sous-traitants › Factures et rattachée à chaque commande qu’elle facture. Seules les factures avec un écart demandent une intervention.',
     declenchement: { type: 'releve', intervalleMs: 5 * 60_000 },
-    declencheur: `Relève toutes les 5 minutes la boîte ${FACTURES_SST_BOITE} : mails des contacts des ennoblisseurs (les mêmes que BL, Délais et Contrôles) dont une pièce jointe ressemble à une facture. C’est le texte du PDF qui décide s’il s’agit d’une facture de ${FOURNISSEURS.map((f) => f.nom).join(', ')}. Tant que le Triage est en service, il ne relève pas la boîte : il traite les mails que le Triage lui transmet (relevé de secours si le Triage est en panne).`,
+    declencheur: `Relève toutes les 5 minutes la boîte ${FACTURES_SST_BOITE} : mails des contacts des ennoblisseurs (les mêmes que pour les BL) dont une pièce jointe ressemble à une facture. C’est le texte du PDF qui décide s’il s’agit d’une facture de ${FOURNISSEURS.map((f) => f.nom).join(', ')}. Tant que le Triage est en service, il ne relève pas la boîte : il traite les mails que le Triage lui transmet (relevé de secours si le Triage est en panne).`,
     ecritures: [
       'La facture et son PDF dans Sous-traitants › Factures, une ligne par ligne imprimée, chaque lot rattaché à sa ligne de commande sous-traitant (avec le poids ETM, le prix attendu et le verdict).',
       'Le n° de facture sur les lignes de commande facturées, là où il est vide (comme dans l’ancien Suivi lots) — seulement si la lecture est fiable.',
@@ -347,42 +334,6 @@ export const AGENTS: readonly AgentDef[] = [
     modeles: MODELES_MISTRAL,
     sonder: executerSuperviseur,
     controles: CONTROLES.map((c) => ({ id: c.id, libelle: c.libelle, description: c.description })),
-  },
-  {
-    slug: RAPPORT_ACTIVITE_SLUG,
-    nom: 'Rapport d’activité',
-    description: `Envoie aux heures de bureau (${RAPPORT_ACTIVITE_HEURES_TEXTE}) le compte rendu de l’activité de ${PERSONNE_SUIVIE} depuis le rapport précédent : connexions, actions dans ETM et TRM, le nombre d’actions par heure (un clic qui écrit 60 rouleaux compte pour une action), mails envoyés et reçus, et les rares points à vérifier — techniques (erreurs, actions refusées, saisie contredite par un mail) et de comportement (mail grossier, erreur signalée par un client, prix contraire à ETM).`,
-    declenchement: { type: 'quotidien', heure: RAPPORT_ACTIVITE_HEURES, jours: RAPPORT_ACTIVITE_JOURS },
-    declencheur: `Du lundi au vendredi à ${RAPPORT_ACTIVITE_HEURES_TEXTE} (heure de Paris), sur la période depuis le rapport précédent — celui de 9 h couvre depuis la veille ouvrée 18 h, week-end compris. Lit le journal d’activité d’ETM/TRM (créations, modifications, suppressions et erreurs du compte, jamais les simples consultations), les connexions, et la boîte ${PERSONNE_SUIVIE} en lecture seule.`,
-    ecritures: [
-      `Un e-mail à ${RAPPORT_ACTIVITE_DESTINATAIRES.join(' et ')}, envoyé par tricotbot@etsmalterre.com — destinataires fixés dans le code, aucun abonnement possible.`,
-      'L’exécution garde les compteurs et les adresses, jamais le contenu du rapport.',
-      'Supprime à chaque rapport prévu les lignes du journal d’activité de plus d’un an.',
-    ],
-    abstention:
-      'Une période sans aucune activité (ni action, ni connexion, ni mail envoyé ou reçu) : aucun e-mail. Les mails dont l’objet les dit personnels sont listés sans être lus ; les mails automatiques (newsletters, notifications) ne sont pas listés. Si Mistral ne répond pas, le rapport part quand même avec les faits seuls.',
-    evaluation: {
-      reussite: 'Le rapport était juste : les points signalés méritaient d’être vérifiés.',
-      echec: 'Un point signalé à tort ou un fait mal résumé : dites lequel, pour la version suivante du prompt.',
-      guide: {
-        question: 'Les points d’attention de l’analyse IA étaient-ils fondés ? Oui → réussite. Un point faux ou injuste → échec, en disant lequel.',
-        exemples: {
-          reussite: '« Prix de 5,20 €/ml annoncé à Sigvaris, la commande 1234 est à 5,60 » : c’était bien une erreur de saisie.',
-          echec: '« Ton inadapté » pour un « merci beaucoup !!!! » à une fournisseuse : un ton amical n’est pas un défaut.',
-        },
-        remarques: ['Les faits relevés par ETM (erreurs serveur, refus, suppressions) ne viennent pas du modèle : ils ne le notent pas.'],
-      },
-    },
-    pointsEvaluables: false,
-    modes: {
-      off: 'N’envoie rien.',
-      essai: 'Prépare le rapport à l’heure prévue et dit à qui il l’enverrait, n’envoie rien.',
-      actif: 'Envoie le rapport à chaque heure prévue. « Lancer maintenant » l’envoie tout de suite, sur la période depuis le dernier rapport prévu.',
-    },
-    versionInitiale: RAPPORT_ACTIVITE_VERSION_INITIALE,
-    promptLivre: RAPPORT_ACTIVITE_PROMPT_LIVRE,
-    modeles: MODELES_MISTRAL,
-    sonder: executerRapportActivite,
   },
   {
     slug: PLANNING_ATELIER_SLUG,

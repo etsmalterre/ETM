@@ -50,18 +50,14 @@ import { CATEGORIES } from '../lib/agents/triage/categories.js'
 import { BL_ENNOBLISSEUR_SLUG, etiqueterVerifie } from '../lib/agents/bl-ennoblisseur.js'
 import { rouleauxEnStock, type RouleauEnStock } from '../lib/agents/bl-ennoblisseur-db.js'
 import { comparerObservationsBl } from '../lib/agents/bl-observation.js'
-import { bilanObservation, bilanObservationBl, type BilanObservation } from '../lib/agents/flux-ennoblisseur/observation.js'
+import { bilanObservationBl, type BilanObservation } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { DESTINATAIRES } from '../lib/agents/triage/transmission.js'
 import { relaisTriage } from '../lib/agents/triage/relais.js'
 import { apportMesures, conseiller, libelleEtat, mesurer, MODES_COMPETENCE, FENETRE_DEFAUT, type ModeCompetence } from '../lib/agents/competences.js'
-import { activerVersionCompetence, changerModeCompetence, etatCompetence, modePlafonne, noteBinaire, publierVersionCompetence, reglerCycle } from '../lib/agents/store.js'
-import { competenceDuRun, pointsBl, pointsDuRun, referenceBl, versionsDeCompetence } from '../lib/agents/flux-ennoblisseur/competences-flux.js'
+import { changerModeCompetence, etatCompetence, modePlafonne, noteBinaire, reglerCycle } from '../lib/agents/store.js'
+import { competenceDuRun, pointsBl, referenceBl, runsDesCompetences } from '../lib/agents/flux-ennoblisseur/competences-flux.js'
 import { mailsDuFlux } from '../lib/agents/flux-ennoblisseur/mails.js'
 import { NOTE_MAX } from '../lib/agents/notes-courtes.js'
-import { numerosDeLots, pointDe, saisiesDeCompetence, saisiesDeRuns, type Saisie } from '../lib/agents/flux-ennoblisseur/saisies.js'
-import { rejouer, REJEU_MAX } from '../lib/agents/flux-ennoblisseur/rejeu.js'
-import { pointDuRun } from '../lib/agents/flux-ennoblisseur/point-du-run.js'
-import type { ResultatFlux } from '../lib/agents/flux-ennoblisseur/delais.js'
 
 const routes: RouterType = Router()
 
@@ -144,18 +140,24 @@ function agentOu404(req: Request, res: Response): AgentDef | null {
   return def ?? null
 }
 
-/** True for a run of the version in service — of its skill, for an agent whose
- *  skills have their own prompt (Flux Ennoblisseur › Délais, Contrôles). */
-function enService(def: AgentDef, state: AgentState): (r: AgentRun) => boolean {
-  if (!def.competences?.length) return (r) => r.version === state.activeVersion
-  const actives = new Map(def.competences.map((c) => [c.cle, versionsDeCompetence(c, state).activeVersion]))
-  return (r) => r.version === actives.get(competenceDuRun(r))
+/** The runs of an agent. One with skills never shows those of a skill it no longer has
+ *  (Flux Ennoblisseur › Délais, Contrôles, removed 2026-11-27): ignored everywhere. */
+async function runsDe(def: AgentDef): Promise<AgentRun[]> {
+  const runs = await lireRuns(def.slug)
+  return def.competences?.length ? runsDesCompetences(runs, def.competences.map((c) => c.cle)) : runs
+}
+
+/** One run of an agent, or null: unknown, or of a skill the agent no longer has. */
+async function runDe(def: AgentDef, id: string): Promise<AgentRun | null> {
+  const r = await lireRun(def.slug, id)
+  return r && def.competences?.length && !runsDesCompetences([r], def.competences.map((c) => c.cle)).length ? null : r
 }
 
 function statistiques(def: AgentDef, runs: AgentRun[], state: AgentState) {
   // Stats cover the active version only (MFProd rule): a new prompt starts a new score.
-  const courant = enService(def, state)
-  const actifs = runs.filter((r) => courant(r) && r.source !== 'essai_manuel')
+  // A run no skill had (a mail without a PDF) is none of a version's.
+  const actifs = runs.filter((r) => r.version === state.activeVersion && r.source !== 'essai_manuel'
+    && (!def.competences?.length || def.competences.some((c) => c.cle === competenceDuRun(r))))
   const parStatut: Record<string, number> = {}
   for (const r of actifs) parStatut[r.statut] = (parStatut[r.statut] ?? 0) + 1
   const note = (n: Note) => actifs.filter((r) => r.evaluation?.note === n).length
@@ -194,45 +196,14 @@ function dernierControle(runs: AgentRun[]) {
   }
 }
 
-/** Délais / Contrôles: where a run's points stand (saisie_agent). */
-function jugementDuRun(ss: readonly Saisie[]) {
-  return {
-    aRevoir: ss.filter((s) => s.statut === 'a_revoir').length,
-    autonomes: ss.filter((s) => s.statut === 'autonome').length,
-    valides: ss.filter((s) => s.statut === 'validee' || (s.statut === 'resolue' && s.douteJustifie !== false)).length,
-    corriges: ss.filter((s) => s.statut === 'corrigee' || s.statut === 'supprimee' || s.statut === 'omission').length,
-    // An aide a person said was not worth asking.
-    inutiles: ss.filter((s) => s.statut === 'resolue' && s.douteJustifie === false).length,
-  }
-}
-
-/** A run of an agent with skills: what its own points bring to the three measures
- *  (doctrine §4), for the runs list and the run dialog. The BL's point is read on
- *  the run itself; a Délais / Contrôles run needs its saisies (`ss`), without
- *  them nothing is said, and the numbers of their lots (`lots`) to list them
- *  one by one. An agent without skills: nothing. */
-function apportDuRun(def: AgentDef, r: AgentRun, ss?: readonly Saisie[], lots?: ReadonlyMap<number, string>) {
+/** A run of an agent with skills: what its own point brings to the three measures
+ *  (doctrine §4), for the runs list and the run dialog. A BL is one point, read on
+ *  the run itself: the run's row says what it is about (`reference`). An agent
+ *  without skills, or a run no skill had: nothing. */
+function apportDuRun(def: AgentDef, r: AgentRun) {
   const c = def.competences?.find((x) => x.cle === competenceDuRun(r))
   if (!c) return {}
-  // A BL is one point: the run's row says what it is about (`reference`).
-  if (c.cle === 'bl') return { apport: apportMesures(pointsBl([r])), reference: referenceBl(r) }
-  // `points`: the same, point by point (a row each in Agents IA › Exécutions), named by `lots`.
-  return ss ? { apport: apportMesures(ss.map(pointDe)), ...(lots ? { points: pointsDuRun(r, ss, lots) } : {}) } : {}
-}
-
-/** Délais / Contrôles: the list's three columns (Point du, points, à trancher). */
-function colonnesFlux(r: AgentRun) {
-  if (r.competence !== 'delais' && r.competence !== 'controles') return {}
-  const res = r.resultat as Partial<ResultatFlux>
-  const points: Array<{ decision?: string; reponse?: string }> = r.competence === 'delais'
-    ? (res.delais ?? []).filter((p) => p.reponse)
-    : (res.controles ?? [])
-  return {
-    jourPoint: res.jourPoint ?? null,
-    nbSaisies: points.filter((p) => p.decision === 'saisie').length,
-    nbAides: points.filter((p) => p.decision === 'aide').length,
-    nbLus: points.length,
-  }
+  return { apport: apportMesures(pointsBl([r])), reference: referenceBl(r) }
 }
 
 /** A run without the heavy parts (OCR text, findings) for lists. */
@@ -258,14 +229,13 @@ function allege(r: AgentRun) {
     bilan: agentDef(r.slug)?.points?.bilan(r) ?? null,
     // Triage: categories, sender, hand-offs.
     ...(agentDef(r.slug)?.ligne?.(r) ?? {}),
-    ...colonnesFlux(r),
   }
 }
 
 async function vueAgent(def: AgentDef) {
   // BL read in observation: compared with the réception once the lot is in stock (throttled, never throws).
   if (def.slug === BL_ENNOBLISSEUR_SLUG) void comparerObservationsBl(def.slug)
-  const [state, runs] = await Promise.all([lireEtat(def.slug, def.versionInitiale), lireRuns(def.slug)])
+  const [state, runs] = await Promise.all([lireEtat(def.slug, def.versionInitiale), runsDe(def)])
   const v = versionActive(state)
   // An agent the Triage hands mail to: where its mail comes from right now.
   const relais = def.slug in DESTINATAIRES ? await relaisTriage() : null
@@ -302,11 +272,6 @@ async function vueAgent(def: AgentDef) {
   }
 }
 
-/** A skill in observation, as the Score shows it (flux-ennoblisseur/observation.ts). */
-function bilanDeCompetence(cle: string, runs: AgentRun[], version: number | null): Promise<BilanObservation> | BilanObservation {
-  return cle === 'bl' ? bilanObservationBl(runs, version) : bilanObservation(cle as 'delais' | 'controles', version)
-}
-
 /** Each skill: its mode, its three measures on the version it runs, and
  *  whether to propose going up or down (claude_doc/agents_autonomie.md). */
 async function vueCompetences(def: AgentDef, runs: AgentRun[], state: AgentState) {
@@ -315,7 +280,8 @@ async function vueCompetences(def: AgentDef, runs: AgentRun[], state: AgentState
     const stocke = etatCompetence(state, c.cle, c.defaut)
     // The mode as it runs (a state from before 2026-11-05 may still be capped by the agent's).
     const etat = { ...stocke, mode: modePlafonne(state.mode, stocke.mode) }
-    const prompts = versionsDeCompetence(c, state)
+    // A skill runs on the agent's prompt: its versions are the agent's.
+    const prompts = { activeVersion: state.activeVersion, versions: state.versions }
     // Its runs on the version in service: the list's « N à vérifier » under the group card.
     const enService = runs.filter((r) => competenceDuRun(r) === c.cle && r.version === prompts.activeVersion && r.source !== 'essai_manuel')
     let points: Awaited<ReturnType<typeof c.points>> = []
@@ -324,9 +290,8 @@ async function vueCompetences(def: AgentDef, runs: AgentRun[], state: AgentState
     try {
       points = await c.points(runs, def.slug, prompts.activeVersion)
       // In observation the Score shows executions, the comparison with people and the gaps (2026-11-09).
-      if (etat.mode === 'essai') observation = await bilanDeCompetence(c.cle, runs, prompts.activeVersion)
+      if (etat.mode === 'essai') observation = bilanObservationBl(runs, prompts.activeVersion)
     } catch (e) { erreur = e instanceof Error ? e.message : String(e) }
-    const livre = c.versionsLivrees?.[c.versionsLivrees.length - 1]
     return {
       cle: c.cle,
       nom: c.nom,
@@ -339,15 +304,15 @@ async function vueCompetences(def: AgentDef, runs: AgentRun[], state: AgentState
       changeLe: etat.changeLe ?? null,
       changePar: etat.changePar ?? null,
       version: prompts.activeVersion,
-      /** The skill runs on the agent's own prompt (the BL): its versions are the agent's. */
-      promptAgent: !c.versionsLivrees,
+      /** The skill runs on the agent's own prompt: its versions are the agent's. Always true
+       *  since Délais and Contrôles, which had their own, were removed (2026-11-27); kept for
+       *  the console, which still reads it. */
+      promptAgent: true,
       /** Its active version's model (« Mistral Small »), for the list and the header. */
       model: prompts.versions.find((v) => v.version === prompts.activeVersion)?.model ?? '',
       runs: { total: enService.length, aVerifier: enService.filter((r) => r.statut === 'a_verifier').length, erreurs: enService.filter((r) => r.statut === 'erreur').length },
       activeVersion: prompts.activeVersion,
       versions: [...prompts.versions].reverse(),
-      /** A prompt shipped with the code that no stored version of the skill carries yet. */
-      promptLivre: livre && !estPublie(livre, prompts.versions) ? livre : null,
       mesures: mesurer(points),
       // In observation, going up is read on the observation points only (a version may have run supervisé before).
       conseil: conseiller(etat, c.modes, etat.mode === 'essai' ? points.filter((p) => p.observation) : points),
@@ -479,9 +444,9 @@ routes.get('/:slug/mails', async (req, res) => {
   try {
     // The agents of its group read the same mailbox on their own: their runs are columns too.
     const membres = await Promise.all(agentsDe(scopeDe(res).app).filter((a) => a.groupe === def.slug).map(async (a) => ({
-      slug: a.slug, runs: await lireRuns(a.slug), titre: a.titreRun ?? ((r: AgentRun) => r.resume),
+      slug: a.slug, runs: await runsDe(a), titre: a.titreRun ?? ((r: AgentRun) => r.resume),
     })))
-    const mails = mailsDuFlux(await lireRuns(def.slug), def.competences.map((c) => c.cle), membres)
+    const mails = mailsDuFlux(await runsDe(def), def.competences.map((c) => c.cle), membres)
     const limit = Math.min(1000, Math.max(1, parseInt(String(req.query.limit ?? '300'), 10) || 300))
     res.json({ total: mails.length, mails: mails.slice(0, limit) })
   } catch (err) {
@@ -499,84 +464,14 @@ routes.get('/:slug/competences/:cle/mesures', async (req, res) => {
   const c = competenceOu404(def, req, res)
   if (!c) return
   try {
-    const [state, runs] = await Promise.all([lireEtat(def.slug, def.versionInitiale), lireRuns(def.slug)])
+    const [state, runs] = await Promise.all([lireEtat(def.slug, def.versionInitiale), runsDe(def)])
     const tout = req.query.version === 'tout'
-    const version = tout ? null : parseInt(String(req.query.version ?? ''), 10) || versionsDeCompetence(c, state).activeVersion
+    const version = tout ? null : parseInt(String(req.query.version ?? ''), 10) || state.activeVersion
     const etat = etatCompetence(state, c.cle, c.defaut)
-    const observation = modePlafonne(state.mode, etat.mode) === 'essai' ? await bilanDeCompetence(c.cle, runs, version) : null
+    const observation = modePlafonne(state.mode, etat.mode) === 'essai' ? bilanObservationBl(runs, version) : null
     res.json({ cle: c.cle, version, mesures: mesurer(await c.points(runs, def.slug, version)), observation })
   } catch (err) {
     console.error('[agents-ia] competence measures failed:', err)
-    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
-  }
-})
-
-/** A new prompt version of a skill that has its own (piloting right). It becomes
- *  the one in service at once and its measures restart, like the agent's. */
-routes.post('/:slug/competences/:cle/versions', async (req, res) => {
-  const uid = await pilote(req, res)
-  if (uid === null) return
-  const def = agentOu404(req, res)
-  if (!def) return
-  const c = competenceOu404(def, req, res)
-  if (!c) return
-  if (!c.versionsLivrees) { res.status(400).json({ error: 'Cette compétence suit le prompt de l’agent.' }); return }
-  const p = versionBody.safeParse(req.body)
-  if (!p.success) { res.status(400).json({ error: 'Validation failed', details: p.error.issues }); return }
-  if (!def.modeles.includes(p.data.model)) { res.status(400).json({ error: 'modèle non autorisé pour cet agent' }); return }
-  try {
-    const s = await publierVersionCompetence(def.slug, def.versionInitiale, c.cle, c.versionsLivrees, p.data, await auteur(uid))
-    res.status(201).json({ activeVersion: s.promptsCompetences?.[c.cle]?.activeVersion ?? null })
-  } catch (err) {
-    console.error('[agents-ia] competence publish failed:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-routes.post('/:slug/competences/:cle/versions/:version/activer', async (req, res) => {
-  const uid = await pilote(req, res)
-  if (uid === null) return
-  const def = agentOu404(req, res)
-  if (!def) return
-  const c = competenceOu404(def, req, res)
-  if (!c) return
-  if (!c.versionsLivrees) { res.status(400).json({ error: 'Cette compétence suit le prompt de l’agent.' }); return }
-  try {
-    const s = await activerVersionCompetence(def.slug, def.versionInitiale, c.cle, c.versionsLivrees, parseInt(req.params.version, 10))
-    res.json({ activeVersion: s.promptsCompetences?.[c.cle]?.activeVersion ?? null })
-  } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : 'version invalide' })
-  }
-})
-
-const rejeuBody = z.object({
-  model: z.string().min(1),
-  prompt: z.string().trim().min(20).max(30_000),
-  limite: z.number().int().min(1).max(REJEU_MAX).default(10),
-})
-
-/** Replay a draft prompt of Délais / Contrôles on the skill's last executions,
- *  writing nothing (doctrine §0): what the draft changes, and whether it reads
- *  what people kept. Piloting right, like publishing. */
-routes.post('/:slug/competences/:cle/rejouer', async (req, res) => {
-  const uid = await pilote(req, res)
-  if (uid === null) return
-  const def = agentOu404(req, res)
-  if (!def) return
-  const c = competenceOu404(def, req, res)
-  if (!c) return
-  if (c.cle !== 'delais' && c.cle !== 'controles') { res.status(400).json({ error: 'Le rejeu ne concerne que Délais et Contrôles : pour le BL, « Tester un PDF ».' }); return }
-  const p = rejeuBody.safeParse(req.body)
-  if (!p.success) { res.status(400).json({ error: 'Validation failed', details: p.error.issues }); return }
-  if (!def.modeles.includes(p.data.model)) { res.status(400).json({ error: 'modèle non autorisé pour cet agent' }); return }
-  try {
-    const runs = (await lireRuns(def.slug))
-      .filter((r) => competenceDuRun(r) === c.cle && r.statut !== 'erreur')
-      .reverse()
-      .slice(0, p.data.limite)
-    res.json(await rejouer(c.cle, runs, { model: p.data.model, prompt: p.data.prompt }))
-  } catch (err) {
-    console.error('[agents-ia] replay failed:', err)
     res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' })
   }
 })
@@ -669,23 +564,16 @@ routes.get('/:slug/runs', async (req, res) => {
     const parCategorie = (r: AgentRun) => !cat || ((r.resultat as { categories?: string[] }).categories ?? []).includes(cat)
     // ?version=3 — the runs of one prompt version (the Exécutions tab opens on the active one).
     const version = parseInt(String(req.query.version ?? ''), 10) || null
-    // ?competence=delais — the runs of one skill (its versions are its own).
+    // ?competence=bl: the runs of one skill.
     const competence = typeof req.query.competence === 'string' && req.query.competence ? req.query.competence : null
     const parCompetence = (r: AgentRun) => !competence || !def.competences?.length || competenceDuRun(r) === competence
-    const runs = (await lireRuns(def.slug))
+    const runs = (await runsDe(def))
       .filter((r) => (!version || r.version === version) && parCompetence(r) && (!statut || statut.includes(r.statut)) && !sans.includes(r.statut) && parNote(r) && parCategorie(r))
       .reverse()
     const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '200'), 10) || 200))
     const page = runs.slice(0, limit)
-    // Délais / Contrôles: how a person judged each run's points (saisie_agent), one read for the page.
-    const parPoints = page.filter((r) => r.competence === 'delais' || r.competence === 'controles')
-    const saisies = parPoints.length ? await saisiesDeRuns(parPoints.map((r) => r.id)).catch(() => [] as Saisie[]) : []
-    const lots = await numerosDeLots(saisies).catch(() => new Map<number, string>())
     // `notes`: the scores ?note= matches on, so the screen can filter its tags without a round trip.
-    res.json({ total: runs.length, runs: page.map((r) => {
-      const ss = saisies.filter((x) => x.runId === r.id)
-      return { ...allege(r), notes: [...notesDuRun(r)], ...(r.competence === 'delais' || r.competence === 'controles' ? { jugement: jugementDuRun(ss) } : {}), ...apportDuRun(def, r, ss, lots) }
-    }) })
+    res.json({ total: runs.length, runs: page.map((r) => ({ ...allege(r), notes: [...notesDuRun(r)], ...apportDuRun(def, r) })) })
   } catch (err) {
     console.error('[agents-ia] runs failed:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -696,7 +584,7 @@ routes.get('/:slug/runs/:id', async (req, res) => {
   if (session(req, res) === null) return
   const def = agentOu404(req, res)
   if (!def) return
-  const r = await lireRun(def.slug, req.params.id)
+  const r = await runDe(def, req.params.id)
   if (!r) { res.status(404).json({ error: 'exécution introuvable' }); return }
   // A BL: the rolls of its lot as they stand in stock, so the dialog shows what
   // the réception kept, whether or not Tricobot pre-filled it. Best effort.
@@ -708,17 +596,7 @@ routes.get('/:slug/runs/:id', async (req, res) => {
       return null
     })
   }
-  // Délais / Contrôles: each point as a person judged it (where the work is done, Sous-traitants / Qualité).
-  const saisies = r.competence === 'delais' || r.competence === 'controles'
-    ? await saisiesDeRuns([r.id]).catch((err) => { console.error('[agents-ia] saisies of run failed:', err); return null })
-    : null
-  const lots = saisies ? await numerosDeLots(saisies).catch(() => new Map<number, string>()) : undefined
-  // And the question the reply answers (our Point, its §2 / §5): the context the reading had,
-  // shown beside what it read. Best effort: a Point that is gone leaves the reply alone.
-  const flux = r.competence === 'delais' || r.competence === 'controles'
-  const idpoint = flux ? Number((r.resultat as Partial<ResultatFlux>).idpoint) || 0 : 0
-  const point = idpoint ? await pointDuRun(idpoint).catch((err) => { console.error('[agents-ia] point of run failed:', err); return null }) : null
-  res.json({ ...r, ...(enStock ? { enStock } : {}), ...(saisies ? { saisies } : {}), ...(flux ? { point } : {}), ...apportDuRun(def, r, saisies ?? undefined, lots) })
+  res.json({ ...r, ...(enStock ? { enStock } : {}), ...apportDuRun(def, r) })
 })
 
 routes.get('/:slug/runs/:id/fichiers/:n', async (req, res) => {
@@ -1075,12 +953,11 @@ routes.get('/:slug/retours', async (req, res) => {
   if (!def) return
   try {
     const state = await lireEtat(def.slug, def.versionInitiale)
-    // ?competence=delais — one skill's retours, on its own versions.
+    // ?competence=bl: one skill's retours (its versions are the agent's).
     const competence = typeof req.query.competence === 'string' && req.query.competence
       ? def.competences?.find((c) => c.cle === req.query.competence) ?? null
       : null
-    if (competence?.versionsLivrees) { res.json(await retoursCompetence(def.slug, competence.cle, versionsDeCompetence(competence, state), req.query.version)); return }
-    const versionsAgent = competence ? versionsDeCompetence(competence, state) : { activeVersion: state.activeVersion, versions: state.versions }
+    const versionsAgent = { activeVersion: state.activeVersion, versions: state.versions }
     const version = parseInt(String(req.query.version ?? ''), 10) || versionsAgent.activeVersion
     const retours: Array<{
       runId: string; runLe: string; source: AgentRun['source']; portee: 'execution' | 'point'
@@ -1100,7 +977,7 @@ routes.get('/:slug/retours', async (req, res) => {
     const lecons: Array<{ runId: string; runLe: string; titre: string; commentaire: string; par: Auteur; le: string }> = []
     /** Pilots' notes on runs, for the next version (POST /:slug/runs/:id/notes-dev). */
     const notesDev: Array<{ runId: string; runLe: string; titre: string; commentaire: string; par: Auteur; le: string }> = []
-    for (const r of await lireRuns(def.slug)) {
+    for (const r of await runsDe(def)) {
       if (r.version !== version) continue
       if (competence && competenceDuRun(r) !== competence.cle) continue
       const base = { runId: r.id, runLe: r.createdAt, source: r.source }
@@ -1150,58 +1027,6 @@ routes.get('/:slug/retours', async (req, res) => {
     res.status(500).json({ error: 'Internal server error' })
   }
 })
-
-/** Délais / Contrôles: their retours are the gestures on their points
- *  (saisie_agent), given where the work is done — a correction or a deletion
- *  with its why, a validation with a word, an aide settled with « tu pouvais
- *  décider seul, parce que… », plus the pilots' notes on the runs.
- *  A point read in observation is no retour (Vincent 2026-11-11): nobody said
- *  anything about it, it was compared with what a person typed, and the words
- *  it carries are the comparison's own. Its gap is listed with the skill's
- *  écarts (flux-ennoblisseur/observation.ts), where both values are read. */
-async function retoursCompetence(slug: string, cle: string, prompts: { activeVersion: number; versions: Array<{ version: number }> }, v: unknown) {
-  const version = parseInt(String(v ?? ''), 10) || prompts.activeVersion
-  const [saisies, runs] = await Promise.all([saisiesDeCompetence(slug, cle, version), lireRuns(slug)])
-  const parId = new Map(runs.map((r) => [r.id, r]))
-  const quoi = (s: Saisie) => (s.champ === 'mesures_sst' ? `Lot ${s.idsuivilot || '?'}` : s.idcommande ? `Commande ${s.idcommande}` : 'Mail')
-  const valeur = (x: string | null) => {
-    if (!x) return '(rien)'
-    if (/^\d{4}-\d{2}-\d{2}$/.test(x)) return `${x.slice(8, 10)}/${x.slice(5, 7)}`
-    try { const m = JSON.parse(x) as Record<string, number | null>; return `laize ${m.laize ?? '?'}, poids ${m.poids ?? '?'}, h ${m.stabH ?? '?'}, l ${m.stabL ?? '?'}${m.vrillage != null ? `, V ${m.vrillage} %` : ''}` } catch { return x }
-  }
-  const par = (s: Saisie): Auteur => ({ id: 0, nom: s.revuPar ?? 'Quelqu’un' })
-  const base = (s: Saisie) => ({ runId: s.runId, runLe: parId.get(s.runId)?.createdAt ?? s.creeLe, source: parId.get(s.runId)?.source ?? 'gmail' })
-  const retours: Array<Record<string, unknown>> = []
-  const lecons: Array<Record<string, unknown>> = []
-  const resolutions: Array<Record<string, unknown>> = []
-  for (const s of saisies) {
-    if (s.mode === 'observation') continue
-    const le = s.revuLe ?? s.creeLe
-    if (s.statut === 'corrigee' || s.statut === 'supprimee' || s.statut === 'omission') {
-      const titre = s.statut === 'corrigee' ? `${quoi(s)} · ${valeur(s.proposition)} corrigé en ${valeur(s.valeurFinale)}`
-        : s.statut === 'supprimee' ? `${quoi(s)} · ${valeur(s.proposition)} supprimé`
-        : `${quoi(s)} · « rien » : il y avait quelque chose`
-      retours.push({ ...base(s), portee: 'point', titre, note: 'echec', commentaire: s.commentaire ?? '', par: par(s), le, retrait: null })
-    } else if (s.statut === 'validee' && s.commentaire) {
-      retours.push({ ...base(s), portee: 'point', titre: `${quoi(s)} · ${valeur(s.proposition)}`, note: 'reussite', commentaire: s.commentaire, par: par(s), le, retrait: null })
-    } else if (s.statut === 'resolue') {
-      // « Tu pouvais décider seul, parce que… »: what the next prompt learns to decide alone from.
-      if (s.douteJustifie === false && s.douteCommentaire) lecons.push({ runId: s.runId, runLe: base(s).runLe, titre: `${quoi(s)} · « ${s.citation} » (il pouvait décider seul)`, commentaire: s.douteCommentaire, par: par(s), le })
-      if (s.commentaire) resolutions.push({ runId: s.runId, runLe: base(s).runLe, titre: `${quoi(s)} · tranché : ${valeur(s.valeurFinale)}`, commentaire: s.commentaire, par: par(s), le })
-    }
-  }
-  const notesDev: Array<Record<string, unknown>> = []
-  for (const r of runs) {
-    if (r.competence !== cle || r.version !== version) continue
-    for (const x of r.notesDev ?? []) notesDev.push({ runId: r.id, runLe: r.createdAt, titre: r.resume, ...x })
-  }
-  const parDate = (a: Record<string, unknown>, b: Record<string, unknown>) => String(b.le).localeCompare(String(a.le))
-  return {
-    version,
-    versions: prompts.versions.map((x) => x.version).reverse(),
-    retours: retours.sort(parDate), resolutions: resolutions.sort(parDate), lecons: lecons.sort(parDate), notesDev: notesDev.sort(parDate),
-  }
-}
 
 // ── actions ──────────────────────────────────────────────
 
@@ -1276,9 +1101,9 @@ routes.get('/:slug/couts', async (req, res) => {
   }
   let total = 0
   let n = 0
-  // ?competence=delais — one skill's costs (Flux Ennoblisseur: each skill is shown as an agent).
+  // ?competence=bl: one skill's costs (Flux Ennoblisseur: each skill is shown as an agent).
   const competence = typeof req.query.competence === 'string' && req.query.competence && def.competences?.length ? req.query.competence : null
-  for (const r of await lireRuns(def.slug)) {
+  for (const r of await runsDe(def)) {
     const t = new Date(r.createdAt).getTime()
     if (t < debut) continue
     if (competence && competenceDuRun(r) !== competence) continue

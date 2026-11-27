@@ -5,7 +5,7 @@
 // Two kinds of source, never copied into each other:
 //   - the facts that already carry who + when in their own table (soumissions,
 //     the client's answers and our relances of it, « coloris validé », rapports de contrôle and their
-//     dispenses, reprises, action verdicts, Tricobot's measures) are READ there;
+//     dispenses, reprises, action verdicts) are READ there;
 //   - the gestures that had no trace of their own (reception, dyer / Malterre
 //     measures typed on Suivi lots, the lab tablet, état changes) are written in
 //     `journal_lot` (migration 0068, append-only) by noterLot().
@@ -157,7 +157,7 @@ export async function lireJournalLot(idsuivilot: number, sql: Sql = mpsPg()): Pr
   const cle = cleLot(lot.lot)
   const memeLot = (l: string | null) => !!l && cleLot(String(l)) === cle
 
-  const [propres, soumissions, reponses, okRamer, rcs, dispenses, reprises, verdicts, labo, tricobot, relancesClient, relancesControle] = await Promise.all([
+  const [propres, soumissions, reponses, okRamer, rcs, dispenses, reprises, verdicts, labo, relancesClient, relancesControle] = await Promise.all([
     sql<{ evenement: string; detail: string | null; par: string | null; le: Date; source: string }[]>`
       SELECT evenement, detail, par, le, source FROM journal_lot WHERE idsuivilot = ${idsuivilot} ORDER BY le, id`,
     sql<{ nature: string; lot: string; le: Date; par: string | null; destinataires: string | null; idsuivilot: number }[]>`
@@ -184,9 +184,6 @@ export async function lireJournalLot(idsuivilot: number, sql: Sql = mpsPg()): Pr
       SELECT conformite, par, le FROM conformite_lot WHERE idsuivilot = ${idsuivilot}`,
     sql<{ termine_le: Date | null; jete_le: Date | null; a_jeter_depuis: Date | null; a_jeter_motif: string | null }[]>`
       SELECT termine_le, jete_le, a_jeter_depuis, a_jeter_motif FROM tirelle_labo WHERE idsuivilot = ${idsuivilot}`,
-    sql<{ le: Date; proposition: string | null; statut: string | null; revu_par: string | null; revu_le: Date | null }[]>`
-      SELECT cree_le AS le, proposition, statut, revu_par, revu_le FROM saisie_agent
-      WHERE idsuivilot = ${idsuivilot} AND competence = 'controles' AND ecrit AND mode <> 'observation'`,
     // « Relancer le client »: the relance e-mails for a soumission's answer (lib/soumission-lot.ts, 0087).
     sql<{ nature: string; le: Date; par: string | null; destinataires: string | null }[]>`
       SELECT nature, relance_le AS le, relance_par AS par, destinataires FROM relance_soumission WHERE idsuivilot = ${idsuivilot}`,
@@ -284,9 +281,6 @@ export async function lireJournalLot(idsuivilot: number, sql: Sql = mpsPg()): Pr
   if (l?.termine_le && !aLigne('tirelle_apres_lavage')) out.push({ le: iso(l.termine_le), type: 'tirelle_apres_lavage', titre: 'Tirelle : contrôles terminés', detail: null, par: null, auteur: 'inconnu' })
   if (l?.a_jeter_depuis) out.push({ le: iso(l.a_jeter_depuis), type: 'tirelle_jete', titre: 'Tirelle à jeter', detail: l.a_jeter_motif, par: null, auteur: 'inconnu' })
   if (l?.jete_le && !aLigne('tirelle_jete')) out.push({ le: iso(l.jete_le), type: 'tirelle_jete', titre: 'Tirelle jetée', detail: null, par: null, auteur: 'inconnu' })
-  for (const t of tricobot) {
-    out.push({ le: iso(t.le), type: 'mesures_ennoblisseur', titre: 'Contrôle ennoblisseur enregistré', detail: t.proposition, par: 'Tricobot', auteur: 'tricobot' })
-  }
 
   // Reminders put on the lot (lib/rappels.ts): the day one was put, the day it was done.
   for (const r of await journalRappels('lot_fini', idsuivilot, sql).catch(() => [])) {

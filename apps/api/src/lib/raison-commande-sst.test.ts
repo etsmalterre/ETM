@@ -10,9 +10,8 @@ describe('raisonCommandeSst', () => {
 
   it('Tricobot waiting comes first, whatever the step', () => {
     expect(raisonCommandeSst(f({ phase: 'attente_delai' }), 'late', { aValider: 0, aide: 1 })).toBe('Tricobot demande ton avis')
-    expect(raisonCommandeSst(f(), 'late', { aValider: 1, aide: 0, bl: 1 })).toBe('Tricobot : réception à valider')
-    expect(raisonCommandeSst(f(), 'late', { aValider: 1, aide: 0, bl: 0 })).toBe('Tricobot : délai à valider')
-    expect(raisonCommandeSst(f(), 'late', { aValider: 2, aide: 1, bl: 1 })).toBe('Tricobot : délais à valider')
+    expect(raisonCommandeSst(f(), 'late', { aValider: 1, aide: 0 })).toBe('Tricobot : réception à valider')
+    expect(raisonCommandeSst(f(), 'late', { aValider: 2, aide: 1 })).toBe('Tricobot : réception à valider')
   })
 
   it('Tricobot having written alone is not a wait', () => {

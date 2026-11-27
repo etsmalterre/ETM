@@ -5,6 +5,18 @@ tout agent IA de Malterre, pas seulement à Flux Ennoblisseur. Code :
 `apps/api/src/lib/agents/competences.ts` (règles pures, testées) ; l'agent
 « Flux Ennoblisseur » en est le premier client.
 
+> **Retrait du 2026-11-27 (Vincent).** Les compétences **Délais** et
+> **Contrôles** de Flux Ennoblisseur (lecture des réponses au « Point du
+> JJ/MM ») sont retirées, avec leur prompt par compétence, « Rejouer »,
+> l'observation pilotée par les personnes et leur prise en main dans
+> Sous-traitants › Ennoblissement et Qualité › Suivi lots : les ennoblisseurs
+> saisissent eux-mêmes leurs délais et leurs mesures dans l'espace partenaire.
+> Le « Point » lui-même (écran, automate) est retiré le même jour. Elles
+> n'avaient tourné qu'en observation. Reste une compétence, **BL**, avec tout
+> le modèle ci-dessous. Leurs exécutions et leurs points gardés (`competence`
+> `delais` / `controles`) sont ignorés partout. Ce que ce document dit d'elles
+> est de l'histoire, gardée pour la prochaine compétence.
+
 ## 0. Deux principes, pour tous les agents
 
 **Le droit de ne pas savoir** (Vincent, 2026-11-05). Un agent a toujours le
@@ -40,7 +52,8 @@ Reste du travail de développeur : une nouvelle compétence, un nouveau champ à
 
 ## 1. On délègue à un agent comme à un nouvel employé
 
-- Un agent a des **compétences** (Flux Ennoblisseur : BL, Délais, Contrôles).
+- Un agent a des **compétences** (Flux Ennoblisseur : BL ; Délais et Contrôles
+  jusqu'au 2026-11-27).
   Chaque compétence a **son mode et ses mesures**. Le BL peut être bien rodé
   pendant que Délais démarre.
 - Un nouvel agent, ou une nouvelle compétence, commence en **observation**,
@@ -57,6 +70,11 @@ Reste du travail de développeur : une nouvelle compétence, un nouveau champ à
 | `autonomie` X % / N exécutions, affiché **« Autonome »** | Sur chaque bloc de N exécutions, X % (arrondi) sont tirées **au hasard** pour être faites seules — **écrites tout de suite** —, les autres sont supervisées (proposées). 10 % / 10 = 1 exécution seule sur 10. |
 
 ### L'observation pilotée par les personnes (Vincent, 2026-11-09)
+
+*Histoire : ne concernait que Délais et Contrôles, retirées le 2026-11-27 (code
+supprimé, tables `observation_mail` et `observation_saisie` gardées, plus lues).
+Le BL en observation reste lu à l'arrivée et comparé à la réception, toutes les
+heures (`flux-ennoblisseur/observation.ts`, `bl-observation.ts`).*
 
 Ce qui vaut d'être regardé en observation : **combien il a tourné, l'accord avec ce que les
 personnes ont saisi, et les écarts**. Le Score montre en grand **Accord** (le critère pour
@@ -247,9 +265,9 @@ runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
 
 - **Le flux lui-même** (Vincent, 2026-11-11) : deux étages. Le Triage choisit
   le métier (ce mail va au Flux Ennoblisseur) ; le flux répartit entre ses
-  compétences **par des règles, sans modèle** : chaque PDF au BL, le texte
-  d'une réponse au « Point du JJ/MM » à Délais et à Contrôles. Un même mail
-  peut nourrir plusieurs compétences, ou aucune. Le flux n'a donc ni prompt, ni
+  compétences **par des règles, sans modèle** : chaque PDF au BL (jusqu'au
+  2026-11-27, le texte d'une réponse au « Point du JJ/MM » allait à Délais et à
+  Contrôles). Un même mail peut nourrir une compétence, ou aucune. Le flux n'a donc ni prompt, ni
   mode, ni mesures : rien à noter. Il se voit dans Agents IA sur la carte du
   groupe : les mails reçus et où chacun est parti (`flux-ennoblisseur/mails.ts`,
   `GET /agents-ia/:slug/mails`). Un mail qu'aucune compétence n'a eu (pas de
@@ -259,7 +277,7 @@ runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
 - **Factures, rangé dans le groupe** (Vincent, 2026-11-11) : l'agent des
   factures des ennoblisseurs (ex « Factures Ennoblisseur », slug
   `factures-ennoblisseur` gardé) s'appelle « Factures » et se voit sous la
-  carte Flux Ennoblisseur, après BL, Délais et Contrôles (`groupe` dans
+  carte Flux Ennoblisseur, après ses compétences (`groupe` dans
   `catalog.ts`). **Présentation seulement** : ce n'est pas une compétence. Il
   garde son état, ses exécutions, son prompt, son mode (arrêt / essai / actif),
   son relevé et sa note par ligne de facture ; le Triage lui transmet toujours
@@ -316,8 +334,7 @@ runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
     ce dialogue, l'en-tête montre les trois mesures et le pilote ne règle que
     celle qui se juge ; l'Autonomie est un fait, jamais une note.
   - Jeux d'essai en dev : `scripts/seed-bl-tricobot-dev.ts` (un BL à valider,
-    un BL à trancher), `scripts/seed-delais-tricobot-dev.ts` (deux délais à
-    valider, un à trancher).
+    un BL à trancher).
   - **La v5 (2026-11-27, retours de la v4, prompt inchangé)** : sur les 55 BL
     écrits par la v4, aucune erreur de lecture. Trois choses changent, toutes
     dans le code.
@@ -377,7 +394,7 @@ runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
       partie (commentaire, métrage suspect, poids incohérent).
       `scripts/essai-bl-v5-dev.ts` rejoue de vrais BL en dev par tout le
       pipeline.
-- **Délais** : les réponses des teinturiers au « Point du JJ/MM ». Depuis la
+- **Délais** (**retirée le 2026-11-27**, histoire) : les réponses des teinturiers au « Point du JJ/MM ». Depuis la
   v2 (2026-11-05), le modèle lit la réponse entière avec son prompt
   (`flux-ennoblisseur/lecture.ts`) et la liste des commandes que le Point
   demandait : pour chacune, le passage qui y répond (cité mot pour mot), la
@@ -391,7 +408,7 @@ runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
   La v1 (regex MATEL) reste dans l'historique. La saisie écrit
   `date_livraison` de la ligne par les mêmes règles que l'écran
   (`sstDelaiSets`, `noterDelaiRecu` par Tricobot).
-- **Contrôles** : les mesures que l'ennoblisseur donne par lot (MATEL : section
+- **Contrôles** (**retirée le 2026-11-27**, histoire) : les mesures que l'ennoblisseur donne par lot (MATEL : section
   2, « lot 109579 laize = 156cm poids = 166g/m² stabs h = -3 l = -3 V = 4% »),
   lues par le modèle avec son propre prompt depuis la v2 ; le code relit la
   ligne citée quand elle a la forme MATEL et un écart devient une aide (« h »
@@ -409,7 +426,9 @@ runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
 
 ## 8. Ce qui reste à faire
 
-- Fait le 2026-11-05 : une version de prompt par compétence. Le BL garde le
+- (Retiré le 2026-11-27 avec Délais et Contrôles : plus de prompt par
+  compétence ni de « Rejouer », une compétence suit le prompt de l'agent.)
+  Fait le 2026-11-05 : une version de prompt par compétence. Le BL garde le
   prompt de l'agent ; Délais et Contrôles ont chacune le leur
   (`AgentState.promptsCompetences`), publié et réactivé depuis Agents IA ›
   Prompt, rejoué avant publication sur les dernières exécutions (« Rejouer »,

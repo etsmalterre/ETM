@@ -5,9 +5,8 @@
 // e-mail sent from there to the dyer's contacts, recorded in relance_controle
 // (migration 0088). The lot is then calm for RELANCE_J.relance_controle
 // working days, and red again (lib/cycle-ennoblissement.ts `relanceControleDue`).
-// The twin of « Relancer le client » (lib/soumission-lot.ts). The daily Point
-// still asks the measures; it is not a relance here (the colour waits for a
-// person's own mail, decision of 2026-11-03).
+// The twin of « Relancer le client » (lib/soumission-lot.ts). The colour waits
+// for a person's own mail (decision of 2026-11-03).
 
 import { mpsPg } from './mps-pg.js'
 
