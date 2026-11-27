@@ -62,6 +62,10 @@ const NOTES_COURTES: readonly NoteCourte[] = [
     slug: 'planning-atelier', version: 2, debut: 'Version 2 : dans un binôme',
     note: 'Dans un binôme, les heures de début s’échangent d’une semaine sur l’autre, pour que ce ne soit pas toujours le même qui finisse tard.',
   },
+  {
+    slug: 'planning-atelier', version: 3, debut: 'Chacun garde le même horaire',
+    note: 'Chacun garde le même horaire toute la semaine. Une semaine où quelqu’un est absent ne casse plus le roulement : à son retour, le binôme reprend son équipe et ses heures.',
+  },
 ]
 
 /** The note a stored version is read with: the short one when it still carries the long one. */

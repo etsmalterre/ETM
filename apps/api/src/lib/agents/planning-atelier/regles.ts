@@ -136,117 +136,217 @@ export function derniereSemaineTravaillee(entries: readonly Creneau[], dimanches
 /** Cycle length of the pairs (decision of the workshop: recomposed every 4 weeks). */
 export const SEMAINES_PAR_CYCLE = 4
 
+type SemaineVue = { dim: string; equipes: ReturnType<typeof equipesDeLaSemaine>; groupes: string[][] }
+
+/** A run of weeks under the same pairs. `comp` is who shares a team (shift
+ *  labels ignored: the pairs swap shifts every week). */
+interface Cycle {
+  semaines: SemaineVue[]
+  comp: string[][]
+}
+
+const parNom = (a: string, b: string) => a.localeCompare(b, 'fr')
+const cleDe = (groupes: readonly (readonly string[])[]) => groupes.map((g) => [...g].sort(parNom).join(' + ')).sort().join(' / ')
+const binomesDe = (groupes: readonly (readonly string[])[]) => groupes.map((g) => [...g].sort(parNom).join(' + ')).sort().join(', ')
+const S = (dim: string) => `S${semaineIso(dim)}`
+
+/** Whether a week goes on with the cycle's pairs: among the people present in
+ *  both, nobody changed partner. A week where someone is missing (a leave, Isa
+ *  arranging those who are there) keeps the pairs: Isa's retour on S50,
+ *  25/11/2026, « pour conserver le rythme avant la semaine de congés ». */
+function continueLeCycle(comp: readonly string[][], groupes: readonly string[][]): boolean {
+  const la = new Set(groupes.flat())
+  const communs = new Set(comp.flat().filter((n) => la.has(n)))
+  if (communs.size === 0) return false
+  const sur = (gs: readonly string[][]) => cleDe(gs.map((g) => g.filter((n) => communs.has(n))).filter((g) => g.length > 0))
+  return sur(comp) === sur(groupes)
+}
+
+/** The pairs of a cycle once a week adds the people it did not have yet. */
+function fusion(comp: readonly string[][], groupes: readonly string[][]): string[][] {
+  const out: string[][] = []
+  for (const g of [...comp, ...groupes]) {
+    const touches = out.filter((o) => o.some((n) => g.includes(n)))
+    const reste = out.filter((o) => !touches.includes(o))
+    out.length = 0
+    out.push(...reste, [...new Set([...touches.flat(), ...g])].sort(parNom))
+  }
+  return out
+}
+
+function cyclesDe(semaines: readonly SemaineVue[]): Cycle[] {
+  const cycles: Cycle[] = []
+  for (const s of semaines) {
+    const c = cycles[cycles.length - 1]
+    if (c && continueLeCycle(c.comp, s.groupes)) {
+      c.semaines.push(s)
+      c.comp = fusion(c.comp, s.groupes)
+    } else cycles.push({ semaines: [s], comp: fusion([], s.groupes) })
+  }
+  return cycles
+}
+
+/** A week that shows its cycle's pairs in full. An incomplete one (someone
+ *  missing) counts in the rotation but says nothing of the hours: they were
+ *  arranged for that week only. */
+const estComplete = (s: SemaineVue, c: Cycle) => cleDe(s.groupes) === cleDe(c.comp)
+
+/** What the grid must show when nothing asks otherwise (no instruction, no
+ *  desiderata), or null where the history does not decide. Names are prénoms. */
+export interface Attendu {
+  /** Who shares a team this week. */
+  binomes: string[][] | null
+  /** Each one's hours for the week (« 05:00-12:00 »). */
+  horaires: Map<string, string> | null
+}
+
+export interface Roulement {
+  /** The rotation as facts, one French line each, for the model. */
+  lignes: string[]
+  attendu: Attendu
+  /** What Isa must know of a choice the facts made for her (added to « attention »). */
+  attention: string[]
+}
+
 /** The rotation as facts, so the model never has to count: the last worked
  *  week's teams, how many worked weeks in a row the same pairs have held
- *  (holidays skipped), whether a recomposition is due, and the pairings of the
- *  cycles before. A « pairing » is the week's teams as sets of names, shift
- *  labels ignored (the pairs swap shifts every week). */
-export function faitsDuRoulement(entries: readonly Creneau[], bonnetiers: readonly BonnetierPlanning[], dimanches: readonly string[]): string[] {
-  const semaines = dimanches
+ *  (holidays skipped, a week with someone missing counted), whether a
+ *  recomposition is due, the pairings of the cycles before, and each pair's
+ *  team and start hours for the week. */
+export function roulement(entries: readonly Creneau[], bonnetiers: readonly BonnetierPlanning[], dimanches: readonly string[]): Roulement {
+  const semaines: SemaineVue[] = dimanches
     .map((dim) => {
       const jours = new Set(Array.from({ length: 7 }, (_, i) => addDays(dim, i)))
       const equipes = equipesDeLaSemaine(entries.filter((e) => jours.has(e.date)), bonnetiers)
-      const groupes = equipes.map((g) => g.membres.map((m) => m.prenom).sort((a, b) => a.localeCompare(b, 'fr')))
-      return { dim, equipes, cle: groupes.map((g) => g.join(' + ')).sort().join(' / '), binomes: groupes.map((g) => g.join(' + ')).sort().join(', ') }
+      return { dim, equipes, groupes: equipes.map((g) => g.membres.map((m) => m.prenom).sort(parNom)) }
     })
     .filter((s) => s.equipes.length > 0)
-  if (semaines.length === 0) return ['Aucune semaine travaillée dans l’historique : pas de roulement à continuer.']
-  // Runs of identical pairings, oldest first.
-  const cycles: Array<{ du: string; au: string; n: number; binomes: string; cle: string }> = []
-  for (const s of semaines) {
-    const c = cycles[cycles.length - 1]
-    if (c && c.cle === s.cle) { c.au = s.dim; c.n++ } else cycles.push({ du: s.dim, au: s.dim, n: 1, binomes: s.binomes, cle: s.cle })
-  }
+  const rien: Attendu = { binomes: null, horaires: null }
+  if (semaines.length === 0) return { lignes: ['Aucune semaine travaillée dans l’historique : pas de roulement à continuer.'], attendu: rien, attention: [] }
+
+  const cycles = cyclesDe(semaines)
   const derniere = semaines[semaines.length - 1]
   const cours = cycles[cycles.length - 1]
-  const plage = (c: { du: string; au: string }) => (c.du === c.au ? `S${semaineIso(c.du)}` : `S${semaineIso(c.du)} à S${semaineIso(c.au)}`)
+  const n = cours.semaines.length
+  const recomposer = n >= SEMAINES_PAR_CYCLE
+  const plage = (c: Cycle) => (c.semaines.length === 1 ? S(c.semaines[0].dim) : `${S(c.semaines[0].dim)} à ${S(c.semaines[c.semaines.length - 1].dim)}`)
+  const sans = (s: SemaineVue) => cours.comp.flat().filter((p) => !s.groupes.flat().includes(p)).join(', ')
+  const incompletes = cours.semaines.filter((s) => !estComplete(s, cours))
+  const dont = incompletes.length ? `, dont ${incompletes.map((s) => `${S(s.dim)} sans ${sans(s)}`).join(' et ')}` : ''
+
   const lignes = [
     `Régime de la dernière semaine travaillée : ${regimeDe(entries.filter((e) => e.date >= derniere.dim && e.date <= addDays(derniere.dim, 6)))} — à garder sauf consigne d’Isabelle.`,
-    `Dernière semaine travaillée : S${semaineIso(derniere.dim)} — ${derniere.equipes.map((g) => `${EQUIPE_LIBELLE[g.equipe]} : ${g.membres.map((m) => `${m.prenom} ${m.horaire}`).join(', ')}`).join(' · ')}.`,
-    cours.n >= SEMAINES_PAR_CYCLE
-      ? `Binômes ${cours.binomes} : ensemble depuis ${cours.n} semaines travaillées (${plage(cours)}) — le cycle de ${SEMAINES_PAR_CYCLE} semaines est fini, les binômes sont à recomposer cette semaine.`
-      : `Binômes ${cours.binomes} : ensemble depuis ${cours.n} semaine${cours.n > 1 ? 's' : ''} travaillée${cours.n > 1 ? 's' : ''} (${plage(cours)}) — ils restent ensemble cette semaine (cycle de ${SEMAINES_PAR_CYCLE} semaines) et changent d’équipe.`,
+    `Dernière semaine travaillée : ${S(derniere.dim)} — ${derniere.equipes.map((g) => `${EQUIPE_LIBELLE[g.equipe]} : ${g.membres.map((m) => `${m.prenom} ${m.horaire}`).join(', ')}`).join(' · ')}.` +
+      (estComplete(derniere, cours) ? '' : ` Semaine incomplète (sans ${sans(derniere)}) : elle ne change pas les binômes.`),
+    recomposer
+      ? `Binômes ${binomesDe(cours.comp)} : ensemble depuis ${n} semaines travaillées (${plage(cours)}${dont}) — le cycle de ${SEMAINES_PAR_CYCLE} semaines est fini, les binômes sont à recomposer cette semaine.`
+      : `Binômes ${binomesDe(cours.comp)} : ensemble depuis ${n} semaine${n > 1 ? 's' : ''} travaillée${n > 1 ? 's' : ''} (${plage(cours)}${dont}) — ils restent ensemble cette semaine (cycle de ${SEMAINES_PAR_CYCLE} semaines) et changent d’équipe.`,
   ]
-  if (cours.n >= SEMAINES_PAR_CYCLE) {
-    // Every pair of last week's bonnetiers, by the last week they shared a team.
-    const noms = derniere.equipes.flatMap((g) => g.membres.map((m) => m.prenom)).sort((a, b) => a.localeCompare(b, 'fr'))
-    const paires: Array<{ txt: string; derniere: number }> = []
+  const attendu: Attendu = { binomes: recomposer ? null : cours.comp, horaires: null }
+  const attention: string[] = []
+  if (recomposer) {
+    // Every pair of the cycle's bonnetiers, by the last week they shared a team.
+    const noms = cours.comp.flat().sort(parNom)
+    const paires: Array<{ a: string; b: string; txt: string; derniere: number }> = []
     for (let i = 0; i < noms.length; i++) {
       for (let j = i + 1; j < noms.length; j++) {
         let derniereFois = -1
         semaines.forEach((s, k) => {
-          if (s.equipes.some((g) => g.membres.some((m) => m.prenom === noms[i]) && g.membres.some((m) => m.prenom === noms[j]))) derniereFois = k
+          if (s.groupes.some((g) => g.includes(noms[i]) && g.includes(noms[j]))) derniereFois = k
         })
-        paires.push({ txt: `${noms[i]} + ${noms[j]}`, derniere: derniereFois })
+        paires.push({ a: noms[i], b: noms[j], txt: `${noms[i]} + ${noms[j]}`, derniere: derniereFois })
       }
     }
     paires.sort((a, b) => a.derniere - b.derniere)
     const jamais = paires.filter((p) => p.derniere < 0)
+    const prioritaires = jamais.length ? jamais : paires.slice(0, Math.max(1, Math.floor(noms.length / 2)))
     lignes.push(
       jamais.length
         ? `Binômes qui n’ont pas travaillé ensemble dans l’historique (à former en priorité) : ${jamais.map((p) => p.txt).join(', ')}.`
-        : `Binômes les moins récents (à former en priorité) : ${paires.slice(0, Math.max(1, Math.floor(noms.length / 2))).map((p) => `${p.txt} (S${semaineIso(semaines[p.derniere].dim)})`).join(', ')}.`,
+        : `Binômes les moins récents (à former en priorité) : ${prioritaires.map((p) => `${p.txt} (${S(semaines[p.derniere].dim)})`).join(', ')}.`,
     )
+    // Expected only when they make one whole composition (each bonnetier in exactly one pair).
+    const vus = prioritaires.flatMap((p) => [p.a, p.b])
+    if (vus.length === noms.length && new Set(vus).size === noms.length) attendu.binomes = prioritaires.map((p) => [p.a, p.b])
+    // Whether a week with someone missing counts in the cycle is not settled
+    // (no precedent before S49, 2026): it counts, and Isa is told.
+    if (n - incompletes.length < SEMAINES_PAR_CYCLE) {
+      attention.push(`Je compte ${incompletes.map((s) => `${S(s.dim)} (sans ${sans(s)})`).join(' et ')} dans les ${SEMAINES_PAR_CYCLE} semaines du cycle, donc je recompose les binômes cette semaine. Si elle ne compte pas, garde ${binomesDe(cours.comp)} une semaine de plus.`)
+    }
   }
   const avant = cycles.slice(0, -1).reverse()
-  if (avant.length) lignes.push(`Binômes des cycles précédents (du plus récent au plus ancien) : ${avant.map((c) => `${plage(c)} : ${c.binomes}`).join(' ; ')}.`)
-  lignes.push(...faitsDesHoraires(semaines, cours.du, cours.n >= SEMAINES_PAR_CYCLE))
-  return lignes
+  if (avant.length) lignes.push(`Binômes des cycles précédents (du plus récent au plus ancien) : ${avant.map((c) => `${plage(c)} : ${binomesDe(c.comp)}`).join(' ; ')}.`)
+  const h = faitsDesHoraires(cycles, derniere, recomposer)
+  lignes.push(...h.lignes)
+  if (!recomposer) attendu.horaires = h.horaires
+  return { lignes, attendu, attention }
 }
 
-type SemaineEquipes = { dim: string; equipes: ReturnType<typeof equipesDeLaSemaine> }
+export const faitsDuRoulement = (entries: readonly Creneau[], bonnetiers: readonly BonnetierPlanning[], dimanches: readonly string[]): string[] => roulement(entries, bonnetiers, dimanches).lignes
 
-/** The team a pair takes next week: Matin ↔ Après-midi, or Matin → Nuit →
+/** The team a pair takes the week after: Matin ↔ Après-midi, or Matin → Nuit →
  *  Après-midi → Matin when a night runs. */
 function equipeSuivante(e: Equipe, avecNuit: boolean): Equipe {
   if (!avecNuit) return e === 'M' ? 'A' : 'M'
   return e === 'M' ? 'N' : e === 'N' ? 'A' : 'M'
 }
 
-/** Who starts first within a pair (Isa's retour of 28/10/2026, checked on
- *  S27–S45): in a team, one starts an hour after the other, and each time a
- *  pair comes back to a team they swap, so it is never the same one who
- *  finishes late. Held pairs get their exact hours (the swap of the last week
- *  they shared that team in the cycle, else who started first the last time
- *  each was in it); recomposed pairs get each one's last start per team. A
- *  team where both start at the same hour (8 h days) says nothing. */
-function faitsDesHoraires(semaines: readonly SemaineEquipes[], debutCycle: string, recomposer: boolean): string[] {
-  const derniere = semaines[semaines.length - 1]
-  const decales = derniere.equipes.filter((g) => g.membres.length === 2 && g.membres[0].horaire !== g.membres[1].horaire)
-  if (decales.length === 0) return []
-  const S = (dim: string) => `S${semaineIso(dim)}`
-  /** The member's horaire the last time they were in `equipe`, newest first. */
+/** Each pair's team and who starts first (Isa's retours of 28/10 and 25/11/2026,
+ *  checked on S27–S50): in a team, one starts an hour after the other, and each
+ *  time a pair comes back to a team they swap, so it is never the same one who
+ *  finishes late. Held pairs get their team and exact hours: the rotation goes
+ *  on from the last complete week of the cycle as if every week since had been
+ *  a normal one, and the hours are the swap of the last complete week the pair
+ *  shared that team (else who started first the last time each was in it).
+ *  Recomposed pairs get each one's last start per team. Incomplete weeks are
+ *  never read for hours. A team where both start at the same hour (8 h days)
+ *  says nothing. */
+function faitsDesHoraires(cycles: readonly Cycle[], derniere: SemaineVue, recomposer: boolean): { lignes: string[]; horaires: Map<string, string> | null } {
+  const cours = cycles[cycles.length - 1]
+  const completes = cycles.flatMap((c) => c.semaines.filter((s) => estComplete(s, c)))
+  const reference = [...cours.semaines].reverse().find((s) => estComplete(s, cours)) ?? null
+  // Before the cycle's first complete week (it opened with someone missing): the last week as it is.
+  const base = reference ?? derniere
+  const decales = base.equipes.filter((g) => g.membres.length === 2 && g.membres[0].horaire !== g.membres[1].horaire)
+  if (decales.length === 0) return { lignes: [], horaires: null }
+  /** The member's horaire the last complete week they were in `equipe`, newest first. */
   const derniereFois = (prenom: string, equipe: Equipe) => {
-    for (let k = semaines.length - 1; k >= 0; k--) {
-      const m = semaines[k].equipes.find((g) => g.equipe === equipe)?.membres.find((x) => x.prenom === prenom)
-      if (m) return { horaire: m.horaire, dim: semaines[k].dim }
+    for (let k = completes.length - 1; k >= 0; k--) {
+      const m = completes[k].equipes.find((g) => g.equipe === equipe)?.membres.find((x) => x.prenom === prenom)
+      if (m) return { horaire: m.horaire, dim: completes[k].dim }
     }
     return null
   }
-  const regle = 'dans un binôme l’un commence une heure après l’autre, et d’une fois sur l’autre dans la même équipe ils échangent, pour que ce ne soit pas toujours le même qui finisse tard'
+  const regle = 'dans un binôme l’un commence une heure après l’autre et chacun garde son horaire toute la semaine ; quand le binôme revient dans la même équipe, ils échangent, pour que ce ne soit pas toujours le même qui finisse tard'
 
   if (recomposer) {
-    const noms = derniere.equipes.flatMap((g) => g.membres.map((m) => m.prenom)).sort((a, b) => a.localeCompare(b, 'fr'))
-    const parNom = noms.map((n) => {
-      const xs = (['M', 'A', 'N'] as const).map((e) => ({ e, d: derniereFois(n, e) })).filter((x) => x.d)
-      return `${n} : ${xs.map((x) => `${EQUIPE_LIBELLE[x.e]} ${x.d!.horaire} (${S(x.d!.dim)})`).join(', ')}`
+    const noms = cours.comp.flat().sort(parNom)
+    const parNomTxt = noms.map((nom) => {
+      const xs = (['M', 'A', 'N'] as const).map((e) => ({ e, d: derniereFois(nom, e) })).filter((x) => x.d)
+      return `${nom} : ${xs.map((x) => `${EQUIPE_LIBELLE[x.e]} ${x.d!.horaire} (${S(x.d!.dim)})`).join(', ')}`
     })
-    return [`Heures de début (${regle}) : dans un nouveau binôme, celui qui commençait le plus tôt la dernière fois dans cette équipe commence une heure après l’autre. Dernière fois de chacun par équipe : ${parNom.join(' · ')}.`]
+    return { lignes: [`Heures de début (${regle}) : dans un nouveau binôme, celui qui commençait le plus tôt la dernière fois dans cette équipe commence une heure après l’autre. Dernière fois de chacun par équipe : ${parNomTxt.join(' · ')}.`], horaires: null }
   }
 
-  const avecNuit = derniere.equipes.some((g) => g.equipe === 'N')
-  const cycle = semaines.filter((s) => s.dim >= debutCycle)
-  const lignes: string[] = []
+  const avecNuit = base.equipes.some((g) => g.equipe === 'N')
+  // Weeks from `base` to the week being planned: 1 when `base` is last week.
+  const pas = cours.semaines.length - cours.semaines.indexOf(base)
+  const duCycle = cours.semaines.filter((s) => estComplete(s, cours))
+  const horaires = new Map<string, string>()
+  let tousConnus = decales.length === base.equipes.length
+  const faits: string[] = []
   for (const g of decales) {
-    const cible = equipeSuivante(g.equipe, avecNuit)
-    const [a, b] = g.membres.map((m) => m.prenom).sort((x, y) => x.localeCompare(y, 'fr'))
+    let cible = g.equipe
+    for (let i = 0; i < pas; i++) cible = equipeSuivante(cible, avecNuit)
+    const [a, b] = g.membres.map((m) => m.prenom).sort(parNom)
     let fait: string | null = null
-    for (let k = cycle.length - 1; k >= 0 && !fait; k--) {
-      const h = cycle[k].equipes.find((x) => x.equipe === cible)
-      const ma = h?.membres.find((m) => m.prenom === a)
-      const mb = h?.membres.find((m) => m.prenom === b)
+    for (let k = duCycle.length - 1; k >= 0 && !fait; k--) {
+      const eq = duCycle[k].equipes.find((x) => x.equipe === cible)
+      const ma = eq?.membres.find((m) => m.prenom === a)
+      const mb = eq?.membres.find((m) => m.prenom === b)
       if (ma && mb && ma.horaire !== mb.horaire) {
-        fait = `${a} + ${b} en ${EQUIPE_LIBELLE[cible]} : ${a} ${mb.horaire}, ${b} ${ma.horaire} (l’inverse de ${S(cycle[k].dim)}, où ${a} faisait ${ma.horaire} et ${b} ${mb.horaire}).`
+        horaires.set(a, mb.horaire).set(b, ma.horaire)
+        fait = `${a} + ${b} en ${EQUIPE_LIBELLE[cible]} : ${a} ${mb.horaire}, ${b} ${ma.horaire} (l’inverse de ${S(duCycle[k].dim)}, où ${a} faisait ${ma.horaire} et ${b} ${mb.horaire}).`
       }
     }
     if (!fait) {
@@ -255,14 +355,70 @@ function faitsDesHoraires(semaines: readonly SemaineEquipes[], debutCycle: strin
       if (da && db && da.horaire !== db.horaire) {
         const [tot, tard] = da.horaire < db.horaire ? [a, b] : [b, a]
         const [hTot, hTard] = [da.horaire, db.horaire].sort()
+        horaires.set(tard, hTot).set(tot, hTard)
         fait = `${a} + ${b} en ${EQUIPE_LIBELLE[cible]} : ${tard} ${hTot}, ${tot} ${hTard} (la dernière fois en ${EQUIPE_LIBELLE[cible].toLowerCase()}, ${a} faisait ${da.horaire} en ${S(da.dim)} et ${b} ${db.horaire} en ${S(db.dim)} : ${tot} commençait le plus tôt).`
       } else {
+        tousConnus = false
         fait = `${a} + ${b} en ${EQUIPE_LIBELLE[cible]} : l’historique ne dit pas qui doit commencer le plus tôt : choisis et signale-le dans « attention ».`
       }
     }
-    lignes.push(fait)
+    faits.push(fait)
   }
-  return [`Heures de début de cette semaine (${regle}) : ${lignes.join(' ')}`]
+  const reprise = reference && reference !== derniere ? `le roulement continue depuis ${S(reference.dim)} comme si ${cours.semaines.slice(cours.semaines.indexOf(reference) + 1).map((s) => S(s.dim)).join(' et ')} avait été une semaine normale. ` : ''
+  return { lignes: [`Heures de début de cette semaine (${regle}) : ${reprise}${faits.join(' ')}`], horaires: tousConnus ? horaires : null }
+}
+
+/** One thing a grid proposed without any instruction gets wrong: what the
+ *  model is told when the grid goes back to it, and what Isa reads if the
+ *  second answer still has it. */
+export interface Reproche { relance: string; attention: string }
+
+/** What a grid proposed WITHOUT instruction gets wrong against the rotation.
+ *  `regimeAvant`: the last worked week's régime (null without history).
+ *  `desiderata`: the prénoms who asked something this week. One's own hours may
+ *  move for it, and a desiderata may move a team: the pairs and the hours are
+ *  only checked on a week without any. */
+export function reproches(
+  creneaux: readonly Creneau[],
+  bonnetiers: readonly BonnetierPlanning[],
+  p: { regimeAvant: string | null; attendu: Attendu; desiderata: readonly string[] },
+): Reproche[] {
+  const out: Reproche[] = []
+  if (p.regimeAvant && regimeDe(creneaux) !== p.regimeAvant) {
+    out.push({
+      relance: `ta réponse passait en « ${regimeDe(creneaux)} » : garde le régime « ${p.regimeAvant} ».`,
+      attention: `Sans consigne, j’ai quand même changé le régime (« ${regimeDe(creneaux)} » au lieu de « ${p.regimeAvant} ») : vérifie que c’est voulu.`,
+    })
+  }
+  // One's hours hold for the whole week (Isa's retour on S47, 04/11/2026).
+  for (const b of bonnetiers) {
+    if (p.desiderata.includes(b.prenom)) continue
+    const siens = [...new Set(creneaux.filter((c) => c.IDbonnetier === b.id).map((c) => `${c.debut}-${c.fin}`))].sort()
+    if (siens.length > 1) {
+      out.push({
+        relance: `${b.prenom} a des horaires différents selon les jours (${siens.join(', ')}) : chacun garde le même horaire du lundi au vendredi.`,
+        attention: `${b.prenom} n’a pas le même horaire toute la semaine (${siens.join(', ')}) : vérifie que c’est voulu.`,
+      })
+    }
+  }
+  if (p.desiderata.length > 0) return out
+  const equipes = equipesDeLaSemaine(creneaux, bonnetiers)
+  const groupes = equipes.map((g) => g.membres.map((m) => m.prenom))
+  if (p.attendu.binomes && cleDe(groupes) !== cleDe(p.attendu.binomes)) {
+    out.push({
+      relance: `ta grille met ensemble ${binomesDe(groupes)} alors que « Où en est le roulement » demande ${binomesDe(p.attendu.binomes)}.`,
+      attention: `Mes équipes (${binomesDe(groupes)}) ne sont pas les binômes du roulement (${binomesDe(p.attendu.binomes)}) : vérifie que c’est voulu.`,
+    })
+  } else if (p.attendu.horaires) {
+    const faux = equipes.flatMap((g) => g.membres).filter((m) => p.attendu.horaires!.has(m.prenom) && p.attendu.horaires!.get(m.prenom) !== m.horaire)
+    if (faux.length) {
+      out.push({
+        relance: `${faux.map((m) => `${m.prenom} est en ${m.horaire} au lieu de ${p.attendu.horaires!.get(m.prenom)}`).join(', ')} : suis la ligne « Heures de début de cette semaine ».`,
+        attention: `Je n’ai pas suivi le roulement pour ${faux.map((m) => `${m.prenom} (${m.horaire} au lieu de ${p.attendu.horaires!.get(m.prenom)})`).join(', ')} : vérifie que c’est voulu.`,
+      })
+    }
+  }
+  return out
 }
 
 // ── The model's answer ───────────────────────────────────

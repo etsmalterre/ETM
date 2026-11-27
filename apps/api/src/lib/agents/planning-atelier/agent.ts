@@ -11,9 +11,11 @@
 // (computed here, regles.ts `ecarts`) and her why. A week never validated
 // counts as a réussite (confianceParDefaut).
 //
-// The model reads: the grid's bonnetiers, their last 8 weeks, the desiderata
-// of the week, Isa's instructions. What it answers is checked (regles.ts
-// `validerReponse`) before anything is written.
+// The model reads: the grid's bonnetiers, their last 8 weeks, the rotation as
+// facts computed on them (regles.ts `roulement`), the desiderata of the week,
+// Isa's instructions. What it answers is checked (regles.ts `validerReponse`)
+// before anything is written, and a grid proposed without instruction that
+// leaves the rotation goes back to it once (`reproches`).
 
 import { addDays, insertEntry, selectDesiderata, selectEntries } from '../../planning-bonnetier.js'
 import { selectBonnetiers } from '../../production-trm.js'
@@ -25,11 +27,12 @@ import { sousVerrou } from '../verrous.js'
 import {
   derniereSemaineTravaillee,
   ecarts,
-  faitsDuRoulement,
   historiqueTexte,
   jourCourt,
   PLANNING_SCHEMA,
   regimeDe,
+  reproches,
+  roulement,
   semaineIso,
   validerReponse,
   type BonnetierPlanning,
@@ -69,6 +72,24 @@ export const PROMPT_V2 = PROMPT_V1.replace(
   '   - Les heures de début : dans un binôme l’un commence une heure après l’autre, et d’une fois sur l’autre dans la même équipe ils échangent (celui qui finissait à 20:00 finit à 21:00 et inversement), pour que ce ne soit pas toujours le même qui finisse tard. La ligne « Heures de début » de « Où en est le roulement » te donne l’heure de chacun : suis-la.',
 )
 
+/** V3 (retours d'Isa on S47, 04/11/2026, and S50, 25/11/2026): one's hours hold
+ *  for the whole week (V2's « d'une fois sur l'autre » was read as a daily
+ *  swap), and a week with someone missing keeps the pairs and the rhythm. The
+ *  facts and the checks that go with it are regles.ts `roulement` / `reproches`. */
+export const PROMPT_V3 = PROMPT_V2
+  .replace(
+    '- Une semaine sans aucun créneau est une semaine non travaillée (congés) : le roulement reprend après comme si elle n’existait pas.',
+    '- Une semaine sans aucun créneau est une semaine non travaillée (congés) : le roulement reprend après comme si elle n’existait pas.\n- Une semaine où il manque quelqu’un (un congé, une absence) est une semaine incomplète : Isabelle arrange ceux qui sont là, mais les binômes ne changent pas. Quand l’absent revient, son binôme se reforme et le roulement continue comme si cette semaine avait été normale, pour les équipes comme pour les heures de début.',
+  )
+  .replace(
+    '   - Les heures de début : dans un binôme l’un commence une heure après l’autre, et d’une fois sur l’autre dans la même équipe ils échangent (celui qui finissait à 20:00 finit à 21:00 et inversement), pour que ce ne soit pas toujours le même qui finisse tard. La ligne « Heures de début » de « Où en est le roulement » te donne l’heure de chacun : suis-la.',
+    '   - Les heures de début : dans un binôme l’un commence une heure après l’autre, et chacun garde le même horaire du lundi au vendredi : on ne change jamais d’heure d’un jour à l’autre dans la semaine. C’est d’une semaine à l’autre que ça tourne : quand le binôme revient dans la même équipe, ils échangent (celui qui finissait à 20:00 finit à 21:00 et inversement), pour que ce ne soit pas toujours le même qui finisse tard. La ligne « Heures de début » de « Où en est le roulement » te donne l’équipe et l’heure de chacun pour cette semaine : suis-la.',
+  )
+  .replace(
+    '« explication » (2 à 4 phrases pour Isabelle, en français, au tutoiement : le roulement appliqué, les binômes, ce que tu as fait de ses consignes et des desiderata)',
+    '« explication » (2 à 4 phrases pour Isabelle, en français, au tutoiement : le roulement appliqué, les binômes, ce que tu as fait de ses consignes et des desiderata ; elle décrit la grille que tu as écrite dans « creneaux » : les binômes, les équipes et les heures que tu cites sont ceux de la grille)',
+  )
+
 export const PLANNING_ATELIER_VERSION_INITIALE: VersionInitiale = {
   model: 'mistral-medium-latest',
   prompt: PROMPT_V1,
@@ -78,8 +99,8 @@ export const PLANNING_ATELIER_VERSION_INITIALE: VersionInitiale = {
 /** Shipped with the code, published from the Prompt tab (never automatically). */
 export const PLANNING_ATELIER_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-medium-latest',
-  prompt: PROMPT_V2,
-  note: noteCourteDe('planning-atelier', 2),
+  prompt: PROMPT_V3,
+  note: noteCourteDe('planning-atelier', 3),
 }
 
 /** A refusal the screen shows as is (409 / 400 / 502). */
@@ -105,6 +126,8 @@ export interface ResultatPlanning {
   attention: string[]
   /** What the model answered that could not be written, and why. */
   rejets: string[]
+  /** What its first grid was sent back for (since V3; absent on older runs). */
+  relances?: string[]
 }
 
 export const resultatPlanning = (run: AgentRun) => run.resultat as unknown as ResultatPlanning
@@ -146,6 +169,49 @@ function messageUtilisateur(p: {
   ].join('\n')
 }
 
+/** Ask the model for the week and check its answer. Nothing is written here
+ *  (the backtest calls it on past weeks). Without an instruction the rotation
+ *  stands (a night, 8 h days, other pairs are Isa's call: the model once added
+ *  a night, once swapped hours from a day to the next): a grid that leaves it
+ *  goes back once with the reasons, then stands with a point to check each.
+ *  `compte.usd` is added to as the calls are paid, so a failure keeps the cost. */
+export async function proposer(p: {
+  dimanche: string
+  bonnetiers: BonnetierPlanning[]
+  /** The créneaux of the SEMAINES_HISTORIQUE weeks before `dimanche`. */
+  histo: readonly Creneau[]
+  desiderata: ResultatPlanning['desiderata']
+  instructions: string
+  version: { model: string; prompt: string }
+  compte: { usd: number }
+}): Promise<ReturnType<typeof validerReponse> & { relances: string[] }> {
+  const debutHisto = addDays(p.dimanche, -7 * SEMAINES_HISTORIQUE)
+  const dimanches = Array.from({ length: SEMAINES_HISTORIQUE }, (_, i) => addDays(debutHisto, 7 * i))
+  const faits = roulement(p.histo, p.bonnetiers, dimanches)
+  const user = messageUtilisateur({ dimanche: p.dimanche, bonnetiers: p.bonnetiers, historique: historiqueTexte(p.histo, p.bonnetiers, dimanches), roulement: faits.lignes, desiderata: p.desiderata, instructions: p.instructions })
+  const appel = async (texte: string) => {
+    const reponse = await chatJson({ model: p.version.model, system: p.version.prompt, user: texte, schemaName: 'planning_atelier', schema: PLANNING_SCHEMA })
+    p.compte.usd += reponse.usd
+    return validerReponse(reponse.data, p.dimanche, p.bonnetiers)
+  }
+  const sansConsigne = !p.instructions.trim()
+  const regimeAvant = regimeDe(derniereSemaineTravaillee(p.histo, dimanches))
+  const controle = (c: readonly Creneau[]) =>
+    sansConsigne && c.length > 0
+      ? reproches(c, p.bonnetiers, { regimeAvant: regimeAvant === regimeDe([]) ? null : regimeAvant, attendu: faits.attendu, desiderata: [...new Set(p.desiderata.map((d) => d.prenom))] })
+      : []
+  let v = await appel(user)
+  let r = controle(v.creneaux)
+  const relances = r.map((x) => x.relance)
+  if (r.length > 0) {
+    v = await appel(`${user}\n\nAttention : Isabelle n’a donné aucune consigne, et ta réponse précédente ne suivait pas le roulement :\n${r.map((x) => `- ${x.relance}`).join('\n')}\nRefais la grille en corrigeant ces points.`)
+    r = controle(v.creneaux)
+    v.attention.unshift(...r.map((x) => x.attention))
+  }
+  if (sansConsigne && v.creneaux.length > 0) v.attention.unshift(...faits.attention)
+  return { ...v, relances }
+}
+
 /** Plan the grid week starting on `dimanche` and write it. Refuses a week
  *  that already has a créneau on a grid row (the button only shows on an
  *  empty week; Tricobot never overwrites Isa's work). */
@@ -165,7 +231,6 @@ export function preparerSemaine(p: { dimanche: string; instructions: string; par
 
     const debutHisto = addDays(p.dimanche, -7 * SEMAINES_HISTORIQUE)
     const [histo, tousDesiderata] = await Promise.all([selectEntries(debutHisto, addDays(p.dimanche, -1)), selectDesiderata()])
-    const dimanches = Array.from({ length: SEMAINES_HISTORIQUE }, (_, i) => addDays(debutHisto, 7 * i))
     const prenoms = new Map(bonnetiers.map((b) => [b.id, b.prenom]))
     const desiderata = tousDesiderata
       .filter((d) => d.date >= p.dimanche && d.date <= fin && prenoms.has(d.IDbonnetier))
@@ -198,36 +263,19 @@ export function preparerSemaine(p: { dimanche: string; instructions: string; par
       rejets: [],
     }
     const t0 = Date.now()
-    const user = messageUtilisateur({ dimanche: p.dimanche, bonnetiers, historique: historiqueTexte(histo, bonnetiers, dimanches), roulement: faitsDuRoulement(histo, bonnetiers, dimanches), desiderata, instructions: p.instructions })
-    const appel = (texte: string) => chatJson({ model: version.model, system: version.prompt, user: texte, schemaName: 'planning_atelier', schema: PLANNING_SCHEMA })
-    // Without an instruction the régime stays (a night or 8 h days are Isa's
-    // call — the model once added a night on its own): a proposal that changes
-    // it goes back once with the reason, then stands with a point to check.
-    const regimeAvant = regimeDe(derniereSemaineTravaillee(histo, dimanches))
-    const sansConsigne = !p.instructions.trim() && regimeAvant !== regimeDe([])
-    let coutUsd = 0
+    const compte = { usd: 0 }
     let v
     try {
-      let reponse = await appel(user)
-      coutUsd += reponse.usd
-      v = validerReponse(reponse.data, p.dimanche, bonnetiers)
-      if (sansConsigne && v.creneaux.length > 0 && regimeDe(v.creneaux) !== regimeAvant) {
-        reponse = await appel(`${user}\n\nAttention : ta réponse précédente passait en « ${regimeDe(v.creneaux)} » alors qu’Isabelle n’a donné aucune consigne. Garde le régime « ${regimeAvant} ».`)
-        coutUsd += reponse.usd
-        v = validerReponse(reponse.data, p.dimanche, bonnetiers)
-        if (v.creneaux.length > 0 && regimeDe(v.creneaux) !== regimeAvant) {
-          v.attention.unshift(`Sans consigne, j’ai quand même changé le régime (« ${regimeDe(v.creneaux)} » au lieu de « ${regimeAvant} ») : vérifie que c’est voulu.`)
-        }
-      }
+      v = await proposer({ dimanche: p.dimanche, bonnetiers, histo, desiderata, instructions: p.instructions, version, compte })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      await ajouterRun({ ...base, statut: 'erreur', resultat: { ...resultat }, resume: `S${numeroSemaine} : Mistral n’a pas répondu`, erreur: msg, coutUsd, dureeMs: Date.now() - t0 })
+      await ajouterRun({ ...base, statut: 'erreur', resultat: { ...resultat }, resume: `S${numeroSemaine} : Mistral n’a pas répondu`, erreur: msg, coutUsd: compte.usd, dureeMs: Date.now() - t0 })
       throw new PlanningRefus('erreur_modele', `Tricobot n’a pas pu préparer le planning (${msg}). Réessayez dans un instant.`, 502)
     }
 
     Object.assign(resultat, v)
     if (v.creneaux.length === 0) {
-      const run: AgentRun = { ...base, statut: 'a_verifier', resultat: { ...resultat }, resume: `S${numeroSemaine} : aucun créneau utilisable`, coutUsd, dureeMs: Date.now() - t0 }
+      const run: AgentRun = { ...base, statut: 'a_verifier', resultat: { ...resultat }, resume: `S${numeroSemaine} : aucun créneau utilisable`, coutUsd: compte.usd, dureeMs: Date.now() - t0 }
       await ajouterRun(run)
       throw new PlanningRefus('planning_vide', 'Tricobot n’a proposé aucun créneau utilisable. Précisez vos consignes et relancez.', 502)
     }
@@ -238,7 +286,7 @@ export function preparerSemaine(p: { dimanche: string; instructions: string; par
       statut: 'ecrit',
       resultat: { ...resultat },
       resume: `S${numeroSemaine} : ${v.creneaux.length} créneaux pour ${nbBonnetiers} bonnetier${nbBonnetiers > 1 ? 's' : ''}${v.rejets.length ? ` (${v.rejets.length} écarté${v.rejets.length > 1 ? 's' : ''})` : ''}`,
-      coutUsd,
+      coutUsd: compte.usd,
       dureeMs: Date.now() - t0,
     }
     await ajouterRun(run)
