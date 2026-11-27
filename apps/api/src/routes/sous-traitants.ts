@@ -109,7 +109,8 @@ sousTraitantsRouter.get('/type-sst', async (_req: Request, res: Response) => {
 // ── The grouped relance (lib/relance-groupee-sst.ts, Vincent 2026-11-27) ──
 //
 // What is overdue on a sous-traitant's side today (a new délai, an urgency's
-// answer, a délai, its controls), chased in ONE mail from its fiche. Sending it
+// answer, a délai, its controls, the soumission of an étude coloris its lab
+// holds), chased in ONE mail from its fiche. Sending it
 // writes each dossier's own relance: every card is calm again as if chased alone.
 //   GET  /sous-traitants/relances                    { [idsous_traitant]: n } — the list's counters
 //   GET  /sous-traitants/:id/relance/email-defaults  the mail as it opens, and its dossiers
@@ -135,7 +136,7 @@ sousTraitantsRouter.get('/:id/relance/email-defaults', async (req: Request, res:
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const d = await dossiersDuSousTraitant(id, jourParis())
     if (nombreDossiers(d) === 0) { res.status(409).json({ error: 'rien_a_relancer', message: MESSAGE_RIEN_A_RELANCER }); return }
-    res.json({ recipients: await destinatairesSousTraitant(id), ...mailRelanceGroupee(d), dossiers: d })
+    res.json({ recipients: await destinatairesSousTraitant(id, undefined, d.etudes.length > 0), ...mailRelanceGroupee(d), dossiers: d })
   } catch (err) {
     console.error('Error building grouped relance email defaults:', err)
     res.status(500).json({ error: 'Internal server error' })

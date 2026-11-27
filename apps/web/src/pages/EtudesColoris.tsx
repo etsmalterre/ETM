@@ -6,9 +6,10 @@ import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import {
-  Search,
   Loader2,
   AlertCircle,
+  BellRing,
+  FlaskConical,
   Pencil,
   Plus,
   X,
@@ -58,12 +59,19 @@ import { cn } from '@/lib/utils'
 import { formatHfsqlDate, hfsqlDateToInput, inputDateToHfsql } from '@/lib/dates'
 import { apiFetch, API_URL } from '@/lib/api'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
+import { MailMenuButton, type MailChoix } from '@/components/email/MailMenuButton'
+import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
+import { EtapeEtudeCard, type EtapeEtude } from '@/components/etudes/EtudeEtape'
 import { postEmail } from '@/lib/email'
 
 // ── Types ────────────────────────────────────────────────
 
 type EtudeStatut = 1 | 2 | 3 | 4
-type StatutFilter = 'attente_labo' | 'soumis' | 'accepte' | 'annule' | 'all'
+/** The left list's buckets: running (the lab or the client holds the étude), closed
+ *  (accepted / cancelled), all. The statut itself is a search-bar tag. */
+type StatutFilter = 'en_cours' | 'terminees' | 'all'
+/** §41 red: the étude's relance is due (API lib/etude-etape.ts `urgenceEtude`). */
+interface UrgenceEtude { niveau: 'rouge'; raison: string }
 /** Simone Pérèle code created by an acceptance (LIVA #1209). */
 interface CodeSpCree {
   coloris: string
@@ -91,6 +99,9 @@ interface EtudeListRow {
   sous_traitant_nom: string | null
   nb_soumissions: number
   last_soumission_date: string | null
+  /** Who holds a running étude (a refused soumission gives it back to the lab); null once closed. */
+  attente?: 'labo' | 'client' | 'acceptee' | 'annulee' | null
+  urgence?: UrgenceEtude | null
 }
 
 interface Soumission {
@@ -122,6 +133,8 @@ interface EtudeDetail extends EtudeListRow {
   ref_fini_designation: string | null
   ref_fini_colori_has_photo: 0 | 1
   soumissions: Soumission[]
+  /** « Prochaines étapes »: who holds the étude, since when, its clock. */
+  etape?: EtapeEtude
 }
 
 interface ClientOption { IDclient: number; nom: string | null }
@@ -137,91 +150,56 @@ interface SousTraitantOption { IDsous_traitant: number; nom: string | null }
 
 // ── Status metadata ──────────────────────────────────────
 
+// The statut's look, shared by the footer pill, the list card and the search-bar tag
+// (§29.8). Colour = whose move, as on a lot (Qualité › Suivi lots): sky the
+// ennoblisseur, violet the client, green done. Never amber nor red: those say
+// « Malterre has something to do » (§41) and belong to the card's liseré.
 const STATUT_META: Record<EtudeStatut, {
   label: string
-  short: string
-  filter: StatutFilter
+  /** The list's bucket the statut falls in. */
+  bucket: Exclude<StatutFilter, 'all'>
   icon: typeof Clock
-  /** CSS color for the list-card inset-shadow strip */
-  stripRgb: string
-  /** Border + ring classes for the selected list card */
-  selectedRing: string
-  /** Solid bg + matching border for the footer pill */
+  /** Solid bg + matching border (white text). */
   solidBg: string
-  /** Badge variant for the list-card mini chip */
-  badgeVariant: 'warning' | 'default' | 'success' | 'destructive' | 'secondary'
-  badgeClass?: string
 }> = {
-  1: {
-    label: 'Attente labo',
-    short: 'Labo',
-    filter: 'attente_labo',
-    icon: Clock,
-    stripRgb: 'rgb(245 158 11)', // amber-500
-    selectedRing: 'ring-amber-500 border-amber-500',
-    solidBg: 'bg-amber-500 border-amber-500',
-    badgeVariant: 'warning',
-  },
-  2: {
-    label: 'Soumis au client',
-    short: 'Soumis',
-    filter: 'soumis',
-    icon: Send,
-    stripRgb: 'rgb(59 130 246)', // blue-500
-    selectedRing: 'ring-blue-500 border-blue-500',
-    solidBg: 'bg-blue-500 border-blue-500',
-    badgeVariant: 'default',
-    badgeClass: 'bg-blue-500 hover:bg-blue-500/90',
-  },
-  3: {
-    label: 'Accepté',
-    short: 'Accepté',
-    filter: 'accepte',
-    icon: CheckCircle2,
-    stripRgb: 'rgb(34 197 94)', // green-500
-    selectedRing: 'ring-green-500 border-green-500',
-    solidBg: 'bg-success border-success',
-    badgeVariant: 'success',
-  },
-  4: {
-    label: 'Annulé',
-    short: 'Annulé',
-    filter: 'annule',
-    icon: Ban,
-    stripRgb: 'rgb(113 113 122)', // zinc-500
-    selectedRing: 'ring-zinc-500 border-zinc-500',
-    solidBg: 'bg-zinc-500 border-zinc-500',
-    badgeVariant: 'secondary',
-  },
+  1: { label: 'Attente labo', bucket: 'en_cours', icon: FlaskConical, solidBg: 'bg-sky-600 border-sky-600' },
+  2: { label: 'Soumis au client', bucket: 'en_cours', icon: Send, solidBg: 'bg-violet-500 border-violet-500' },
+  3: { label: 'Accepté', bucket: 'terminees', icon: CheckCircle2, solidBg: 'bg-success border-success' },
+  4: { label: 'Annulé', bucket: 'terminees', icon: Ban, solidBg: 'bg-zinc-500 border-zinc-500' },
 }
 
 const STATUT_ORDER: EtudeStatut[] = [1, 2, 3, 4]
-const FILTER_ORDER: StatutFilter[] = ['attente_labo', 'soumis', 'accepte', 'annule', 'all']
+const FILTERS: Array<{ key: StatutFilter; label: string }> = [
+  { key: 'en_cours', label: 'En cours' },
+  { key: 'terminees', label: 'Terminées' },
+  { key: 'all', label: 'Toutes' },
+]
 
-function filterToLabel(f: StatutFilter): string {
-  if (f === 'all') return 'Tous'
-  const statut = STATUT_ORDER.find((s) => STATUT_META[s].filter === f)
-  return statut ? STATUT_META[statut].label : 'Tous'
+/** The statut on a left-list card or a search-bar tag: the footer's solid colour (§29.8). */
+function StatutPill({ statut, className, children }: { statut: EtudeStatut; className?: string; children?: React.ReactNode }) {
+  const meta = STATUT_META[statut]
+  const Icon = meta.icon
+  return (
+    <Badge variant="outline" className={cn('text-[10px] py-0 gap-1 border text-white whitespace-nowrap', meta.solidBg, className)}>
+      <Icon className="h-2.5 w-2.5 flex-shrink-0" />
+      <span className="truncate">{meta.label}</span>
+      {children}
+    </Badge>
+  )
 }
 
-/** Days since a YYYY-MM-DD ISO string, or null if unparseable. */
-function daysSince(iso: string | null): number | null {
-  if (!iso) return null
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso)
-  if (!m) return null
-  const target = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-  target.setHours(0, 0, 0, 0)
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  return Math.round((today.getTime() - target.getTime()) / 86_400_000)
-}
-
-/** Compute the urgency override for a list card — statut 1 or 2 AND not touched
- *  in 30+ days = stale → red. Otherwise the statut color drives the strip. */
-function isStale(statut: EtudeStatut, dateDerniereAction: string | null): boolean {
-  if (statut !== 1 && statut !== 2) return false
-  const days = daysSince(dateDerniereAction)
-  return days !== null && days > 30
+/** Search-bar tags: one per statut, counted over the bucket's list. */
+function etudeTags(rows: EtudeListRow[]): SearchTagDef<EtudeListRow>[] {
+  return STATUT_ORDER.map((statut): SearchTagDef<EtudeListRow> => {
+    const predicate = (r: EtudeListRow) => r.statut_col === statut
+    return {
+      key: `statut:${statut}`,
+      label: STATUT_META[statut].label,
+      renderPill: (trailing) => <StatutPill statut={statut}>{trailing}</StatutPill>,
+      count: rows.filter(predicate).length,
+      predicate,
+    }
+  })
 }
 
 /** Format an ISO YYYY-MM-DD as fr-FR locale. */
@@ -261,7 +239,10 @@ export function EtudesColoris() {
   const canEdit = useHasPermission('edit_etudes_coloris')
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<StatutFilter>('attente_labo')
+  const [statusFilter, setStatusFilter] = useState<StatutFilter>('en_cours')
+  // Counter-pill toggle (mps_designer §41) and the search-bar statut tag (one at a time).
+  const [urgenceOn, setUrgenceOn] = useState(false)
+  const [activeTags, setActiveTags] = useState<string[]>([])
   const [isEditing, setIsEditing] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [openSoumissionId, setOpenSoumissionId] = useState<number | null>(null)
@@ -269,6 +250,7 @@ export function EtudesColoris() {
   const [deleteEtudeConfirmOpen, setDeleteEtudeConfirmOpen] = useState(false)
   const [deleteSoumissionId, setDeleteSoumissionId] = useState<number | null>(null)
   const [emailModalOpen, setEmailModalOpen] = useState(false)
+  const [relanceOpen, setRelanceOpen] = useState(false)
   const [emailSoumissionId, setEmailSoumissionId] = useState<number | null>(null)
 
   // Edit-mode draft state
@@ -334,6 +316,22 @@ export function EtudesColoris() {
     queryClient.invalidateQueries({ queryKey: ['etudes-coloris'] })
     queryClient.invalidateQueries({ queryKey: ['etude-coloris', selectedId] })
   }, [queryClient, selectedId])
+
+  // Every mail of the étude leaves from the header's ONE « @ » button (§42): the
+  // demande d'étude to the lab, and the relance of whoever holds the étude —
+  // sending it IS the relance and restarts the holder's clock.
+  const etape = detail?.etape
+  const aRelancer = etape?.attente === 'labo' || etape?.attente === 'client' ? etape.attente : null
+  const mails: MailChoix[] = [
+    { key: 'demande', label: 'Demande d’étude coloris', icon: Palette, onSelect: () => setEmailModalOpen(true) },
+    ...(aRelancer ? [{
+      key: 'relance',
+      label: aRelancer === 'labo' ? 'Relancer l’ennoblisseur' : 'Relancer le client',
+      icon: BellRing,
+      niveau: etape?.urgence ? 'rouge' as const : null,
+      onSelect: () => setRelanceOpen(true),
+    }] : []),
+  ]
 
   // ── Edit state ──────────────────────────────────────────
 
@@ -452,14 +450,15 @@ export function EtudesColoris() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoEditForId, detail])
 
-  // When the selected étude's statut changes to a value that no longer
-  // matches the current filter (e.g. Accepter flips 1/2 → 3), auto-switch
-  // to the matching tab so the card stays in view during the transition.
-  // 'all' passes everything, so skip the jump in that case.
+  // When the selected étude's statut changes to a value the list no longer
+  // shows (e.g. Accepter flips 1/2 → 3), follow it: drop a statut tag it no
+  // longer carries and switch to its bucket, so the card stays in view.
+  // 'all' passes every bucket.
   useEffect(() => {
     if (!detail) return
+    setActiveTags((tags) => (tags.some((t) => t !== `statut:${detail.statut_col}`) ? [] : tags))
     if (statusFilter === 'all') return
-    const target = STATUT_META[detail.statut_col]?.filter
+    const target = STATUT_META[detail.statut_col]?.bucket
     if (target && target !== statusFilter) {
       setStatusFilter(target)
     }
@@ -515,17 +514,24 @@ export function EtudesColoris() {
 
   // ── Filtering ───────────────────────────────────────────
 
+  // Counter pill (§41): the études to chase now, over the bucket's list. Its toggle
+  // disarms when the bucket empties (the pill is hidden at 0).
+  const urgenceCount = useMemo(() => (etudes ?? []).filter((e) => e.urgence).length, [etudes])
+  const urgenceActive = urgenceOn && urgenceCount > 0
+  // Statut tags, counted over the bucket's list without the free text.
+  const tags = useMemo(() => etudeTags(etudes ?? []), [etudes])
+
   const filteredEtudes = useMemo(() => {
     if (!etudes) return []
     const q = searchQuery.trim().toLowerCase()
-    if (!q) return etudes
-    return etudes.filter((e) => {
+    let out = !q ? etudes : etudes.filter((e) => {
       const hay = [
         e.IDetude_col,
         e.libelle ?? '',
         e.num_commande ?? '',
         e.desig_client ?? '',
         e.client_nom ?? '',
+        e.sous_traitant_nom ?? '',
         e.ref_fini_reference ?? '',
         e.ref_fini_colori_reference ?? '',
       ]
@@ -533,7 +539,9 @@ export function EtudesColoris() {
         .toLowerCase()
       return hay.includes(q)
     })
-  }, [etudes, searchQuery])
+    if (urgenceActive) out = out.filter((e) => e.urgence)
+    return filterRowsByTags(out, activeTags, tags)
+  }, [etudes, searchQuery, urgenceActive, activeTags, tags])
 
   // Keep the selection valid against the (possibly search-filtered) list: when
   // the selected étude isn't among the current results, select the one at the
@@ -562,6 +570,12 @@ export function EtudesColoris() {
             onSelect={handleSelect}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
+            tags={tags}
+            activeTags={activeTags}
+            onActiveTagsChange={(keys) => setActiveTags(keys.slice(-1))}
+            urgenceCount={urgenceCount}
+            urgenceOn={urgenceActive}
+            onToggleUrgence={() => setUrgenceOn((v) => !v)}
             statusFilter={statusFilter}
             onStatusFilterChange={handleStatusFilter}
             isEditing={isEditing}
@@ -587,7 +601,7 @@ export function EtudesColoris() {
                 const path = kind === 'feuille' ? 'feuille-pdf' : 'pdf'
                 window.open(`${API_URL}/etudes-coloris/${selectedId}/${path}`, '_blank')
               }}
-              onEmailClick={() => setEmailModalOpen(true)}
+              mails={mails}
               saving={saveMut.isPending}
             />
           ) : detailLoading ? (
@@ -598,17 +612,28 @@ export function EtudesColoris() {
         }
         detail={
           detail ? (
-            <SoumissionsSection
-              detail={detail}
-              isEditing={isEditing}
-              canEdit={canEdit}
-              openSoumissionId={openSoumissionId}
-              onOpenSoumission={setOpenSoumissionId}
-              onDeleteSoumission={setDeleteSoumissionId}
-              onEmailSoumission={setEmailSoumissionId}
-              onMutationSuccess={invalidateAll}
-              reportDirty={reportDirty}
-            />
+            <div className="flex-1 min-h-0 flex flex-col gap-3">
+              {/* Prochaines étapes: first, seen as soon as the étude opens. */}
+              {detail.etape && (
+                <EtapeEtudeCard
+                  etape={detail.etape}
+                  sousTraitant={detail.sous_traitant_nom}
+                  client={detail.client_nom}
+                  coloris={detail.ref_fini_colori_reference}
+                />
+              )}
+              <SoumissionsSection
+                detail={detail}
+                isEditing={isEditing}
+                canEdit={canEdit}
+                openSoumissionId={openSoumissionId}
+                onOpenSoumission={setOpenSoumissionId}
+                onDeleteSoumission={setDeleteSoumissionId}
+                onEmailSoumission={setEmailSoumissionId}
+                onMutationSuccess={invalidateAll}
+                reportDirty={reportDirty}
+              />
+            </div>
           ) : selectedId === null && !isLoading ? (
             <EmptyDetailState
               hasEtudes={(etudes?.length ?? 0) > 0}
@@ -705,6 +730,23 @@ export function EtudesColoris() {
         />
       )}
 
+      {selectedId !== null && relanceOpen && (
+        <SendEmailDialog
+          open={relanceOpen}
+          onClose={() => setRelanceOpen(false)}
+          title={aRelancer === 'client' ? 'Relancer le client' : 'Relancer l’ennoblisseur'}
+          contextLabel={detail?.libelle ?? undefined}
+          queryKey={['etude-relance-email', selectedId, etape?.derniereRelance ?? '']}
+          loadDefaults={() => apiFetch(`/etudes-coloris/${selectedId}/relance/email-defaults`)}
+          onSend={async (p) => {
+            await postEmail(`${API_URL}/etudes-coloris/${selectedId}/relance`, p)
+            invalidateAll()
+            queryClient.invalidateQueries({ queryKey: ['etude-history', selectedId] })
+            invalidateCommandeClientCaches(queryClient) // the order line waiting for this étude is chased too
+          }}
+        />
+      )}
+
       {emailSoumissionId !== null && (
         <SendEmailDialog
           open={emailSoumissionId !== null}
@@ -753,10 +795,7 @@ function EmptyDetailState({
         {!hasEtudes && statusFilter !== 'all' ? (
           <>
             <p className="text-base font-semibold mb-1">
-              Toutes les études « {filterToLabel(statusFilter)} » sont à jour
-            </p>
-            <p className="text-sm text-muted-foreground mb-4">
-              Aucune étude ne correspond à ce filtre.
+              {statusFilter === 'en_cours' ? 'Aucune étude en cours' : 'Aucune étude terminée'}
             </p>
             <Button variant="outline" size="sm" onClick={onShowAll}>
               Voir toutes les études
@@ -780,6 +819,8 @@ function EmptyDetailState({
 function EtudeList({
   etudes, isLoading, isError, selectedId, onSelect,
   searchQuery, onSearchChange,
+  tags, activeTags, onActiveTagsChange,
+  urgenceCount, urgenceOn, onToggleUrgence,
   statusFilter, onStatusFilterChange,
   isEditing, canEdit, onNewClick, totalCount,
 }: {
@@ -790,6 +831,13 @@ function EtudeList({
   onSelect: (id: number) => void
   searchQuery: string
   onSearchChange: (s: string) => void
+  tags: SearchTagDef<EtudeListRow>[]
+  activeTags: string[]
+  onActiveTagsChange: (keys: string[]) => void
+  /** Études to chase now: the red counter pill (§41). 0 hides it. */
+  urgenceCount: number
+  urgenceOn: boolean
+  onToggleUrgence: () => void
   statusFilter: StatutFilter
   onStatusFilterChange: (f: StatutFilter) => void
   isEditing: boolean
@@ -799,37 +847,52 @@ function EtudeList({
 }) {
   return (
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
-      {/* Top: search + status filter */}
+      {/* Top: search with its statut tags + the red counter, then the bucket */}
       <div className="p-3 border-b rounded-t-lg bg-zinc-200/50 space-y-2">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            type="text"
+        <div className="flex items-center gap-2">
+          <SmartSearchInput<never, EtudeListRow>
+            className="flex-1 min-w-0"
             value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Rechercher..."
-            className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+            onValueChange={onSearchChange}
+            tags={tags}
+            activeTags={activeTags}
+            onActiveTagsChange={onActiveTagsChange}
+            placeholder="Rechercher (libellé, client, réf...)"
+            chipPlaceholder="Rechercher…"
           />
+          {urgenceCount > 0 && (
+            <button
+              type="button"
+              onClick={onToggleUrgence}
+              aria-pressed={urgenceOn}
+              title="Études à relancer maintenant"
+              className={cn(
+                'h-7 min-w-[1.75rem] px-1.5 inline-flex items-center justify-center rounded-md text-xs font-semibold tabular-nums border transition-colors flex-shrink-0',
+                urgenceOn
+                  ? 'bg-red-500 text-white border-red-500 shadow-sm'
+                  : 'bg-red-500/10 text-red-700 border-red-500/30 hover:bg-red-500/20',
+              )}
+            >
+              {urgenceCount}
+            </button>
+          )}
         </div>
-        <div className="flex flex-wrap gap-1">
-          {FILTER_ORDER.map((f) => {
-            const active = statusFilter === f
-            return (
-              <button
-                key={f}
-                type="button"
-                onClick={() => onStatusFilterChange(f)}
-                className={cn(
-                  'px-2 py-1 text-[11px] font-medium rounded-md transition-colors flex items-center gap-1 whitespace-nowrap',
-                  active
-                    ? 'bg-accent text-accent-foreground shadow-sm'
-                    : 'text-muted-foreground hover:bg-accent/10 hover:text-accent',
-                )}
-              >
-                {filterToLabel(f)}
-              </button>
-            )
-          })}
+        <div className="flex gap-1">
+          {FILTERS.map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => onStatusFilterChange(opt.key)}
+              className={cn(
+                'flex-1 px-2 py-1 text-xs rounded-md transition-colors',
+                statusFilter === opt.key
+                  ? 'bg-accent text-accent-foreground shadow-sm font-medium'
+                  : 'text-muted-foreground hover:bg-accent/10',
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -889,42 +952,39 @@ function EtudeListCard({
   isSelected: boolean
   onClick: () => void
 }) {
-  const meta = STATUT_META[etude.statut_col]
-  const stale = isStale(etude.statut_col, etude.date_derniere_action)
-  const stripColor = stale ? 'rgb(239 68 68)' : meta.stripRgb
-  const selectedRingClass = stale
-    ? 'border-red-500 ring-1 ring-red-500'
-    : `${meta.selectedRing} ring-1`
+  // Neutral by default (§41): the red liseré says the étude's relance is due, and
+  // the card prints whom to chase. The statut is the pill's job.
+  const rouge = !!etude.urgence
   return (
     <div
       onClick={onClick}
       className={cn(
         'p-3 border rounded-lg cursor-pointer transition-all bg-white',
-        isSelected ? selectedRingClass : 'border-border hover:border-accent/50',
+        isSelected
+          ? (rouge ? 'border-red-500 ring-1 ring-red-500' : 'border-zinc-400 ring-1 ring-zinc-400')
+          : (rouge ? 'border-border hover:border-red-500/50' : 'border-border hover:border-zinc-400/60'),
+        rouge && 'shadow-[inset_4px_0_0_0_rgb(239_68_68)]',
       )}
-      style={{ boxShadow: `inset 4px 0 0 0 ${stripColor}` }}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="font-medium text-sm truncate">
-            {etude.libelle ?? `Étude #${etude.IDetude_col}`}
-          </p>
-          <p className="text-xs text-muted-foreground truncate mt-0.5">
-            {etude.client_nom ?? '—'}
-          </p>
-        </div>
-        <Badge
-          variant={meta.badgeVariant}
-          className={cn('flex-shrink-0 text-[10px]', meta.badgeClass)}
-        >
-          <meta.icon className="h-2.5 w-2.5 mr-0.5" />
-          {meta.short}
-        </Badge>
+      {/* The libellé gets the whole width (« 2310 marron camel 17-1330TCX 63888 »): the pill sits on the client's row. */}
+      <p className="font-medium text-sm truncate" title={etude.libelle ?? undefined}>
+        {etude.libelle ?? `Étude #${etude.IDetude_col}`}
+      </p>
+      <div className="flex items-center gap-2 mt-1">
+        <p className="text-xs text-muted-foreground truncate min-w-0 flex-1">
+          {etude.client_nom ?? '—'}
+        </p>
+        <StatutPill statut={etude.statut_col} className="flex-shrink-0" />
       </div>
+      {etude.urgence && (
+        <p className="text-[11px] font-medium mt-1 truncate text-red-600" title={etude.urgence.raison}>
+          {etude.urgence.raison}
+        </p>
+      )}
       <div className="flex items-center gap-3 mt-2 text-[11px] text-muted-foreground">
         <span className="truncate">
           {etude.ref_fini_reference ?? '—'}
-          {etude.ref_fini_colori_reference && ` · ${etude.ref_fini_colori_reference}`}
+          {etude.ref_fini_colori_reference && ` - ${etude.ref_fini_colori_reference}`}
         </span>
         <span className="ml-auto flex-shrink-0 flex items-center gap-1 tabular-nums">
           {etude.nb_soumissions > 0 && (
@@ -946,7 +1006,7 @@ function EtudeDetailHeader({
   detail, isEditing, canEdit,
   editLibelle,
   onLibelleChange,
-  onStartEdit, onCancelEdit, onSaveEdit, onDeleteClick, onPrintClick, onEmailClick,
+  onStartEdit, onCancelEdit, onSaveEdit, onDeleteClick, onPrintClick, mails,
   saving,
 }: {
   detail: EtudeDetail
@@ -959,7 +1019,8 @@ function EtudeDetailHeader({
   onSaveEdit: () => void
   onDeleteClick: () => void
   onPrintClick: (kind: 'etude' | 'feuille') => void
-  onEmailClick: () => void
+  /** Every mail the étude can send now (§42: one « @ » button). */
+  mails: MailChoix[]
   saving: boolean
 }) {
   return (
@@ -1028,15 +1089,7 @@ function EtudeDetailHeader({
               <PrintMenuButton onPrint={onPrintClick} />
               {canEdit && (
                 <>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9"
-                    title="Envoyer un email"
-                    onClick={onEmailClick}
-                  >
-                    <AtSign className="h-4 w-4" />
-                  </Button>
+                  <MailMenuButton mails={mails} />
                   <Button variant="gold" size="sm" onClick={onStartEdit}>
                     <Pencil className="h-3.5 w-3.5 mr-1.5" />
                     Modifier
@@ -1719,12 +1772,15 @@ type EtudeSidebarTab = 'info' | 'adresses' | 'historique'
 
 interface EtudeHistoryEvent {
   id: number | string
-  kind: 'etude' | 'soumission' | 'reception_type' | 'acceptance'
+  kind: 'etude' | 'soumission' | 'reception_type' | 'acceptance' | 'relance'
   date: string | null
   adresse: string | null
   societe: string | null
   soumissionId: number | null
   soumissionObservation: string | null
+  /** kind='relance': who was chased, and who sent it. */
+  cible?: 'labo' | 'client'
+  par?: string
 }
 
 const editCardClass = 'border-l-4 border-l-accent/70 bg-accent/[0.03]'
@@ -2192,6 +2248,28 @@ function HistoryEventCard({ event }: { event: EtudeHistoryEvent }) {
               ? `Soumission ${soumLabel} acceptée le ${dateFr}`
               : `Soumission ${soumLabel} acceptée`}
           </p>
+        </div>
+      </div>
+    )
+  }
+
+  // Our relance of the lab or of the client: the mail sent IS the relance.
+  if (event.kind === 'relance') {
+    return (
+      <div className="rounded-lg border border-border/60 bg-card shadow-sm p-2.5 flex items-start gap-2.5">
+        <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-zinc-100">
+          <BellRing className={cn('h-3.5 w-3.5', event.cible === 'client' ? 'text-violet-600' : 'text-sky-600')} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-medium leading-snug">
+            {event.cible === 'client' ? 'Client relancé' : 'Ennoblisseur relancé'}
+          </p>
+          <div className="flex items-center justify-between gap-2 mt-1">
+            <span className="text-[10px] text-muted-foreground truncate">{event.par ?? ''}</span>
+            <span className="text-[10px] text-muted-foreground tabular-nums flex-shrink-0">
+              {formatEnvoiDate(event.date)}
+            </span>
+          </div>
         </div>
       </div>
     )

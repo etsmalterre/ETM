@@ -56,6 +56,7 @@ describe('the grouped relance of a sous-traitant', () => {
     urgences: [{ commande: 9161, ligne: 1, article: '176A - marine', dateSouhaitee: '2026-12-01', demandeeLe: '2026-11-24' }],
     delais: [{ commande: 9183, articles: '224A - bleu', commandeLe: '2026-11-24' }],
     controles: [{ idsuivilot: 5, commande: 9100, lot: 'TA532110', article: '180B - écru', recuLe: '2026-11-17', manque: ['laize', 'poids', 'stabilités'] }],
+    etudes: [],
   }
   it('one block per kind of answer we wait for, the passed délais first', () => {
     const m = mailRelanceGroupee(d)
@@ -66,6 +67,23 @@ describe('the grouped relance of a sous-traitant', () => {
     expect(m.body).toContain('Votre délai :\n- Commande N°9183 (224A - bleu), du 24/11/2026')
     expect(m.body).toContain('Vos contrôles :\n- Lot TA532110 (180B - écru), reçu le 17/11/2026 : laize, poids et stabilités')
     expect(m.body.indexOf('Un nouveau délai')).toBeLessThan(m.body.indexOf('Votre réponse'))
+  })
+  it('an étude coloris the lab holds beyond its days is one more dossier, last', () => {
+    const m = mailRelanceGroupee({
+      ...d,
+      etudes: [
+        { etude: 1412, libelle: '512 bleu chambray', reference: 'EDF85/55', client: 'SIMONE PERELE', depuis: '2026-11-10', ligne: 0 },
+        { etude: 1300, libelle: 'rose', reference: '', client: '', depuis: null, ligne: 0 },
+      ],
+    })
+    expect(m.subject).toBe('Relance — 6 dossiers en attente — ETS Malterre')
+    expect(m.body).toContain('Vos soumissions d’études coloris :\n- Étude N°1412 « 512 bleu chambray » (EDF85/55, pour SIMONE PERELE), que vous avez depuis le 10/11/2026\n- Étude N°1300 « rose »')
+    expect(m.body.indexOf('Vos contrôles')).toBeLessThan(m.body.indexOf('Vos soumissions'))
+  })
+  it('a lab with nothing but a late étude still gets its mail', () => {
+    const m = mailRelanceGroupee({ retards: [], urgences: [], delais: [], controles: [], etudes: [{ etude: 1411, libelle: '2411 paprika', reference: '180A', client: 'Atelier Joly', depuis: '2026-11-09', ligne: 13423 }] })
+    expect(m.subject).toBe('Relance — 1 dossier en attente — ETS Malterre')
+    expect(m.body).toContain('Nous attendons de votre part :\n\nVos soumissions d’études coloris :')
   })
   it('a kind with nothing overdue has no block', () => {
     const m = mailRelanceGroupee({ ...d, urgences: [], delais: [], controles: [] })

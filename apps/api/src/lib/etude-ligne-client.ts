@@ -169,6 +169,21 @@ export function dateEnEtude(p: { enPreparation: boolean; actuelle: string; deman
   return { date: p.demandee }
 }
 
+/** Every relance of one étude, oldest first, with who sent it (the étude's own screen: its step and its
+ *  Historique). `le` YYYYMMDD, `quand` 'YYYY-MM-DD HH:MM:SS.mmm' (the shape of the screen's other events). */
+export async function relancesEtude(etudeId: number): Promise<Array<RelanceEtude & { id: number; quand: string; par: string }>> {
+  const rows = await mpsPg()<{ id: number; cible: 'labo' | 'client'; relancee_le: Date; par: string | null }[]>`
+    SELECT id, cible, relancee_le, par FROM etude_col_relance WHERE idetude_col = ${etudeId} ORDER BY relancee_le, id`
+  const p = (n: number, l = 2) => String(n).padStart(l, '0')
+  return rows.map((r) => {
+    const d = r.relancee_le
+    return {
+      id: Number(r.id), cible: r.cible, le: ymd(d)!, par: String(r.par ?? '').trim(),
+      quand: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`,
+    }
+  })
+}
+
 /** The étude facts the urgency rule needs, or undefined when the line is not waiting for one
  *  (no étude, or its coloris is already set: the étude is history then). */
 export function etudeUrgence(idEtude: number, idColori: number, etudes: Map<number, EtudeLigne>) {
@@ -249,6 +264,9 @@ function trierContacts(
   return { selected, suggestions }
 }
 
+/** The client order an étude is studied for, as the relance mail names it. */
+interface CommandeEtude { numero: string; refClient: string }
+
 /** The relance mail of a line waiting for its étude; null when nobody is to be chased. */
 export async function mailRelanceEtude(lineId: number): Promise<RelanceEtudeMail | null> {
   const lignes = await query<{ IDetude_col: number; IDcolori: number; IDcommande_client: number }>(
@@ -256,15 +274,40 @@ export async function mailRelanceEtude(lineId: number): Promise<RelanceEtudeMail
   const l = lignes[0]
   const etudeId = Number(l?.IDetude_col) || 0
   if (!l || !(etudeId > 0) || (Number(l.IDcolori) || 0) > 0) return null
+  return mailRelance(etudeId, await commandeDe(Number(l.IDcommande_client)))
+}
+
+/** The same mail from the étude's own screen (Finis › Études coloris, 2026-11-27): the order it names is the
+ *  one of the line waiting for the étude, else the N° typed on the étude, else none. `idLigne` = that line (0
+ *  without one), kept on the relance. Null when nobody is to be chased. */
+export async function mailRelanceEtudeParId(etudeId: number): Promise<(RelanceEtudeMail & { idLigne: number }) | null> {
+  if (!(etudeId > 0)) return null
+  const [lignes, etudes] = await Promise.all([
+    query<{ IDligne_commande_client: number; IDcommande_client: number }>(
+      `SELECT IDligne_commande_client, IDcommande_client FROM ligne_commande_client WHERE IDetude_col = ${etudeId}`),
+    query<{ IDetude_col: number; num_commande: string | null }>(
+      `SELECT IDetude_col, num_commande FROM etude_col WHERE IDetude_col = ${etudeId}`),
+  ])
+  const l = lignes[0]
+  const saisi = String((await fixEncoding(etudes, 'etude_col', 'IDetude_col', ['num_commande']))[0]?.num_commande ?? '').trim()
+  const commande = l ? await commandeDe(Number(l.IDcommande_client)) : saisi ? { numero: saisi, refClient: '' } : null
+  const mail = await mailRelance(etudeId, commande)
+  return mail ? { ...mail, idLigne: Number(l?.IDligne_commande_client) || 0 } : null
+}
+
+async function commandeDe(idCommande: number): Promise<CommandeEtude | null> {
+  const cmds = await query<{ numero: number | null; ref_client: string | null }>(
+    `SELECT numero, ref_client FROM commande_client WHERE IDcommande_client = ${idCommande}`)
+  return cmds[0] ? { numero: String(cmds[0].numero ?? ''), refClient: String(cmds[0].ref_client ?? '').trim() } : null
+}
+
+/** The mail to whoever holds the étude. Without a client order, it says nothing of one. */
+async function mailRelance(etudeId: number, commande: CommandeEtude | null): Promise<RelanceEtudeMail | null> {
   const etat = (await etudesParId([etudeId])).get(etudeId)
   if (!etat || (etat.attente !== 'labo' && etat.attente !== 'client')) return null
 
-  const [etudes, cmds] = await Promise.all([
-    query<{ IDclient: number; IDsous_traitant: number; IDref_fini: number }>(
-      `SELECT IDclient, IDsous_traitant, IDref_fini FROM etude_col WHERE IDetude_col = ${etudeId}`),
-    query<{ numero: number | null; ref_client: string | null }>(
-      `SELECT numero, ref_client FROM commande_client WHERE IDcommande_client = ${Number(l.IDcommande_client)}`),
-  ])
+  const etudes = await query<{ IDclient: number; IDsous_traitant: number; IDref_fini: number }>(
+    `SELECT IDclient, IDsous_traitant, IDref_fini FROM etude_col WHERE IDetude_col = ${etudeId}`)
   const e = etudes[0]
   const idClient = Number(e?.IDclient) || 0
   const idSst = Number(e?.IDsous_traitant) || 0
@@ -276,8 +319,8 @@ export async function mailRelanceEtude(lineId: number): Promise<RelanceEtudeMail
   const ref = String((await fixEncoding(refRows, 'ref_fini', 'IDref_fini', ['reference']))[0]?.reference ?? '').trim()
   const clientNom = String((await fixEncoding(clientRows, 'client', 'IDclient', ['nom']))[0]?.nom ?? '').trim()
   const sstNom = String((await fixEncoding(sstRows, 'sous_traitant', 'IDsous_traitant', ['nom']))[0]?.nom ?? '').trim()
-  const numero = String(cmds[0]?.numero ?? '')
-  const refClient = String(cmds[0]?.ref_client ?? '').trim()
+  const numero = commande?.numero ?? ''
+  const refClient = commande?.refClient ?? ''
 
   if (etat.attente === 'labo') {
     const contacts = idSst > 0
@@ -294,7 +337,9 @@ export async function mailRelanceEtude(lineId: number): Promise<RelanceEtudeMail
         '',
         `Où en est l’étude coloris N°${etudeId} « ${etat.libelle} »${ref ? ` sur la référence ${ref}` : ''}${etat.attenteDepuis ? `, que vous avez depuis le ${jjmmaaaa(etat.attenteDepuis)}` : ''} ?`,
         '',
-        `Notre client${clientNom ? ` ${clientNom}` : ''} a déjà passé commande et attend la soumission pour que nous lancions la production.`,
+        commande
+          ? `Notre client${clientNom ? ` ${clientNom}` : ''} a déjà passé commande et attend la soumission pour que nous lancions la production.`
+          : `Notre client${clientNom ? ` ${clientNom}` : ''} attend la soumission.`,
         'Merci de nous indiquer quand vous pourrez nous l’envoyer.',
         '',
         'Cordialement,',
@@ -307,17 +352,22 @@ export async function mailRelanceEtude(lineId: number): Promise<RelanceEtudeMail
     : []
   const fixed = await fixEncoding(contacts, 'contact', 'IDcontact', ['nom', 'prenom', 'mail'])
   const parSoumission = fixed.some((c: any) => Number(c.envoi_soumission) === 1)
+  const pourCommande = commande ? `, pour votre commande N°${numero}${refClient ? ` (${refClient})` : ''}` : ''
   return {
     cible: 'client',
     destinataire: clientNom,
     recipients: trierContacts(fixed, (c) => Number(parSoumission ? c.envoi_soumission : c.envoi_commande) === 1),
-    subject: `Votre choix de coloris — commande N°${numero}${refClient ? ` (${refClient})` : ''}`,
+    subject: commande
+      ? `Votre choix de coloris — commande N°${numero}${refClient ? ` (${refClient})` : ''}`
+      : `Votre choix de coloris — ${etat.libelle}${ref ? ` · ${ref}` : ''}`,
     body: [
       'Bonjour,',
       '',
-      `Nous vous avons soumis${etat.attenteDepuis ? ` le ${jjmmaaaa(etat.attenteDepuis)}` : ''} notre proposition de coloris « ${etat.libelle} »${ref ? ` sur la référence ${ref}` : ''}, pour votre commande N°${numero}${refClient ? ` (${refClient})` : ''}.`,
+      `Nous vous avons soumis${etat.attenteDepuis ? ` le ${jjmmaaaa(etat.attenteDepuis)}` : ''} notre proposition de coloris « ${etat.libelle} »${ref ? ` sur la référence ${ref}` : ''}${pourCommande}.`,
       '',
-      'Pourriez-vous nous faire part de votre choix ? Dès votre validation, nous lançons la production et vous confirmons le délai.',
+      commande
+        ? 'Pourriez-vous nous faire part de votre choix ? Dès votre validation, nous lançons la production et vous confirmons le délai.'
+        : 'Pourriez-vous nous faire part de votre choix ?',
       '',
       'Cordialement,',
     ].join('\n'),

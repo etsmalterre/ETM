@@ -25,6 +25,9 @@ import { corpsMailSoumissionEtude } from '../lib/mail-soumission-etude.js'
 import { libelleAcceptation, usagesColorisFini } from '../lib/coloris-fini-suppression.js'
 import { isEffectiveAdmin } from '../lib/auth.js'
 import { destinatairesEtudeColoris } from '../lib/destinataires-etude-coloris.js'
+import { enregistrerRelance, etudesParId, mailRelanceEtudeParId, relancesEtude } from '../lib/etude-ligne-client.js'
+import { aujourdhuiIso, etapeEtude, urgenceEtude } from '../lib/etude-etape.js'
+import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 
 export const etudesColorisRouter: RouterType = Router()
 
@@ -381,6 +384,9 @@ etudesColorisRouter.get('/', async (req: Request, res: Response) => {
     const whereParts: string[] = []
     const statutCode = statutFilterToCode[statut]
     if (statutCode !== undefined) whereParts.push(`ec.statut_col = ${statutCode}`)
+    // The left list's buckets: running (the lab or the client holds it) / closed (accepted, cancelled).
+    else if (statut === 'en_cours') whereParts.push('ec.statut_col IN (1, 2)')
+    else if (statut === 'terminees') whereParts.push('ec.statut_col IN (3, 4)')
     // 'all' → no filter
     if (!isNaN(clientFilter) && clientFilter > 0) whereParts.push(`ec.IDclient = ${clientFilter}`)
     const whereSql = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : ''
@@ -469,14 +475,23 @@ etudesColorisRouter.get('/', async (req: Request, res: Response) => {
       }
     }
 
+    // Who holds each running étude and whether its relance is due (lib/etude-etape.ts): the card's red.
+    const etats = await etudesParId(
+      fixedEtudes.filter((e) => [1, 2].includes(Number(e.statut_col))).map((e) => Number(e.IDetude_col)),
+    )
+    const today = aujourdhuiIso()
+
     const qLower = q.toLowerCase()
     const result = fixedEtudes
       .map((e: any) => {
         const agg = soumAggMap.get(Number(e.IDetude_col)) ?? {
           nb_soumissions: 0, last_soumission_date: null,
         }
+        const etat = etats.get(Number(e.IDetude_col))
         return {
           ...e,
+          attente: etat?.attente ?? null,
+          urgence: etat ? urgenceEtude(etat, today) : null,
           statut_col: coerceStatut(e.statut_col),
           client_nom: clientMap.get(Number(e.IDclient)) ?? null,
           ref_fini_reference: refFiniMap.get(Number(e.IDref_fini)) ?? null,
@@ -509,7 +524,21 @@ etudesColorisRouter.get('/:id', async (req: Request, res: Response) => {
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     const detail = await loadEtudeDetail(id)
     if (!detail) { res.status(404).json({ error: 'Étude not found' }); return }
-    res.json(detail)
+    // « Prochaines étapes »: who holds the étude, since when, its clock (lib/etude-etape.ts).
+    const soums = detail.soumissions as Awaited<ReturnType<typeof loadSoumissions>>
+    const etape = etapeEtude(
+      {
+        statut: Number(detail.statut_col) || 0,
+        dateReception: dateStr(detail.date_reception_type) || null,
+        derniereAction: dateStr(detail.date_derniere_action) || null,
+      },
+      soums.map((x) => ({
+        id: x.IDsoum_col, dateSoum: dateStr(x.date_soum) || null, dateReponse: dateStr(x.date_reponse) || null, accepte: x.accepte,
+      })),
+      await relancesEtude(id),
+      aujourdhuiIso(),
+    )
+    res.json({ ...detail, etape })
   } catch (err) {
     console.error('Error fetching etude-coloris detail:', err)
     res.status(500).json({ error: 'Internal server error' })
@@ -964,6 +993,72 @@ etudesColorisRouter.post('/:id/email', async (req: Request, res: Response) => {
   }
 })
 
+// ── Relance (the lab or the client) ──────────────────────
+//
+// « Relancer l'ennoblisseur » / « Relancer le client » from the étude's own « @ » button (Vincent 2026-11-27).
+// The same mail and the same fact as the client line's « Relancer » (routes/commandes-client.ts
+// …/lignes/:id/relance-etude): who is chased is decided from the étude (lib/etude-ligne-client.ts), sending
+// IS the relance (etude_col_relance) and restarts the holder's clock — on this screen, on the line waiting
+// for the étude and in the espace partenaire alike.
+
+const relanceBodySchema = emailBodySchema.extend({ dev_skip_send: z.boolean().optional() })
+const ALLOW_DEV_SKIP_SEND = process.env.NODE_ENV !== 'production'
+const RIEN_A_RELANCER = { error: 'rien_a_relancer', message: 'Cette étude n’attend ni l’ennoblisseur ni le client.' }
+
+etudesColorisRouter.get('/:id/relance/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(String(req.params.id), 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const mail = await mailRelanceEtudeParId(id)
+    if (!mail) { res.status(409).json(RIEN_A_RELANCER); return }
+    res.json(mail)
+  } catch (err) {
+    console.error('Error building étude relance mail:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+etudesColorisRouter.post('/:id/relance', async (req: Request, res: Response) => {
+  try {
+    if (!(await ensureCanEdit(req, res))) return
+    const id = parseInt(String(req.params.id), 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = relanceBodySchema.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const mail = await mailRelanceEtudeParId(id)
+    if (!mail) { res.status(409).json(RIEN_A_RELANCER); return }
+
+    const nom = await nomUtilisateur(req.userId!)
+    let messageId = `dev-skip-${Date.now()}`
+    if (parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND) {
+      console.log(`[dev-skip-send] relance étude #${id} (${mail.cible}) — fake send to ${parsed.data.to.join(', ')}`)
+    } else {
+      const senderEmail = await getUserEmail(req.userId!)
+      if (!senderEmail) {
+        res.status(400).json({
+          error: 'no_sender_email',
+          message: "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs.",
+        })
+        return
+      }
+      messageId = await sendMail({
+        from: senderEmail, fromName: nom ? `${nom} — ETS Malterre` : 'ETS Malterre',
+        to: parsed.data.to, cc: parsed.data.cc, bcc: parsed.data.bcc,
+        subject: parsed.data.subject, body: parsed.data.body,
+        attachments: (parsed.data.extra_attachments ?? []).map((a) => ({
+          filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type,
+        })),
+      })
+    }
+    const cible = await enregistrerRelance(id, { id: req.userId ?? 0, nom }, mail.idLigne)
+    res.json({ ok: true, messageId, cible })
+  } catch (err) {
+    console.error('Error sending étude relance:', err)
+    const message = err instanceof Error ? err.message : 'Internal server error'
+    res.status(500).json({ error: 'send_failed', message })
+  }
+})
+
 // ── Étude history timeline ───────────────────────────────
 //
 // Unified timeline of envoi_email events for an étude: demande d'étude
@@ -975,12 +1070,15 @@ interface HistoryEvent {
   /** Envoi_email id for send events, or 'reception-<etudeId>' /
    *  'acceptance-<soumId>' for synthetic events (no DB id). */
   id: number | string
-  kind: 'etude' | 'soumission' | 'reception_type' | 'acceptance'
+  kind: 'etude' | 'soumission' | 'reception_type' | 'acceptance' | 'relance'
   date: string | null                 // raw datetime for envois (YYYY-MM-DD HH:MM:SS.mmm) or YYYYMMDD for synthetic events
   adresse: string | null
   societe: string | null
   soumissionId: number | null         // non-null when kind='soumission' or 'acceptance'
   soumissionObservation: string | null // e.g. "1-2" for the sample numbers
+  /** kind='relance': who was chased and who sent it. */
+  cible?: 'labo' | 'client'
+  par?: string
 }
 
 etudesColorisRouter.get('/:id/history', async (req: Request, res: Response) => {
@@ -1094,6 +1192,21 @@ etudesColorisRouter.get('/:id/history', async (req: Request, res: Response) => {
         societe: null,
         soumissionId: sid,
         soumissionObservation: ctx.observation,
+      })
+    }
+
+    // Our relances of the lab or of the client (etude_col_relance: the mail sent IS the relance).
+    for (const r of await relancesEtude(id)) {
+      events.push({
+        id: `relance-${r.id}`,
+        kind: 'relance',
+        date: r.quand,
+        adresse: null,
+        societe: null,
+        soumissionId: null,
+        soumissionObservation: null,
+        cible: r.cible,
+        par: r.par,
       })
     }
 

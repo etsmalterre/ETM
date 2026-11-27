@@ -10,14 +10,17 @@
 //   - a new délai      the délai has passed, the goods are not in (lib/relance-retard-sst.ts);
 //   - an urgency       asked, its answer did not come on its day (lib/urgence-sst.ts);
 //   - a délai          asked with the order, not given on its day (lib/delai-sst.ts);
-//   - its controls     a received lot whose measures are still missing (lib/relance-controle.ts).
+//   - its controls     a received lot whose measures are still missing (lib/relance-controle.ts);
+//   - a soumission     an étude coloris its lab has held beyond its days (lib/etude-etape.ts — Vincent,
+//                      the same afternoon: the étude got its own red and its own relance, so it belongs
+//                      here; a lab late on an étude with no late order was invisible in Gestion).
 //
 // ⚠️ Never a second rule: each dossier is read with the rule that turns its card
-// red (the cycle's, the urgency's), and sending the mail writes, dossier by
+// red (the cycle's, the urgency's, the étude's), and sending the mail writes, dossier by
 // dossier, the SAME relance fact its own mail button writes — so each card is
 // calm again exactly as if it had been chased alone. Not in it: what waits on
-// the client or on us, an étude coloris (chased from its client line), and
-// anything not due yet.
+// the client or on us (an étude whose soumission the CLIENT has not answered is
+// chased from the étude, at the client), and anything not due yet.
 
 import type { Sql } from 'postgres'
 import { mpsPg } from './mps-pg.js'
@@ -27,6 +30,8 @@ import { enregistrerRelanceControle } from './relance-controle.js'
 import { enregistrerRelanceRetard, lireRelancesRetard, retardCalme } from './relance-retard-sst.js'
 import { etatsTricotage, familleOfTypeSst, ligneLivree } from './sst-tricotage.js'
 import { demanderUrgence, enAttenteDeReponse, noterMailUrgence, urgencesLignes } from './urgence-sst.js'
+import { enregistrerRelance, etudesParId } from './etude-ligne-client.js'
+import { urgenceEtude } from './etude-etape.js'
 
 export interface DossiersARelancer {
   /** A new délai is wanted: the délai has passed. `delai` 'YYYY-MM-DD'. */
@@ -37,11 +42,16 @@ export interface DossiersARelancer {
   delais: { commande: number; articles: string; commandeLe: string | null }[]
   /** The dyer's controls of a received lot. */
   controles: { idsuivilot: number; commande: number; lot: string; article: string; recuLe: string; manque: string[] }[]
+  /** An étude coloris the lab holds beyond its days: a soumission is awaited. `depuis` 'YYYY-MM-DD' = since when
+   *  it holds it (the type received, or the client's refusal of its last soumission); `ligne` = the client order
+   *  line waiting for the étude (0 without one), kept on the relance. */
+  etudes: { etude: number; libelle: string; reference: string; client: string; depuis: string | null; ligne: number }[]
 }
 
-const vide = (): DossiersARelancer => ({ retards: [], urgences: [], delais: [], controles: [] })
+const vide = (): DossiersARelancer => ({ retards: [], urgences: [], delais: [], controles: [], etudes: [] })
 
-export const nombreDossiers = (d: DossiersARelancer): number => d.retards.length + d.urgences.length + d.delais.length + d.controles.length
+export const nombreDossiers = (d: DossiersARelancer): number =>
+  d.retards.length + d.urgences.length + d.delais.length + d.controles.length + d.etudes.length
 
 const jjmmaaaa = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`
 const liste = (xs: string[]) => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} et ${xs.at(-1)}`)
@@ -49,8 +59,47 @@ const article = (ref: string | null, coloris: string | null) => [ref, coloris].m
 const unique = (xs: string[]) => [...new Set(xs.filter(Boolean))].join(', ')
 
 /** What is overdue on each sous-traitant's side today. `idsst` null = every sous-traitant with an
- *  open order (the Gestion list's counters). `today` 'YYYY-MM-DD'. */
+ *  open order or a running étude coloris (the Gestion list's counters). `today` 'YYYY-MM-DD'. */
 export async function dossiersARelancer(idsst: number | null, today: string, sql: Sql = mpsPg()): Promise<Map<number, DossiersARelancer>> {
+  const [out, etudes] = await Promise.all([dossiersDesCommandes(idsst, today, sql), etudesARelancer(idsst, today, sql)])
+  // A lab may have nothing but études running: it is read apart from the open orders.
+  for (const [sst, es] of etudes) {
+    if (!out.has(sst)) out.set(sst, vide())
+    out.get(sst)!.etudes = es
+  }
+  return out
+}
+
+/** The études coloris each lab holds beyond its days: the red of Finis › Études coloris (`urgenceEtude` over
+ *  `etatEtude`), kept only while the LAB holds the étude — the client's silence is not the lab's to answer. */
+async function etudesARelancer(idsst: number | null, today: string, sql: Sql): Promise<Map<number, DossiersARelancer['etudes']>> {
+  const out = new Map<number, DossiersARelancer['etudes']>()
+  const rows = await sql<{ id: number; sst: number; client: string | null; reference: string | null; ligne: number }[]>`
+    SELECT e.idetude_col::bigint AS id, e.idsous_traitant::bigint AS sst, c.nom::text AS client, r.reference::text AS reference,
+           COALESCE((SELECT MIN(l.idligne_commande_client) FROM ligne_commande_client l WHERE l.idetude_col = e.idetude_col), 0)::bigint AS ligne
+    FROM etude_col e
+    LEFT JOIN client c ON c.idclient = e.idclient
+    LEFT JOIN ref_fini r ON r.idref_fini = e.idref_fini
+    WHERE e.statut_col IN (1, 2) AND e.idsous_traitant > 0 ${idsst === null ? sql`` : sql`AND e.idsous_traitant = ${idsst}`}
+    ORDER BY e.idetude_col`
+  if (rows.length === 0) return out
+  const etats = await etudesParId(rows.map((r) => Number(r.id)))
+  for (const r of rows) {
+    const etat = etats.get(Number(r.id))
+    if (!etat || etat.attente !== 'labo' || !urgenceEtude(etat, today)) continue
+    const d = etat.attenteDepuis
+    const sst = Number(r.sst)
+    if (!out.has(sst)) out.set(sst, [])
+    out.get(sst)!.push({
+      etude: Number(r.id), libelle: etat.libelle, reference: (r.reference ?? '').trim(), client: (r.client ?? '').trim(),
+      depuis: d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null, ligne: Number(r.ligne) || 0,
+    })
+  }
+  return out
+}
+
+/** What is overdue on the open ORDERS of each sous-traitant. */
+async function dossiersDesCommandes(idsst: number | null, today: string, sql: Sql): Promise<Map<number, DossiersARelancer>> {
   const out = new Map<number, DossiersARelancer>()
   const cmds = await sql<{ id: number; sst: number; le: string | null; type_sst: number | null }[]>`
     SELECT c.idcommande_sous_traitant AS id, c.idsous_traitant AS sst, to_char(c.date_commande, 'YYYY-MM-DD') AS le, st.idtype_sst AS type_sst
@@ -194,6 +243,13 @@ export function mailRelanceGroupee(d: DossiersARelancer): { subject: string; bod
     blocs.push(['Vos contrôles :',
       ...d.controles.map((c) => `- Lot ${c.lot}${c.article ? ` (${c.article})` : ''}, reçu le ${jjmmaaaa(c.recuLe)}${c.manque.length > 0 ? ` : ${liste(c.manque)}` : ''}`)].join('\n'))
   }
+  if (d.etudes.length > 0) {
+    blocs.push(['Vos soumissions d’études coloris :',
+      ...d.etudes.map((e) => {
+        const pour = [e.reference, e.client ? `pour ${e.client}` : ''].filter(Boolean).join(', ')
+        return `- Étude N°${e.etude} « ${e.libelle} »${pour ? ` (${pour})` : ''}${e.depuis ? `, que vous avez depuis le ${jjmmaaaa(e.depuis)}` : ''}`
+      })].join('\n'))
+  }
   return {
     subject: `Relance — ${n} dossier${n > 1 ? 's' : ''} en attente — ETS Malterre`,
     body: `Bonjour,\n\nNous attendons de votre part :\n\n${blocs.join('\n\n')}\n\nMerci d’avance pour votre retour.\n\nCordialement,`,
@@ -221,16 +277,25 @@ export async function noterRelanceGroupee(
   for (const c of d.controles) {
     await tenter(`contrôles ${c.lot}`, () => enregistrerRelanceControle({ idsuivilot: c.idsuivilot, idcommande: c.commande, lot: c.lot, par, destinataires: [...destinataires] }))
   }
+  // The étude's own relance (etude_col_relance): it restarts the lab's clock on Finis › Études coloris, on
+  // the client line waiting for the étude and in the espace partenaire.
+  for (const e of d.etudes) {
+    await tenter(`étude ${e.etude}`, async () => {
+      if ((await enregistrerRelance(e.etude, par, e.ligne)) !== 'labo') throw new Error('l’étude n’attend plus le labo')
+    })
+  }
   return n
 }
 
 export interface DestinataireSst { email: string; name?: string; source: 'contact'; contactId: number }
 
-/** The sous-traitant's contacts: those who receive the orders are ticked, the others offered. */
-export async function destinatairesSousTraitant(idsst: number, sql: Sql = mpsPg()): Promise<{ selected: DestinataireSst[]; suggestions: DestinataireSst[] }> {
+/** The sous-traitant's contacts: those who receive the orders are ticked, the others offered. `avecLabo`:
+ *  the mail chases an étude coloris, so the contacts who receive the soumissions (the lab) are ticked too. */
+export async function destinatairesSousTraitant(idsst: number, sql: Sql = mpsPg(), avecLabo = false): Promise<{ selected: DestinataireSst[]; suggestions: DestinataireSst[] }> {
   const lus = await sql<{ id: number; nom: string | null; prenom: string | null; mail: string | null; commande: number; visible: number }[]>`
     SELECT idcontact AS id, nom::text AS nom, prenom::text AS prenom, mail::text AS mail,
-           COALESCE(envoi_commande, 0)::int AS commande, COALESCE(est_visible, 1)::int AS visible
+           GREATEST(COALESCE(envoi_commande, 0), ${avecLabo ? sql`COALESCE(envoi_soumission, 0)` : sql`0`})::int AS commande,
+           COALESCE(est_visible, 1)::int AS visible
     FROM contact WHERE idsous_traitant = ${idsst} ORDER BY idcontact`
   const selected: DestinataireSst[] = []
   const suggestions: DestinataireSst[] = []

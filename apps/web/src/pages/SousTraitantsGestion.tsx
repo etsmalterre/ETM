@@ -389,6 +389,8 @@ export function SousTraitantsGestion() {
             invalidateSstCommandeCaches(queryClient)
             invalidateLotQualityCaches(queryClient)
             invalidateCommandeClientCaches(queryClient)
+            // An étude coloris the lab holds is chased with it (Finis › Études coloris).
+            for (const cle of ['etudes-coloris', 'etude-coloris', 'etude-history']) queryClient.invalidateQueries({ queryKey: [cle] })
           }}
         />
       )}
