@@ -57,6 +57,17 @@
 //    told: the client itself, who was written to, the stabilités soumission. The dyer's délai is pushed by what
 //    the client took beyond its 5: the resulting day is `sortie`. The bon de commande PDF is the document Malterre e-mails: it carries what was sent
 //    (the partner's own prices included) and nothing is added to it here.
+//  - Since 2026-11-27 (Vincent: « mettre le document BL à disposition ») an order's page and a lot's page hand
+//    the partner its OWN delivery papers back (`documents`): the PDFs the BL agent filed on the order, and only
+//    those — lib/espace-partenaire-documents.ts, a closed list of file names, where anything more is decided.
+//    Never add the other documents of the order (what people file there by hand carries Malterre's own tables
+//    and a customer's order number — opened that day).
+//  - Since 2026-11-27 (Vincent: « colorier en rouge les pièces qui ont un défaut noté par le sous-traitant dans
+//    le BL ») a roll of the lot's page carries the defects the DYER itself wrote against it on its BL
+//    (`defauts`, from stock_fini `observation_sst`: what the reception recorded of the BL's « Observations » —
+//    the same text as the agent read on 6 228 of MATEL's 6 399 rolls of twelve months, and nothing but the
+//    dyer's defect words over those months: taches, défauts, TB, trous, salissures, fausses coutures… checked
+//    that day). Its « Tirelles » is not a defect and is left out. Still never the roll's `observations`.
 //
 // Steps. ETM's cycle says where an order and its lots stand AND whose move it is at Malterre; the partner is told
 // where they stand for IT. Order (EtapeCommande of lib/cycle-ennoblissement.ts → the portal's):
@@ -105,6 +116,7 @@ import { fermetures as lireFermetures } from './delais-standards.js'
 import type { Periode } from './jours-ouvres.js'
 import { ecartDelai, promessesDesLignes } from './qualite-service-sst.js'
 import { journalPartenaire, type EntreeJournalPartenaire } from './espace-partenaire-journal.js'
+import { documentsCommande, fichierDocument, nomFichier, type DocumentPartenaire } from './espace-partenaire-documents.js'
 import { ecruToutRevenu, ligneLivreeLe } from './ligne-sst-livree.js'
 import { familleOfTypeSst } from './sst-tricotage.js'
 import { urgencesLignes } from './urgence-sst.js'
@@ -280,6 +292,19 @@ export function libelleDefaut(d: { type_defaut: string | null; description: stri
   return nombre > 1 ? `${base} ×${nombre}` : taille > 0 ? `${base} ${taille} cm` : base
 }
 
+/**
+ * The defects a dyer wrote against a roll on its BL, one per item (« 1 trou », « 2 taches », « 1 aiguille/1,5m »),
+ * from the remark the reception recorded (stock_fini `observation_sst`). The remark lists them after commas; a
+ * comma inside a figure (« 1,5m ») does not split. « Tirelles » — the roll the tirelle was cut from — is not a
+ * defect: left out, so a roll that says nothing else has none. Pure.
+ */
+export function defautsDuBl(remarque: string | null | undefined): string[] {
+  return str(remarque)
+    .split(/\s*,(?:\s+|$)/)
+    .map((d) => d.replace(/\s+/g, ' ').trim())
+    .filter((d) => d && !/^tirell?es?$/i.test(d))
+}
+
 /** The dyer's measures of a lot. Units: laize cm, poids g/m², stabilités and vrillage %. */
 export const CLES_MESURE = ['laize', 'poids', 'stabH', 'stabL', 'vrillage'] as const
 export type CleMesure = (typeof CLES_MESURE)[number]
@@ -353,6 +378,8 @@ export interface PieceLot {
   numero: string
   metrageMl: number
   poidsKg: number
+  /** The defects the partner wrote against the roll on its own BL (`defautsDuBl`); [] = none. */
+  defauts: string[]
   /** Ml per kg; null without a weight. */
   rendement: number | null
   /** In the lot's rendement band, out of it, or null when there is none. */
@@ -368,6 +395,8 @@ export interface LotDetail extends LotPartenaire {
   rendement: { moyen: number | null; min: number | null; max: number | null }
   /** Oldest first. Dates YYYY-MM-DD. */
   reprises: { rang: number; nature: 'rame' | 'teinture'; motif: string | null; envoyeLe: string | null; retourLe: string | null }[]
+  /** The partner's own delivery papers of this lot, as filed on its order (lib/espace-partenaire-documents.ts). */
+  documents: DocumentPartenaire[]
 }
 
 export interface CommandeDetail extends Omit<CommandeResume, 'articles'> {
@@ -377,6 +406,8 @@ export interface CommandeDetail extends Omit<CommandeResume, 'articles'> {
   /** What happened on the order and its lots, newest first — the partner's own reading of ETM's journal
    *  (lib/espace-partenaire-journal.ts, a closed list). */
   journal: EntreeJournalPartenaire[]
+  /** The partner's own delivery papers filed on the order, oldest first (lib/espace-partenaire-documents.ts). */
+  documents: DocumentPartenaire[]
 }
 
 // ── The partner's control of a lot (pure, tested) ───────────
@@ -1020,7 +1051,7 @@ export async function lotPartenaire(idSousTraitant: number, idLot: number): Prom
     'laize' | 'poids' | 'rendement_demande' | 'poids_min' | 'poids_max' | 'laize_min' | 'laize_max' | 'freinte' | 'rendement'
     | 'stab_hauteur' | 'stab_largeur' | 'allh_min' | 'allh_max' | 'alll_min' | 'alll_max', number> &
     Record<'stabh' | 'stabl' | 'vrillage' | 'allh' | 'alll', number | null> & { coloris: string | null }
-  const [noms, controles, [r], pieces, reprises, actions] = await Promise.all([
+  const [noms, controles, [r], pieces, reprises, actions, documents] = await Promise.all([
     libelles(v.lignes.map((l) => l.row)),
     controlesDesLots([idLot]),
     sql<Row[]>`
@@ -1039,13 +1070,15 @@ export async function lotPartenaire(idSousTraitant: number, idLot: number): Prom
       LEFT JOIN ligne_commande_sous_traitant l ON l.idligne_commande_sous_traitant = s.idligne_commande_sous_traitant
       LEFT JOIN ref_fini r ON r.idref_fini = CASE WHEN COALESCE(s.idref_fini, 0) > 0 THEN s.idref_fini ELSE l.idreference END
       WHERE s.idsuivilot = ${idLot}`,
-    // The lot's rolls: number, length and weight — no note, no client.
-    sql<{ numero: string | null; lot: string | null; metrage: number; poids: number }[]>`
-      SELECT trim(numero::text) AS numero, lot::text AS lot, COALESCE(metrage, 0)::float8 AS metrage, COALESCE(poids, 0)::float8 AS poids
+    // The lot's rolls: number, length, weight and the dyer's own remark from its BL — no note of ours, no client.
+    sql<{ numero: string | null; lot: string | null; metrage: number; poids: number; remarque: string | null }[]>`
+      SELECT trim(numero::text) AS numero, lot::text AS lot, COALESCE(metrage, 0)::float8 AS metrage, COALESCE(poids, 0)::float8 AS poids,
+             observation_sst::text AS remarque
       FROM stock_fini WHERE idref_commande_source = ${vu.idLigne}
       ORDER BY numero::text, idstock_fini`,
     reprisesDuLot(vu.idLigne, vu.fait.lot),
     actionsDuLot(idLot),
+    documentsDe(v),
   ])
   const base = lotsDe(v, noms, fini, controles).find((l) => l.idLot === idLot)
   if (!base || !r) return null
@@ -1069,6 +1102,7 @@ export async function lotPartenaire(idSousTraitant: number, idLot: number): Prom
     const rdt = rendementPiece(Number(p.metrage) || 0, Number(p.poids) || 0)
     return {
       numero: str(p.numero), metrageMl: round1(Number(p.metrage) || 0), poidsKg: round1(Number(p.poids) || 0),
+      defauts: defautsDuBl(p.remarque),
       rendement: rdt == null ? null : round3(rdt), conforme: rendementConforme(rdt, bande),
     }
   })
@@ -1086,7 +1120,13 @@ export async function lotPartenaire(idSousTraitant: number, idLot: number): Prom
     },
     reprises: reprises.map((x) => ({ rang: x.rang, nature: x.nature, motif: x.motif?.trim() || null, envoyeLe: x.envoye_le?.slice(0, 10) ?? null, retourLe: x.retour_le?.slice(0, 10) ?? null })),
     consignes: consignesDe(actions),
+    documents: documents.filter((d) => cleLot(d.lot) === cleLot(vu.fait.lot)),
   }
+}
+
+/** The partner's delivery papers on an order it can open. */
+function documentsDe(v: Vue): Promise<DocumentPartenaire[]> {
+  return documentsCommande(v.entete.id, v.lots.map((l) => l.fait.lot), v.lignes.map((l) => l.row.id))
 }
 
 /** One order of the partner, or null — also when it exists but is another sous-traitant's, was never sent, or is
@@ -1095,7 +1135,7 @@ export async function commandePartenaire(idSousTraitant: number, idCommande: num
   const { vues: vs, fini } = await vues(idSousTraitant, idCommande)
   const v = vs[0]
   if (!v) return null
-  const [noms, pdf, adresseLivraison, controles, pieces, journal] = await Promise.all([
+  const [noms, pdf, adresseLivraison, controles, pieces, journal, documents] = await Promise.all([
     libelles(v.lignes.map((l) => l.row)),
     // What the bon de commande prints of each reference: its designation, treatments and presentation.
     buildCommandePdfData(idCommande),
@@ -1103,6 +1143,7 @@ export async function commandePartenaire(idSousTraitant: number, idCommande: num
     controlesDesLots(v.lots.map((l) => l.fait.idsuivilot)),
     piecesEcrues(v.lignes.map((l) => l.row.id)),
     journalPartenaire(idCommande),
+    documentsDe(v),
   ])
   const imprime = new Map((pdf?.lignes ?? []).map((l) => [l.id ?? 0, l]))
   const enReprise = new Set(v.lots.filter((l) => l.etape === 'en_reprise').map((l) => `${l.idLigne}:${cleLot(l.fait.lot)}`))
@@ -1132,7 +1173,20 @@ export async function commandePartenaire(idSousTraitant: number, idCommande: num
   })
   const lots = lotsDe(v, noms, fini, controles)
   const { articles: _articles, ...r } = resume(v, noms)
-  return { ...r, adresseLivraison, lignes, lots, journal }
+  return { ...r, adresseLivraison, lignes, lots, journal, documents }
+}
+
+/** One of the partner's own delivery papers on one of its orders, or null — the order it cannot open, a document
+ *  of another order, or one that is not in the closed list (lib/espace-partenaire-documents.ts) are all « not
+ *  found ». */
+export async function documentPartenaire(idSousTraitant: number, idCommande: number, idDoc: number): Promise<{ nom: string; pdf: Buffer } | null> {
+  const { vues: vs } = await vues(idSousTraitant, idCommande)
+  const v = vs[0]
+  if (!v) return null
+  const doc = (await documentsDe(v)).find((d) => d.id === idDoc)
+  if (!doc) return null
+  const pdf = await fichierDocument(doc.id)
+  return pdf ? { nom: nomFichier(doc), pdf } : null
 }
 
 /** The bon de commande PDF — the document Malterre e-mails the partner (Sous-traitants › Ennoblissement « PDF ») —

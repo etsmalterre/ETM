@@ -29,9 +29,10 @@ import { enregistrerActivite, EspaceIndisponible, listeAcces } from '../lib/espa
 import { ficheClient } from '../lib/espace-fiche.js'
 import { commandeClient, confirmationCommandePdf, listeCommandesClient } from '../lib/espace-commandes.js'
 import { enregistrerActivitePartenaires, listeAccesPartenaires, partenairesVisibles } from '../lib/espace-partenaire-acces.js'
-import { bonDeCommandePartenaire, commandePartenaire, listeCommandesPartenaire, lotPartenaire, lotsPartenaire } from '../lib/espace-partenaire-commandes.js'
+import { bonDeCommandePartenaire, commandePartenaire, documentPartenaire, listeCommandesPartenaire, lotPartenaire, lotsPartenaire } from '../lib/espace-partenaire-commandes.js'
 import { donnerDelaiPartenaire, enregistrerMesuresPartenaire, RefusSaisie } from '../lib/espace-partenaire-saisies.js'
 import { qualiteServicePartenaire } from '../lib/espace-partenaire-indicateurs.js'
+import { etudesPartenaire } from '../lib/espace-partenaire-etudes.js'
 import { z } from 'zod'
 
 export const webserviceSiteRouter: RouterType = Router()
@@ -482,6 +483,21 @@ webserviceSiteRouter.get('/espace/partenaires/:id/commandes/:idCommande/bon-de-c
   res.send(doc.pdf)
 }))
 
+/** One of the partner's own delivery papers filed on the order (its BL, as it e-mailed it) — 404 when the order
+ *  isn't this partner's or the document is not one it may read (lib/espace-partenaire-documents.ts). No file
+ *  extension in the path, as above. */
+webserviceSiteRouter.get('/espace/partenaires/:id/commandes/:idCommande/documents/:idDoc', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  const idCommande = idParam(req.params.idCommande)
+  const idDoc = idParam(req.params.idDoc)
+  if (!id || !idCommande || !idDoc) { fault(res, 400, 'Identifiant invalide'); return }
+  const doc = await documentPartenaire(id, idCommande, idDoc)
+  if (!doc) { fault(res, 404, 'Document introuvable'); return }
+  res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Disposition', `inline; filename="${doc.nom}"`)
+  res.send(doc.pdf)
+}))
+
 // What the partner types itself (lib/espace-partenaire-saisies.ts, Vincent 2026-11-26). `par` is who typed, as the
 // portal names its signed-in contact. A refusal answers its status with the sentence the partner reads
 // (`faultstring`) and a code (`detail`).
@@ -545,6 +561,14 @@ webserviceSiteRouter.get('/espace/partenaires/:id/qualite-service', handle(async
   const id = idParam(req.params.id)
   if (!id) { fault(res, 400, 'Identifiant partenaire invalide'); return }
   res.json(await qualiteServicePartenaire(id))
+}))
+
+/** The études coloris the partner is the lab of: in progress, and accepted within twelve sliding months
+ *  (lib/espace-partenaire-etudes.ts — the one partner route that names Malterre's customer). */
+webserviceSiteRouter.get('/espace/partenaires/:id/etudes', handle(async (req, res) => {
+  const id = idParam(req.params.id)
+  if (!id) { fault(res, 400, 'Identifiant partenaire invalide'); return }
+  res.json({ etudes: await etudesPartenaire(id) })
 }))
 
 webserviceSiteRouter.get('/_etat', (_req, res) => {

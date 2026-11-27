@@ -3,9 +3,27 @@ import { SANS_SOUMISSION, type EtapeLot, type LotFait } from './cycle-ennoblisse
 import {
   article, debutDouzeMois, etapeCommandePartenaire, etapeLignePartenaire, etapeLotPartenaire, lotsVus, LOT_A_VOUS,
   deuxMoisAvant, fenetre, fenetreCommande, fenetreLot, LOT_MESURABLE, mesuresDuLot, mesuresMalterre, sansMouvementDepuis, tolerancesRef,
-  respectCommande, libelleDefaut, attenteReponseLot,
+  respectCommande, libelleDefaut, attenteReponseLot, defautsDuBl,
 } from './espace-partenaire-commandes.js'
 import { CONTROLES_PAR_DEFAUT, type ControlesRef } from './controles-lot.js'
+
+describe('the defects a dyer wrote against a roll on its BL', () => {
+  it('one per item, a comma inside a figure kept', () => {
+    expect(defautsDuBl('1 défaut, 2 taches')).toEqual(['1 défaut', '2 taches'])
+    expect(defautsDuBl('1 trou, 1aiguille/1,5m')).toEqual(['1 trou', '1aiguille/1,5m'])
+    expect(defautsDuBl(' 1 aiguille/tte la pièce à 25cm du bord, ')).toEqual(['1 aiguille/tte la pièce à 25cm du bord'])
+    expect(defautsDuBl('10 salissures / tâches - 1 fausse couture')).toEqual(['10 salissures / tâches - 1 fausse couture'])
+  })
+
+  it('« Tirelles » is not a defect', () => {
+    expect(defautsDuBl('Tirelles')).toEqual([])
+    expect(defautsDuBl('Tirelles, 1 TB')).toEqual(['1 TB'])
+    expect(defautsDuBl('1 tache, tirelles')).toEqual(['1 tache'])
+    expect(defautsDuBl('tirelle')).toEqual([])
+    expect(defautsDuBl('')).toEqual([])
+    expect(defautsDuBl(null)).toEqual([])
+  })
+})
 
 describe('the partner’s time at a step', () => {
   // Monday 2026-11-23 … Friday 2026-11-27, no public holiday that week.
