@@ -25,7 +25,7 @@
 
 import { rouleauxEstimesParLigne, type RouleauxEstimes } from '../lib/rouleaux-estimes.js'
 import { ecruATransferer, faitsLignesClient, filAttenduLe, statutLigneClient, type EtatLigneClient, type FaitsLigneClient } from '../lib/statut-ligne-client.js'
-import { attendEtude, dateEnEtude, etudesParId, etudeUrgence, enregistrerRelance, mailRelanceEtude, refusLienEtude, LIBELLE_COLORIS_EN_ETUDE, MENTION_DELAI_EN_ETUDE } from '../lib/etude-ligne-client.js'
+import { attendEtude, dateEnEtude, etudesParId, etudeUrgence, refusLienEtude, LIBELLE_COLORIS_EN_ETUDE, MENTION_DELAI_EN_ETUDE } from '../lib/etude-ligne-client.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { mpsPg } from '../lib/mps-pg.js'
 import { LIBELLE_ETAPE_COMMANDE, etatCommande, lireCommandesEnnoblissement } from '../lib/cycle-ennoblissement.js'
@@ -2888,70 +2888,6 @@ commandesClientRouter.get('/lignes/:lineId/reports', async (req: Request, res: R
   } catch (err) {
     console.error('Error fetching line reports:', err)
     res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-// The line's « Relancer »: a mail to whoever holds its étude coloris — the ennoblisseur or the client,
-// decided here from the étude, never by the screen (lib/etude-ligne-client.ts mailRelanceEtude).
-// GET …/email-defaults pre-fills the dialog; POST sends it and records the relance (etude_col_relance),
-// which restarts the relance clock. Chasing IS writing: there is no « relancé » without the mail.
-commandesClientRouter.get('/lignes/:lineId/relance-etude/email-defaults', async (req: Request, res: Response) => {
-  try {
-    const lineId = parseInt(req.params.lineId, 10)
-    if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const mail = await mailRelanceEtude(lineId)
-    if (!mail) { res.status(409).json({ error: 'rien_a_relancer', message: 'Cette ligne n’attend ni l’ennoblisseur ni le client.' }); return }
-    res.json(mail)
-  } catch (err) {
-    console.error('Error building étude relance mail:', err)
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-commandesClientRouter.post('/lignes/:lineId/relance-etude', async (req: Request, res: Response) => {
-  try {
-    if (!(await requireEditCommandes(req, res))) return
-    const lineId = parseInt(req.params.lineId, 10)
-    if (isNaN(lineId)) { res.status(400).json({ error: 'Invalid ID' }); return }
-    const parsed = emailBody.safeParse(req.body)
-    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
-    const rows = await query<{ IDetude_col: number }>(
-      `SELECT IDetude_col FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
-    )
-    const etudeId = Number(rows[0]?.IDetude_col) || 0
-    if (!(await mailRelanceEtude(lineId))) {
-      res.status(409).json({ error: 'rien_a_relancer', message: 'Cette ligne n’attend ni l’ennoblisseur ni le client.' })
-      return
-    }
-    const devSkip = parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND
-    let messageId = `dev-skip-${Date.now()}`
-    if (devSkip) {
-      console.log(`[dev-skip-send] relance étude #${etudeId} (ligne ${lineId}) — fake send to ${parsed.data.to.join(', ')}`)
-    } else {
-      const senderEmail = await getUserEmail(req.userId!)
-      if (!senderEmail) {
-        res.status(400).json({
-          error: 'no_sender_email',
-          message: "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs.",
-        })
-        return
-      }
-      const nom = await nomUtilisateur(req.userId!)
-      messageId = await sendMail({
-        from: senderEmail, fromName: nom ? `${nom} - ETS Malterre` : 'ETS Malterre',
-        to: parsed.data.to, cc: parsed.data.cc, bcc: parsed.data.bcc,
-        subject: parsed.data.subject, body: parsed.data.body,
-        attachments: (parsed.data.extra_attachments ?? []).map((a) => ({
-          filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type,
-        })),
-      })
-    }
-    const cible = await enregistrerRelance(etudeId, { id: req.userId ?? 0, nom: req.userId ? await nomUtilisateur(req.userId) : '' }, lineId)
-    res.json({ ok: true, messageId, cible })
-  } catch (err) {
-    console.error('Error sending étude relance:', err)
-    const message = err instanceof Error ? err.message : 'Internal server error'
-    res.status(500).json({ error: 'send_failed', message })
   }
 })
 

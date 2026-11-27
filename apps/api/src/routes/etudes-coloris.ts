@@ -995,11 +995,11 @@ etudesColorisRouter.post('/:id/email', async (req: Request, res: Response) => {
 
 // ── Relance (the lab or the client) ──────────────────────
 //
-// « Relancer l'ennoblisseur » / « Relancer le client » from the étude's own « @ » button (Vincent 2026-11-27).
-// The same mail and the same fact as the client line's « Relancer » (routes/commandes-client.ts
-// …/lignes/:id/relance-etude): who is chased is decided from the étude (lib/etude-ligne-client.ts), sending
-// IS the relance (etude_col_relance) and restarts the holder's clock — on this screen, on the line waiting
-// for the étude and in the espace partenaire alike.
+// « Relancer l'ennoblisseur » / « Relancer le client » from the étude's own « @ » button (Vincent 2026-11-27)
+// — the ONE place an étude is chased from: the client line waiting for it had its own « Relancer » until that
+// day, it now links here. Who is chased is decided from the étude (lib/etude-ligne-client.ts), sending IS the
+// relance (etude_col_relance) and restarts the holder's clock — on this screen, on the line waiting for the
+// étude and in the espace partenaire alike.
 
 const relanceBodySchema = emailBodySchema.extend({ dev_skip_send: z.boolean().optional() })
 const ALLOW_DEV_SKIP_SEND = process.env.NODE_ENV !== 'production'

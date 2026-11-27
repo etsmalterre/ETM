@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef, type ReactNode, type ComponentType } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueries, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
@@ -2612,7 +2612,7 @@ function LineCard({
           )
         })()}
       </div>
-      {enEtude && <EtudeLigneBandeau line={line} canRelancer={!isEditing} />}
+      {enEtude && <EtudeLigneBandeau line={line} />}
       {/* An urgency asked of the partner this line waits for (API lib/urgence-sst.ts): asked and chased
           on the partner's order. While its answer is awaited the card says nothing (Vincent 2026-11-24:
           the date's hover carries it, the step ends on the date wished); overdue, the line is red and
@@ -2660,14 +2660,11 @@ function LineCard({
   )
 }
 
-/** A fini line waiting for its étude coloris: who holds the étude and when we chase. « Relancer »
- *  opens the mail to whoever holds it (the ennoblisseur or the client, chosen by the API); sending it
- *  records the relance and restarts the clock (API …/lignes/:id/relance-etude). Red only when the
- *  relance is due or the étude no longer leads to a coloris: then it is ours to act (mps_designer §41). */
-function EtudeLigneBandeau({ line, canRelancer }: { line: LigneCommande; canRelancer: boolean }) {
-  const queryClient = useQueryClient()
-  const canEdit = useHasPermission('edit_commandes_client')
-  const [mailOpen, setMailOpen] = useState(false)
+/** A fini line waiting for its étude coloris: who holds the étude and when we chase. The relance is the
+ *  ÉTUDE's gesture, never the line's (Vincent 2026-11-27): it leaves from the « @ » button of Finis ›
+ *  Études coloris, so the banner names it and leads there. Red only when the relance is due or the étude
+ *  no longer leads to a coloris: then it is ours to act (mps_designer §41). */
+function EtudeLigneBandeau({ line }: { line: LigneCommande }) {
   const e = line.etude
   const attente = e?.attente ?? 'annulee'
   const due = attente === 'annulee' || attente === 'acceptee' || line.urgence === 'rouge'
@@ -2677,42 +2674,23 @@ function EtudeLigneBandeau({ line, canRelancer }: { line: LigneCommande; canRela
     : attente === 'acceptee'
       ? 'Coloris accepté : à choisir sur la ligne'
       : `Attend ${qui}${e?.depuis ? ` depuis le ${formatHfsqlDate(e.depuis)}` : ''}`
-        + (e?.relance_le ? (due ? ` · à relancer depuis le ${formatHfsqlDate(e.relance_le)}` : ` · relance le ${formatHfsqlDate(e.relance_le)}`) : '')
-  const url = `/commandes-client/lignes/${line.IDligne_commande_client}/relance-etude`
+        + (e?.relance_le ? (due ? ` · à relancer sur l’étude depuis le ${formatHfsqlDate(e.relance_le)}` : ` · relance le ${formatHfsqlDate(e.relance_le)}`) : '')
   return (
-    // The dialog sits inside this wrapper so its clicks never reach the line card (which opens the drawer).
+    // Clicks here never reach the line card (which opens the drawer).
     <div className="flex items-center gap-1.5 mt-2 text-[11px]" onClick={(ev) => ev.stopPropagation()}>
       <FlaskConical className={cn('h-3 w-3 flex-shrink-0', due ? 'text-red-600' : 'text-muted-foreground/60')} />
       <span className={cn('truncate', due ? 'text-red-600 font-medium' : 'text-muted-foreground')}>{texte}</span>
       {e?.derniere_relance && (
         <span className="text-muted-foreground/70 flex-shrink-0">· relancé le {formatHfsqlDate(e.derniere_relance)}</span>
       )}
-      {canRelancer && canEdit && (attente === 'labo' || attente === 'client') && (
-        <Button
-          variant={due ? 'destructive' : 'outline'}
-          size="sm"
-          className="ml-auto h-6 px-2 text-[11px] flex-shrink-0"
-          title={`${attente === 'labo' ? 'Écrire à l’ennoblisseur' : 'Écrire au client'} : l’envoi compte comme relance`}
-          onClick={() => setMailOpen(true)}
+      {!!e?.id && (
+        <Link
+          to={`/finis/etudes-coloris?etude=${e.id}&statut=${attente === 'labo' || attente === 'client' ? 'en_cours' : 'terminees'}`}
+          title="Ouvrir l’étude dans Finis › Études coloris"
+          className="ml-auto flex-shrink-0 text-accent-blue hover:underline"
         >
-          <Mail className="h-3 w-3 mr-1" />
-          Relancer
-        </Button>
-      )}
-      {mailOpen && (
-        <SendEmailDialog
-          open={mailOpen}
-          onClose={() => setMailOpen(false)}
-          title={attente === 'labo' ? 'Relancer l’ennoblisseur' : 'Relancer le client'}
-          contextLabel={e?.libelle}
-          queryKey={['relance-etude-email', line.IDligne_commande_client, e?.derniere_relance ?? '']}
-          loadDefaults={() => apiFetch(`${url}/email-defaults`)}
-          onSend={async (p) => {
-            await postEmail(`${API_URL}${url}`, p)
-            queryClient.invalidateQueries({ queryKey: ['commandes-client'] })
-            queryClient.invalidateQueries({ queryKey: ['commande-client', line.IDcommande_client] })
-          }}
-        />
+          Ouvrir l’étude
+        </Link>
       )}
     </div>
   )

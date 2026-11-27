@@ -227,9 +227,11 @@ export async function refusLienEtude(
 
 // ── The relance mail ────────────────────────────────────────
 //
-// Chasing IS writing (Vincent, 2026-10-22): the line's « Relancer » opens the mail dialog addressed to
-// whoever holds the étude — the étude's ennoblisseur (its contacts ticked « soumission ») or the client
-// (its contacts ticked « soumission », else « commande ») — and sending it records the relance.
+// Chasing IS writing (Vincent, 2026-10-22): the relance is a mail addressed to whoever holds the étude —
+// the étude's ennoblisseur (its contacts ticked « soumission ») or the client (its contacts ticked
+// « soumission », else « commande ») — and sending it records the relance. It leaves from the ÉTUDE
+// (Finis › Études coloris, the « @ » button), never from the client line waiting for it (2026-11-27:
+// the line's own « Relancer » button and its routes are gone, the line links to its étude).
 
 export interface DestinataireRelance { email: string; name?: string; source: 'contact'; contactId: number }
 
@@ -267,19 +269,9 @@ function trierContacts(
 /** The client order an étude is studied for, as the relance mail names it. */
 interface CommandeEtude { numero: string; refClient: string }
 
-/** The relance mail of a line waiting for its étude; null when nobody is to be chased. */
-export async function mailRelanceEtude(lineId: number): Promise<RelanceEtudeMail | null> {
-  const lignes = await query<{ IDetude_col: number; IDcolori: number; IDcommande_client: number }>(
-    `SELECT IDetude_col, IDcolori, IDcommande_client FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`)
-  const l = lignes[0]
-  const etudeId = Number(l?.IDetude_col) || 0
-  if (!l || !(etudeId > 0) || (Number(l.IDcolori) || 0) > 0) return null
-  return mailRelance(etudeId, await commandeDe(Number(l.IDcommande_client)))
-}
-
-/** The same mail from the étude's own screen (Finis › Études coloris, 2026-11-27): the order it names is the
- *  one of the line waiting for the étude, else the N° typed on the étude, else none. `idLigne` = that line (0
- *  without one), kept on the relance. Null when nobody is to be chased. */
+/** The relance mail of an étude (Finis › Études coloris, 2026-11-27): the order it names is the one of the
+ *  line waiting for the étude, else the N° typed on the étude, else none. `idLigne` = that line (0 without
+ *  one), kept on the relance. Null when nobody is to be chased. */
 export async function mailRelanceEtudeParId(etudeId: number): Promise<(RelanceEtudeMail & { idLigne: number }) | null> {
   if (!(etudeId > 0)) return null
   const [lignes, etudes] = await Promise.all([

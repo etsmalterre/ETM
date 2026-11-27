@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { invalidateCommandeClientCaches } from '@/lib/cache-sync'
 import { createPortal } from 'react-dom'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
@@ -237,9 +238,33 @@ export function EtudesColoris() {
   // Reading stays open for everyone, INCLUDING the two PDFs: a read-only user
   // must still be able to print and download.
   const canEdit = useHasPermission('edit_etudes_coloris')
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  // Deep link ?etude=<IDetude_col>[&statut=en_cours|terminees] (the client line waiting for the étude sends
+  // here to chase): the link names the list holding the étude, or the first row would steal the selection.
+  // Without `statut`: « Toutes », the one list sure to hold it.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const linkedEtudeId = (() => {
+    const raw = parseInt(searchParams.get('etude') ?? '', 10)
+    return isNaN(raw) || raw <= 0 ? null : raw
+  })()
+  const linkedStatut = searchParams.get('statut')
+  const [selectedId, setSelectedId] = useState<number | null>(linkedEtudeId)
   const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<StatutFilter>('en_cours')
+  const [statusFilter, setStatusFilter] = useState<StatutFilter>(
+    linkedEtudeId === null ? 'en_cours'
+      : linkedStatut === 'en_cours' || linkedStatut === 'terminees' ? linkedStatut
+      : 'all',
+  )
+  // The linked étude's card, brought into view once its list has arrived.
+  const deepLinkRef = useRef<number | null>(linkedEtudeId)
+  useEffect(() => {
+    if (searchParams.has('etude') || searchParams.has('statut')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('etude')
+      next.delete('statut')
+      setSearchParams(next, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   // Counter-pill toggle (mps_designer §41) and the search-bar statut tag (one at a time).
   const [urgenceOn, setUrgenceOn] = useState(false)
   const [activeTags, setActiveTags] = useState<string[]>([])
@@ -303,6 +328,13 @@ export function EtudesColoris() {
     queryFn: () => apiFetch(`/etudes-coloris/${selectedId}`),
     enabled: selectedId !== null,
   })
+
+  useEffect(() => {
+    const id = deepLinkRef.current
+    if (id === null || !etudes) return
+    deepLinkRef.current = null
+    requestAnimationFrame(() => document.querySelector(`[data-etude-col="${id}"]`)?.scrollIntoView({ block: 'center' }))
+  }, [etudes])
 
   // Auto-select effect lives after `filteredEtudes` is defined (below) so it
   // can keep the selection valid against the search-narrowed list.
@@ -553,7 +585,8 @@ export function EtudesColoris() {
     selectedId,
     getId: (e) => e.IDetude_col,
     select: setSelectedId,
-    suspended: isEditing,
+    // isLoading: the list is [] until it arrives — a linked étude must survive it.
+    suspended: isEditing || isLoading,
   })
 
   // ── Render ──────────────────────────────────────────────
@@ -957,6 +990,7 @@ function EtudeListCard({
   const rouge = !!etude.urgence
   return (
     <div
+      data-etude-col={etude.IDetude_col}
       onClick={onClick}
       className={cn(
         'p-3 border rounded-lg cursor-pointer transition-all bg-white',

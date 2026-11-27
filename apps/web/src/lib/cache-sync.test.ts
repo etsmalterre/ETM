@@ -145,7 +145,7 @@ describe('invalidateSstCommandeCaches', () => {
 
 describe('invalidateCommandeClientCaches', () => {
   // 2026-10-22: accepting a soumission on Finis › Études coloris writes the coloris on the order line
-  // waiting for the étude, but Clients › Commandes kept its « Relancer » banner until a reload.
+  // waiting for the étude, but Clients › Commandes kept its « en étude » banner until a reload.
   it('invalidates the client-order list and detail, once each', () => {
     const calls: unknown[][] = []
     const qc = { invalidateQueries: ({ queryKey }: { queryKey: unknown[] }) => calls.push(queryKey) }
