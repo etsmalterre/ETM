@@ -126,6 +126,9 @@ export interface LigneUrgence {
   urgenceReponseLe?: string | null
   /** …and whose step it is: the reason names who to chase. Absent = the knitter. */
   urgenceChez?: 'tricotage' | 'ennoblissement' | null
+  /** divers line only: the stock on hand does not cover what is left to ship (lib/stock-divers-dispo.ts).
+   *  Nothing leaves without stock, so what there is to do is enter it, not ship. */
+  stockManquant?: boolean
 }
 
 /** client.relance_sur_appel → the delay the rule uses: 0, empty or invalid = the default. */
@@ -144,7 +147,7 @@ export function commandeIncomplete(lignes: readonly Pick<LigneUrgence, 'etat' | 
   return lignes.some(enProduction)
 }
 
-type Action = 'intenable' | 'relancer_urgence' | 'relancer_urgence_enno' | 'planif_tardive' | 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
+type Action = 'intenable' | 'relancer_urgence' | 'relancer_urgence_enno' | 'planif_tardive' | 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'entrer_stock' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
   | 'relancer_fournisseur' | 'fil_sans_date'
   | 'etude_labo' | 'etude_client' | 'etude_acceptee' | 'etude_annulee'
 
@@ -211,14 +214,17 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     if (mode === 'sur_appel') {
       return j < -relanceAppelDe(l.relanceAppel) ? { niveau: 'rouge', action: 'relancer', jours: j, date } : null
     }
+    // A divers line whose stock does not cover what is left cannot ship (Vincent 2026-11-27): same
+    // days, but the card names what there is to do, « stock à entrer ».
+    const expedier: Action = l.typeKind === 3 && l.stockManquant ? 'entrer_stock' : 'expedier'
     if (mode === 'date_exacte') {
       // Leaves ON D: nothing to do before (shipping early is not what the client asked), « Expédier »
       // on the day; never amber.
       if (j < -S.soldeApres) return { niveau: 'rouge', action: 'solder', jours: j, date }
-      return j <= 0 ? { niveau: 'rouge', action: 'expedier', jours: j, date } : null
+      return j <= 0 ? { niveau: 'rouge', action: expedier, jours: j, date } : null
     }
     if (j < -S.soldeApres) return { niveau: 'rouge', action: 'solder', jours: j, date }
-    return palier('expedier', S.expedierRouge, S.expedierAmbre)
+    return palier(expedier, S.expedierRouge, S.expedierAmbre)
   }
   if (l.etat === 'attente_fil') {
     const due = ymd(l.filAttenduLe)
@@ -276,6 +282,7 @@ const LIBELLE: Record<Action, [string, string]> = {
   tricoter: ['ligne à tricoter', 'lignes à tricoter'],
   ennoblir: ['ligne à ennoblir', 'lignes à ennoblir'],
   expedier: ['ligne à expédier', 'lignes à expédier'],
+  entrer_stock: ['ligne : stock à entrer', 'lignes : stock à entrer'],
   solder: ['ligne à expédier ou solder', 'lignes à expédier ou solder'],
   relancer: ['ligne sur appel : relancer le client', 'lignes sur appel : relancer le client'],
   tricotage: ['ligne en tricotage en retard', 'lignes en tricotage en retard'],

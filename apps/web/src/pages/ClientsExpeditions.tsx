@@ -1848,7 +1848,8 @@ function DiversItemDialog({
         : apiFetch(`/expeditions/divers/items/${item!.IDref_divers_expedie}`, { method: 'PUT', body })
     },
     onSuccess,
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : 'Erreur'),
+    // The server's sentence: nothing leaves without stock (409 `stock_insuffisant`, « Stock insuffisant pour … »).
+    onError: (e: unknown) => setError((e as { body?: { message?: string } })?.body?.message ?? (e instanceof Error ? e.message : 'Erreur')),
   })
 
   const inputClass = 'w-full h-9 px-2.5 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring'
@@ -2383,7 +2384,7 @@ function CreateExpeditionDialog({
             <p className="text-[11px] text-muted-foreground">
               {kind === 'formelle'
                 ? "Liée à une commande client — les rouleaux reçus sont rattachés à l'expédition."
-                : 'Envoi divers (échantillons, retours…) — lignes libres, sans lien stock.'}
+                : 'Envoi divers (échantillons, retours…) — articles pris sur le stock divers.'}
             </p>
           </div>
 

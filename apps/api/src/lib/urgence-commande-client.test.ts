@@ -24,6 +24,16 @@ describe('urgenceLigne', () => {
     expect(niveau(l('a_lancer', 5, 3))).toBe('ambre')
     expect(niveau(l('a_lancer', 30, 3))).toBe(null)
   })
+  it('a divers line without the stock to ship: same days, but the action is to enter the stock', () => {
+    const sansStock = (j: number): LigneUrgence => ({ ...l('a_lancer', j, 3), stockManquant: true })
+    expect(urgenceLigne(sansStock(3), today)).toMatchObject({ niveau: 'rouge', action: 'entrer_stock' })
+    expect(urgenceLigne(sansStock(8), today)).toMatchObject({ niveau: 'ambre', action: 'entrer_stock' })
+    expect(niveau(sansStock(30))).toBe(null)
+    expect(urgenceLigne(l('a_lancer', 3, 3), today)?.action).toBe('expedier')
+    // never on a roll line, whatever the flag says
+    expect(urgenceLigne({ ...l('pae', 3), stockManquant: true }, today)?.action).toBe('expedier')
+    expect(urgenceCommande([sansStock(2), sansStock(1)], today)).toEqual({ niveau: 'rouge', raison: '2 lignes : stock à entrer' })
+  })
   it('a ready line 60+ days past its délai asks to ship or close', () => {
     expect(urgenceLigne(l('pae', -61), today)?.action).toBe('solder')
     expect(urgenceLigne(l('pae', -60), today)?.action).toBe('expedier')

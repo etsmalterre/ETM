@@ -76,6 +76,7 @@ import { computeDateEcheance, loadEcheanceRule } from './factures.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
 import { fetchDefectsByEcru, defautSummary, type DefautQualite } from './stock-ecru.js'
 import { adjustDiversStock, loadDiversItems, type DiversItem } from './expeditions.js'
+import { refusStockDivers, stockDiversManquant } from '../lib/stock-divers-dispo.js'
 import { consumedEcruIds, finiIdsByComponentEcru, mergedComponentEcruIds } from '../lib/fini-sources.js'
 import { kgATricoterParLigne } from '../lib/tricotage-restant.js'
 import { reserverPiecesTricotees } from '../lib/repartition-tricotage.js'
@@ -282,7 +283,11 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
   const out = new Map<number, EtatCommande>()
   if (lignes.length === 0) return out
   const diversCmds = lignes.filter((l) => Number(l.type_kind) === 3).map((l) => Number(l.IDcommande_client))
-  const diversShipped = await diversShippedByCommandes(diversCmds)
+  const [diversShipped, diversStock] = await Promise.all([
+    diversShippedByCommandes(diversCmds),
+    // Nothing leaves without stock: a divers line short of it reads « stock à entrer », not « à expédier ».
+    diversStockByArticle(lignes.filter((l) => Number(l.type_kind) === 3).map((l) => Number(l.IDreference) || 0)),
+  ])
   const faits = await faitsLignesClient(lignes.map((l) => {
     const typeKind = Number(l.type_kind) || 0
     return {
@@ -360,6 +365,10 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
       preteAuPlusTot: auPlusTot.get(Number(l.IDligne_commande_client))?.date ?? null,
       urgenceReponseLe: urgenceEtapeDe(auPlusTot.get(Number(l.IDligne_commande_client)))?.reponseAttendue ?? null,
       urgenceChez: urgenceChezDe(auPlusTot.get(Number(l.IDligne_commande_client))),
+      stockManquant: Number(l.type_kind) === 3 && stockDiversManquant(
+        diversStock.get(diversKey(Number(l.IDreference) || 0, Number(l.IDVariation1) || 0, Number(l.IDVariation2) || 0)),
+        f.quantite - f.expedie,
+      ),
     })
     parCommande.set(cid, arr)
   }
@@ -1828,9 +1837,10 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
     // Divers lines carry no rolls — their variation labels and shipped totals
     // come from the ref_divers_variation catalog and the expedition_divers ledger.
     const diversLines = lignesFixed.filter((l) => Number(l.type_kind) === 3)
-    const [variationLabels, diversShipped] = await Promise.all([
+    const [variationLabels, diversShipped, diversStock] = await Promise.all([
       resolveDiversVariations(diversLines.flatMap((l) => [Number(l.IDVariation1) || 0, Number(l.IDVariation2) || 0])),
       diversLines.length > 0 ? diversShippedByArticle(id) : Promise.resolve(new Map<string, number>()),
+      diversStockByArticle(diversLines.map((l) => Number(l.IDreference) || 0)),
     ])
 
     // Computed status per line (lib/statut-ligne-client.ts): shown next to the free commentaire, never written to it.
@@ -2030,6 +2040,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
             preteAuPlusTot: auPlusTotLigne?.date ?? null,
             urgenceReponseLe: urgenceEtapeDe(auPlusTotLigne)?.reponseAttendue ?? null,
             urgenceChez: urgenceChezDe(auPlusTotLigne),
+            stockManquant: typeKind === 3 && !!f && stockDiversManquant(diversStock.get(diversKey(refId, v1, v2)), f.quantite - f.expedie),
           }, new Date())?.niveau ?? null
           : null,
       }
@@ -6924,6 +6935,10 @@ commandesClientRouter.post('/:id/lignes/:ligneId/expedier-divers', async (req: R
     if (refuseIfSoldee(res, await loadCommandeSoldee(commandeId))) return
     const qty = round2c(parsed.data.quantite)
     if (!(qty > 0)) { res.status(400).json({ error: 'Quantité invalide' }); return }
+    // Nothing leaves without stock (lib/stock-divers-dispo.ts) — asked before the avis and its carton
+    // are created, so a refusal leaves no empty shipment behind.
+    const refusStock = await refusStockDivers([{ ref: ctx.refId, v1: ctx.v1, v2: ctx.v2, quantite: qty }])
+    if (refusStock) { res.status(409).json(refusStock); return }
 
     // Target carton: explicit, else the last carton of the order's open
     // shipment, else a fresh shipment + CARTON 1.

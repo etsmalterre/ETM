@@ -88,7 +88,7 @@ import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
 import { FilEnStockZone, FilLigneTab, filLigneQueryKey, tricoteursPrets, useFilLigne, type FilPayload } from '@/components/fils/FilLigneTab'
 import { AffecteGauge, CartePoids, type PartPoids } from '@/components/commandes/ReservationParts'
 import { EcruLigneZone, PieceEcruLigne, PiecesEcruCarte, lieuxAEnnoblir, matiereEcruQueryKey, useMatiereEcru, type LieuEnnoblisseur } from '@/components/commandes/EcruLigneZone'
-import { BoutonsCommande, ZoneLigne } from '@/components/commandes/ZonesLigne'
+import { BoutonsCommande, ZoneLigne, zoneActionClass } from '@/components/commandes/ZonesLigne'
 import { GESTES_TROP_TARD, LancementLabel, PlanifierBouton, UrgencePrevueBouton, UrgencePrevueLabel, type EtapeLancement, type UrgenceApresTricotage, type UrgencePrevue } from '@/components/commandes/LancementLigne'
 import { LotsFilPicker, LotsFilLecture, couvertureFils, avecLignesJointes, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
 import { RappelButton } from '@/components/rappels/RappelButton'
@@ -3841,7 +3841,7 @@ interface DiversLinePayload {
   prix: number
   quantite_commandee: number
   quantite_expediee: number
-  /** stock_divers on-hand for this exact article; null = no ledger row. */
+  /** stock_divers on-hand for this exact article; null = no ledger row (= nothing on hand). */
   stock_disponible: number | null
   expeditions: DiversShipExpedition[]
 }
@@ -3878,21 +3878,28 @@ function DiversLineDrawer({
   const [confirmShip, setConfirmShip] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [emailExpId, setEmailExpId] = useState<number | null>(null)
+  const [entreeStock, setEntreeStock] = useState(false)
+  const canCreerStock = useHasPermission('create_stock_divers')
+  const canModifierStock = useHasPermission('edit_stock_divers')
 
   const uniteLabel = data?.unite_label ?? ligne.unite_label
   const commandee = data?.quantite_commandee ?? (Number(ligne.quantite) || 0)
   const expediee = data?.quantite_expediee ?? (Number(ligne.expedie) || 0)
   const reste = Math.max(0, Math.round((commandee - expediee) * 100) / 100)
-  const stock = data?.stock_disponible ?? null
+  // Nothing leaves without stock (Vincent 2026-11-27, API lib/stock-divers-dispo.ts): an article without
+  // a stock row has nothing on hand, like a row at 0. The stock is entered first — the block below.
+  const stock = data?.stock_disponible ?? 0
+  const enMain = Math.max(0, stock)
+  // The API's rule for « Entrée en stock »: adding to stock already there changes a figure, else it creates it.
+  const peutEntrer = !soldee && (stock !== 0 ? canModifierStock : canCreerStock)
 
-  // Prefill with what's left to ship, capped by what's actually on hand —
-  // the legacy "Quelle quantité voulez-vous expédier" default. Stops
+  // Prefill with what can leave now: what's left to ship, capped by what is on hand. Stops
   // prefilling once the user types, so a refetch can't clobber their input.
   useEffect(() => {
     if (!data || qtyTouched) return
-    const suggested = stock != null && stock > 0 ? Math.min(reste, stock) : reste
+    const suggested = Math.min(reste, enMain)
     setQty(suggested > 0 ? String(suggested) : '')
-  }, [data, qtyTouched, reste, stock])
+  }, [data, qtyTouched, reste, enMain])
 
   const shipMut = useMutation({
     mutationFn: (quantite: number) =>
@@ -3906,16 +3913,30 @@ function DiversLineDrawer({
       setError(null)
       queryClient.invalidateQueries({ queryKey })
       queryClient.invalidateQueries({ queryKey: ['commande-client-divers-expeditions', commandeId] })
+      invalidateStockCaches(queryClient)
       onSuccess()
     },
     onError: (e: unknown) => {
       setConfirmShip(false)
-      setError(e instanceof Error ? e.message : 'Erreur')
+      setError((e as { body?: { message?: string } })?.body?.message ?? 'L’expédition a échoué.')
+      // A refusal on stock means the figure on screen was stale (someone else shipped it).
+      queryClient.invalidateQueries({ queryKey })
     },
   })
 
   const qtyNum = Number(qty.replace(',', '.'))
-  const canShip = !soldee && Number.isFinite(qtyNum) && qtyNum > 0
+  const depasse = Number.isFinite(qtyNum) && qtyNum > enMain + 0.00005
+  const canShip = !soldee && Number.isFinite(qtyNum) && qtyNum > 0 && !depasse
+  const stockInsuffisant = !soldee && (depasse || (reste > 0.005 && enMain <= 0))
+
+  // One row per carton; the expedition's own cells (N°, date, état, documents) sit on its first carton.
+  const cartons = useMemo(() => (data?.expeditions ?? []).flatMap((exp) => exp.cartons.map((c, i) => ({
+    id: c.IDligne_expedition_divers,
+    exp,
+    premier: i === 0,
+    detail: c.detail_ligne,
+    quantite: c.items.reduce((s, it) => s + it.quantite, 0),
+  }))), [data])
 
   return (
     <>
@@ -3950,127 +3971,128 @@ function DiversLineDrawer({
             </div>
           )}
 
+          {/* The line card above already says what the article is, how much was ordered and shipped and at
+              what price (Vincent 2026-11-27: the « Article » card repeated it all). The drawer keeps what
+              the card does not carry, in the two zones of the other line tabs (ZonesLigne.tsx): what is
+              on hand against what is left to ship, then where the line already went — with the zone's
+              action, « Expédier », in its header. The stock block is the way to enter stock (one
+              clickable block, as the matter block of the other tabs): nothing leaves without it. */}
           {data && (
-            <section>
-              <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">
-                Article
-              </h3>
-              <div className="rounded-lg border border-border/60 bg-card p-3 shadow-sm space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <div className="h-7 w-7 rounded-md flex items-center justify-center flex-shrink-0 bg-stone-400/10">
-                    <Box className="h-3.5 w-3.5 text-stone-600" />
-                  </div>
-                  <p className="text-sm font-medium truncate">{data.ref_designation || '—'}</p>
+            <ZoneLigne kind="matiere" titre="Stock">
+              <div
+                role={peutEntrer ? 'button' : undefined}
+                tabIndex={peutEntrer ? 0 : undefined}
+                title={peutEntrer ? 'Cliquer pour entrer du stock' : undefined}
+                onClick={peutEntrer ? () => setEntreeStock(true) : undefined}
+                onKeyDown={peutEntrer ? (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); setEntreeStock(true) } } : undefined}
+                className={cn(
+                  'group relative flex rounded-lg border border-border/60 bg-card shadow-sm transition-colors',
+                  peutEntrer && 'cursor-pointer hover:border-accent/60 hover:bg-accent/[0.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                )}
+              >
+                {/* A plus, not the pencil of the other tabs' matter blocks (Vincent 2026-11-27): the click
+                    ADDS stock, it does not edit a reservation. */}
+                {peutEntrer && (
+                  <Plus className="absolute -top-2 -right-2 h-5 w-5 p-1 rounded-full bg-accent text-accent-foreground shadow-sm opacity-0 group-hover:opacity-100 transition-opacity" />
+                )}
+                <div className="min-w-0 flex-1 flex items-center gap-2 px-2.5 py-2 text-xs">
+                  <Box className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
+                  {reste > 0.005 ? (
+                    <>
+                      <span className="font-medium">Reste à expédier</span>
+                      <span className="ml-auto flex-shrink-0 tabular-nums font-medium">{fmtNum(reste, 1)} {uniteLabel}</span>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">Rien à expédier : la ligne est expédiée</span>
+                  )}
                 </div>
-                <div className="ml-9 space-y-1">
-                  {!!data.variation1_label && <KV label="Variation 1" value={data.variation1_label} />}
-                  {!!data.variation2_label && <KV label="Variation 2" value={data.variation2_label} />}
-                  <KV label="Commandé" value={`${fmtNum(commandee, 1)} ${uniteLabel}`} />
-                  <KV
-                    label="Expédié"
-                    value={
-                      <span className={cn('tabular-nums', commandee > 0 && expediee >= commandee - 0.001 && 'text-green-600 font-semibold')}>
-                        {fmtNum(expediee, 1)} {uniteLabel}
-                      </span>
-                    }
-                  />
-                  <KV label="Reste à expédier" value={`${fmtNum(reste, 1)} ${uniteLabel}`} />
-                  <KV
-                    label="Stock disponible"
-                    value={
-                      stock == null
-                        ? <span className="text-muted-foreground italic">non suivi</span>
-                        : (
-                          <span className={cn('tabular-nums font-semibold', stock <= 0 ? 'text-destructive' : stock < reste ? 'text-amber-600' : 'text-green-600')}>
-                            {fmtNum(stock, 1)} {uniteLabel}
-                          </span>
-                        )
-                    }
-                  />
-                  {data.prix > 0 && <KV label="Prix unitaire" value={`${fmtNum(data.prix, 2)} €`} />}
+                <div className="flex-shrink-0 flex flex-col items-end justify-center border-l border-border/40 px-3.5 py-2">
+                  <span className={cn('text-base font-bold tabular-nums leading-tight', reste > 0.005 && stock >= reste - 0.005 && 'text-green-700')}>
+                    {fmtNum(stock, 1)} {uniteLabel}
+                  </span>
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">en stock</span>
                 </div>
               </div>
-            </section>
+            </ZoneLigne>
           )}
 
           {data && (
-            <section>
-              <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">
-                Expéditions de la ligne
-              </h3>
-              {data.expeditions.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-                  <Truck className="h-8 w-8 mb-2 opacity-50" />
-                  <p className="text-sm font-medium">Aucune expédition pour cette ligne</p>
-                </div>
-              ) : (
-                <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
-                  <table className="w-full text-xs">
-                    <thead className="bg-zinc-200/60 border-b border-border/60">
-                      <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        <th className="px-2.5 py-2 font-semibold text-left">N°</th>
-                        <th className="px-2.5 py-2 font-semibold text-left">Date</th>
-                        <th className="px-2.5 py-2 font-semibold text-left w-full">Conteneur</th>
-                        <th className="px-2.5 py-2 font-semibold text-right">Quantité</th>
-                        <th className="px-2.5 py-2 font-semibold text-left">État</th>
-                        <th className="px-2.5 py-2 font-semibold text-right"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.expeditions.flatMap((e) =>
-                        e.cartons.map((c, ci) => {
-                          const cartonQty = c.items.reduce((s, i) => s + i.quantite, 0)
-                          return (
-                            <tr key={c.IDligne_expedition_divers} className="border-b border-border/40 last:border-0 hover:bg-accent/5">
-                              <td className="px-2.5 py-1.5 whitespace-nowrap tabular-nums font-medium">
-                                {ci === 0 ? e.IDexpedition_divers : ''}
-                              </td>
-                              <td className="px-2.5 py-1.5 whitespace-nowrap">{ci === 0 ? fmtSupplyDate(e.date) : ''}</td>
-                              <td className="px-2.5 py-1.5 truncate">
-                                <span className="inline-flex items-center gap-1.5 font-medium">
-                                  <Package className="h-3.5 w-3.5 text-amber-600 flex-shrink-0" />
-                                  {c.detail_ligne || '—'}
-                                </span>
-                              </td>
-                              <td className="px-2.5 py-1.5 whitespace-nowrap text-right tabular-nums font-semibold">
-                                {fmtNum(cartonQty, 1)} {uniteLabel}
-                              </td>
-                              <td className="px-2.5 py-1.5 whitespace-nowrap">
-                                {ci === 0 && (
-                                  e.est_facture
-                                    ? <Badge variant="outline" className="text-[10px] py-0 gap-1 border text-white bg-success border-success">Facturée</Badge>
-                                    : <Badge variant="outline" className="text-[10px] py-0 gap-1 border text-white bg-primary border-primary">Non facturée</Badge>
-                                )}
-                              </td>
-                              <td className="px-2.5 py-1.5 whitespace-nowrap text-right">
-                                {ci === 0 && (
-                                  <span className="inline-flex items-center gap-0.5">
-                                    <Button
-                                      variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
-                                      title="Imprimer le bon de livraison"
-                                      onClick={() => window.open(`${API_URL}/expeditions/divers/${e.IDexpedition_divers}/pdf`, '_blank')}
-                                    >
-                                      <Printer className="h-3.5 w-3.5" />
-                                    </Button>
-                                    <Button
-                                      variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
-                                      title="Envoyer un email"
-                                      onClick={() => setEmailExpId(e.IDexpedition_divers)}
-                                    >
-                                      <AtSign className="h-3.5 w-3.5" />
-                                    </Button>
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          )
-                        }),
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+            <ZoneLigne
+              kind="commandes"
+              titre="Expéditions"
+              // Not a warning any more: the reason « Expédier » is greyed (neutral; the action is the block above).
+              resume={stockInsuffisant ? 'Stock insuffisant' : undefined}
+              actions={soldee ? null : (
+                <>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    aria-label="Quantité à expédier"
+                    title="Quantité à expédier"
+                    value={qty}
+                    onChange={(e) => { setQty(e.target.value); setQtyTouched(true); setError(null) }}
+                    className="h-7 w-20 px-2 text-xs text-right tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <span className="text-[11px] text-muted-foreground">{uniteLabel}</span>
+                  {/* A span carries the hover of a disabled button (a disabled button gets no pointer events). */}
+                  <span className="inline-flex" title={stockInsuffisant ? 'Stock insuffisant : entrez d’abord le stock' : undefined}>
+                    <Button size="sm" className={zoneActionClass} disabled={!canShip || shipMut.isPending} onClick={() => setConfirmShip(true)}>
+                      {shipMut.isPending
+                        ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                        : <Truck className="h-3.5 w-3.5 mr-1.5" />}
+                      Expédier
+                    </Button>
+                  </span>
+                </>
               )}
-            </section>
+            >
+              <SupplyTable
+                loading={false}
+                rows={cartons}
+                emptyLabel="Aucune expédition pour cette ligne"
+                emptyIcon={Truck}
+                columns={[
+                  { key: 'no', label: 'N°', align: 'left', render: (r) => (r.premier ? <span className="tabular-nums font-medium">{r.exp.IDexpedition_divers}</span> : '') },
+                  { key: 'dt', label: 'Date', align: 'left', render: (r) => (r.premier ? fmtSupplyDate(r.exp.date) : '') },
+                  {
+                    key: 'ct', label: 'Conteneur', align: 'left', render: (r) => (
+                      <span className="inline-flex items-center gap-1.5 font-medium">
+                        <Package className="h-3.5 w-3.5 text-amber-600 flex-shrink-0" />
+                        {r.detail || '—'}
+                      </span>
+                    ),
+                  },
+                  {
+                    key: 'et', label: 'État', align: 'left', render: (r) => (!r.premier ? '' : (
+                      r.exp.est_facture
+                        ? <Badge variant="outline" className="text-[10px] py-0 gap-1 border text-white bg-success border-success">Facturée</Badge>
+                        : <Badge variant="outline" className="text-[10px] py-0 gap-1 border text-white bg-primary border-primary">Non facturée</Badge>
+                    )),
+                  },
+                  { key: 'q', label: 'Quantité', align: 'right', render: (r) => <span className="font-semibold">{fmtNum(r.quantite, 1)} {uniteLabel}</span> },
+                  {
+                    key: 'actions', label: '', align: 'right', render: (r) => (!r.premier ? '' : (
+                      <span className="inline-flex items-center gap-0.5">
+                        <Button
+                          variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
+                          title="Imprimer le bon de livraison"
+                          onClick={() => window.open(`${API_URL}/expeditions/divers/${r.exp.IDexpedition_divers}/pdf`, '_blank')}
+                        >
+                          <Printer className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-accent hover:bg-accent/10"
+                          title="Envoyer un email"
+                          onClick={() => setEmailExpId(r.exp.IDexpedition_divers)}
+                        >
+                          <AtSign className="h-3.5 w-3.5" />
+                        </Button>
+                      </span>
+                    )),
+                  },
+                ]}
+              />
+            </ZoneLigne>
           )}
 
           {error && (
@@ -4079,35 +4101,6 @@ function DiversLineDrawer({
             </div>
           )}
         </div>
-
-        {/* Ship bar — the legacy "Expédier" button + quantity prompt, inlined. */}
-        {!soldee && data && (
-          <div className="flex-shrink-0 px-3 py-2 border-t bg-zinc-200/50 flex items-center gap-2">
-            <label className="text-[11px] text-muted-foreground font-medium">Quantité à expédier</label>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={qty}
-              onChange={(e) => { setQty(e.target.value); setQtyTouched(true); setError(null) }}
-              className="h-8 w-24 px-2 text-sm text-right tabular-nums rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-            <span className="text-[11px] text-muted-foreground">{uniteLabel}</span>
-            {stock != null && Number.isFinite(qtyNum) && qtyNum > stock && (
-              <span className="text-[11px] text-amber-600 font-medium">Au-delà du stock disponible</span>
-            )}
-            <Button
-              size="sm"
-              className="ml-auto flex-shrink-0"
-              disabled={!canShip || shipMut.isPending}
-              onClick={() => setConfirmShip(true)}
-            >
-              {shipMut.isPending
-                ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                : <Truck className="h-3.5 w-3.5 mr-1.5" />}
-              Expédier
-            </Button>
-          </div>
-        )}
       </div>
 
       {emailExpId !== null && (
@@ -4127,16 +4120,93 @@ function DiversLineDrawer({
         open={confirmShip}
         variant="default"
         title="Expédier l'article"
-        description={
-          `Expédier ${fmtNum(qtyNum, 1)} ${uniteLabel} de ${diversArticleLabel(data?.ref_designation ?? '', data?.variation1_label, data?.variation2_label)} ?`
-          + ' La quantité est ajoutée au dernier carton de l’expédition en cours (créée si besoin) et déduite du stock.'
-        }
+        // One short line: what leaves. How it is filed (carton, expedition) is not the person's concern here.
+        description={`${fmtNum(qtyNum, 1)} ${uniteLabel} de ${diversArticleLabel(data?.ref_designation ?? '', data?.variation1_label, data?.variation2_label)}.`}
         confirmLabel="Expédier"
         isPending={shipMut.isPending}
         onCancel={() => setConfirmShip(false)}
         onConfirm={() => shipMut.mutate(qtyNum)}
       />
+
+      {entreeStock && data && (
+        <EntreeStockDiversDialog
+          article={{ IDref_divers: data.IDref_divers, IDVariation1: data.IDVariation1, IDVariation2: data.IDVariation2 }}
+          libelle={diversArticleLabel(data.ref_designation, data.variation1_label, data.variation2_label)}
+          uniteLabel={uniteLabel}
+          suggestion={Math.max(0, Math.round((reste - enMain) * 100) / 100)}
+          onClose={() => setEntreeStock(false)}
+          onDone={() => {
+            setEntreeStock(false)
+            setQtyTouched(false)
+            setError(null)
+            queryClient.invalidateQueries({ queryKey })
+            queryClient.invalidateQueries({ queryKey: ['commande-client-divers-expeditions', commandeId] })
+            invalidateStockCaches(queryClient)
+            onSuccess()
+          }}
+        />
+      )}
     </>
+  )
+}
+
+/** « Entrée en stock » of a divers article, from where its stock is read (the order line's drawer):
+ *  goods came in, the quantity is ADDED to what is on hand. The step before a divers shipment, since
+ *  nothing leaves without stock (API `POST /stock-divers/entree`, Vincent 2026-11-27). */
+function EntreeStockDiversDialog({ article, libelle, uniteLabel, suggestion, onClose, onDone }: {
+  article: { IDref_divers: number; IDVariation1: number; IDVariation2: number }
+  libelle: string
+  uniteLabel: string
+  /** what is missing to ship the rest of the line (0 = nothing to suggest) */
+  suggestion: number
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [qty, setQty] = useState(suggestion > 0 ? String(suggestion) : '')
+  const [error, setError] = useState<string | null>(null)
+  const qtyNum = Number(qty.replace(',', '.'))
+  const valide = Number.isFinite(qtyNum) && qtyNum > 0
+  const mut = useMutation({
+    mutationFn: () => apiFetch('/stock-divers/entree', { method: 'POST', body: JSON.stringify({ ...article, quantite: qtyNum }) }),
+    onSuccess: onDone,
+    onError: (e: unknown) => setError((e as { body?: { message?: string } })?.body?.message ?? 'L’entrée en stock a échoué.'),
+  })
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-sm" onClose={onClose}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Box className="h-5 w-5 text-accent" />Entrée en stock
+          </DialogTitle>
+        </DialogHeader>
+        <form className="mt-4 space-y-3" onSubmit={(e) => { e.preventDefault(); if (valide && !mut.isPending) mut.mutate() }}>
+          <p className="text-sm text-muted-foreground">{libelle}</p>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Quantité reçue{uniteLabel ? ` (${uniteLabel})` : ''}</label>
+            <input
+              type="text"
+              inputMode="decimal"
+              autoFocus
+              value={qty}
+              onFocus={(e) => e.currentTarget.select()}
+              onChange={(e) => { setQty(e.target.value); setError(null) }}
+              className="w-full h-9 px-2.5 text-sm tabular-nums rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          {error && (
+            <div className="flex items-start gap-1.5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /><span>{error}</span>
+            </div>
+          )}
+          <DialogFooter className="mt-4">
+            <Button type="button" variant="outline" onClick={onClose}>Annuler</Button>
+            <Button type="submit" disabled={!valide || mut.isPending}>
+              {mut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1.5" />}Enregistrer
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -4312,7 +4382,11 @@ function ExpeditionGroupeeDialog({
     onMutationSuccess()
   }, [queryClient, onMutationSuccess, commandeId])
 
-  const fail = (e: unknown) => setError(e instanceof Error ? e.message : 'Erreur')
+  // The server's own sentence (« Stock insuffisant pour … », « Expédition facturée… »), never « API 409 ».
+  const fail = (e: unknown) => {
+    const body = (e as { body?: { message?: string; error?: string } })?.body
+    setError(body?.message ?? body?.error ?? (e instanceof Error ? e.message : 'Erreur'))
+  }
 
   const createExpMut = useMutation({
     mutationFn: () => apiFetch<{ IDexpedition_divers: number }>(`/commandes-client/${commandeId}/expeditions-divers`, { method: 'POST' }),
@@ -4418,6 +4492,11 @@ function ExpeditionGroupeeDialog({
   /** What may still go into THIS carton for a combo: the order quantity minus
    *  what the other cartons already carry. 0 for an off-order row. */
   const resteOf = (r: ContentRow) => round2q(Math.max(0, r.commandee - r.ailleurs))
+  /** What this carton may hold of a combo: the stock on hand PLUS what the carton already carries (the
+   *  stored stock has the carton's current content taken off — shipping decrements `stock_divers` at
+   *  write time). An article without a stock row has nothing on hand. Null for an off-order row: its
+   *  stock is not loaded here, the server decides. Nothing leaves without stock (Vincent 2026-11-27). */
+  const stockBaseOf = (r: ContentRow) => (r.horsCommande ? null : round2q(Math.max(0, r.stock ?? 0) + r.current))
 
   const filteredRows = useMemo(() => {
     const q = contentFilter.trim().toLowerCase()
@@ -4448,7 +4527,8 @@ function ExpeditionGroupeeDialog({
     setDraftQty((prev) => {
       const next = { ...prev }
       for (const r of filteredRows) {
-        const reste = resteOf(r)
+        // …capped by what the stock allows: a row filled beyond it could not be saved.
+        const reste = Math.min(resteOf(r), stockBaseOf(r) ?? Infinity)
         if (reste > 0) next[r.key] = String(reste)
       }
       return next
@@ -4463,6 +4543,12 @@ function ExpeditionGroupeeDialog({
       prix: r.prix,
     })))
   }
+
+  /** A typed quantity beyond the stock: the carton cannot be saved (the API would refuse it whole). */
+  const depasseStock = editingContent && contentRows.some((r) => {
+    const base = stockBaseOf(r)
+    return base !== null && qtyOf(r) > base + 0.00005
+  })
 
   const requestClose = () => {
     if (contentDirty) { setConfirmDiscard(true); return }
@@ -4699,13 +4785,15 @@ function ExpeditionGroupeeDialog({
                                 onClick={cancelEditContent} disabled={saveContenuMut.isPending}>
                                 <X className="h-3.5 w-3.5 mr-1.5" />Annuler
                               </Button>
-                              <Button size="sm" className="h-7 flex-shrink-0"
-                                onClick={saveContent} disabled={!contentDirty || saveContenuMut.isPending}>
-                                {saveContenuMut.isPending
-                                  ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                                  : <Save className="h-3.5 w-3.5 mr-1.5" />}
-                                Enregistrer
-                              </Button>
+                              <span className="inline-flex flex-shrink-0" title={depasseStock ? 'Stock insuffisant sur un article : entrez d’abord le stock' : undefined}>
+                                <Button size="sm" className="h-7"
+                                  onClick={saveContent} disabled={!contentDirty || depasseStock || saveContenuMut.isPending}>
+                                  {saveContenuMut.isPending
+                                    ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                                    : <Save className="h-3.5 w-3.5 mr-1.5" />}
+                                  Enregistrer
+                                </Button>
+                              </span>
                             </>
                           ) : (
                             <>
@@ -4780,11 +4868,11 @@ function ExpeditionGroupeeDialog({
                                   // flagged an UNCHANGED row as over-stock the moment the article
                                   // was the last of its kind: 5 in the carton, stock reads 0, and
                                   // re-saving the same 5 lit every input amber.
-                                  const stockBase = r.stock === null ? null : round2q(r.stock + r.current)
+                                  const stockBase = stockBaseOf(r)
                                   const stockApres = stockBase === null ? null : round2q(stockBase - qty)
-                                  // Both stay warnings, never blocks: `stock_divers` is sparse
-                                  // (584 of 1 770 order-line combos have no row at all), so
-                                  // refusing would make untracked articles unshippable.
+                                  // Stock BLOCKS since 2026-11-27 (it was a warning while `stock_divers`
+                                  // covered few articles): the row turns red and « Enregistrer » is
+                                  // greyed. Reste stays a warning — shipping more than ordered is allowed.
                                   const overStock = stockApres !== null && stockApres < 0
                                   const overReste = !r.horsCommande && resteApres < 0
                                   return (
@@ -4819,7 +4907,7 @@ function ExpeditionGroupeeDialog({
                                           // what is already typed.
                                           <button
                                             type="button"
-                                            onClick={() => setDraftQty((p) => ({ ...p, [r.key]: String(reste) }))}
+                                            onClick={() => setDraftQty((p) => ({ ...p, [r.key]: String(Math.min(reste, stockBase ?? Infinity)) }))}
                                             className="rounded px-1 -mx-1 text-accent hover:bg-accent/10 transition-colors"
                                             title="Mettre tout le reste dans ce carton"
                                           >
@@ -4832,7 +4920,7 @@ function ExpeditionGroupeeDialog({
                                         )}
                                       </td>
                                       <td className={cn('px-2 py-1.5 text-right tabular-nums',
-                                        overStock ? 'text-amber-700 font-medium' : 'text-muted-foreground')}>
+                                        overStock ? 'text-destructive font-medium' : 'text-muted-foreground')}>
                                         {stockApres !== null ? fmtNum(stockApres, 1) : '—'}
                                       </td>
                                       <td className="px-2.5 py-1.5 text-right">
@@ -4849,11 +4937,11 @@ function ExpeditionGroupeeDialog({
                                           // instead of appending ("5" + "4" → "54").
                                           onFocus={(e) => e.currentTarget.select()}
                                           onChange={(e) => setDraftQty((p) => ({ ...p, [r.key]: e.target.value }))}
-                                          title={overStock ? `Dépasse le stock disponible de ${fmtNum(-stockApres!, 1)}`
+                                          title={overStock ? `Stock insuffisant : il manque ${fmtNum(-stockApres!, 1)}`
                                             : overReste ? `Dépasse le reste à expédier de ${fmtNum(-resteApres, 1)}` : undefined}
                                           className={cn(
                                             'h-7 w-24 px-1.5 text-xs text-right tabular-nums rounded-md border bg-white focus:outline-none focus:ring-2 focus:ring-ring',
-                                            overStock || overReste ? 'border-amber-500 text-amber-800' : 'border-input',
+                                            overStock ? 'border-destructive text-destructive' : overReste ? 'border-amber-500 text-amber-800' : 'border-input',
                                           )}
                                         />
                                       </td>

@@ -15,16 +15,25 @@
  *      (1 carton). They must survive an unchanged save untouched.
  *   2. Order-linked cartons DO hold items whose combo is not on the order
  *      (61 of 1 589). The editor lists those too, or they become uneditable.
- *   3. `stock_divers` does not cover every combo (584 order-line combos have no
- *      row). Stock must stay a warning in the UI, never a hard block.
+ *   3. Nothing leaves without stock (Vincent 2026-11-27, lib/stock-divers-dispo.ts):
+ *      a carton that takes more than the stock on hand is refused whole. So no
+ *      `stock_divers` row may be negative, and the articles of the OPEN orders
+ *      that have no stock row are listed (they cannot ship until stock is
+ *      entered). Until then stock was a warning, because 584 order-line combos
+ *      had no row at all.
  *
  * `--roundtrip` drives the real `setDiversCartonContenu` against a scratch
- * carton on an unbilled shipment — add, change, remove — asserting the stock
- * ledger moves by exactly the opposite of the quantity each time, then deletes
- * the carton it created. Read-only without the flag.
+ * carton on an unbilled shipment — add, change, remove, and one attempt beyond
+ * the stock — asserting the stock ledger moves by exactly the opposite of the
+ * quantity each time, then deletes the carton it created. Read-only without
+ * the flag.
  */
+// Env first (.env.<NODE_ENV>, like the API): without it the script read a stale local HFSQL copy while
+// the stock check (lib/stock-divers-dispo.ts, native PostgreSQL) had no connection at all.
+import '../load-env.js'
 import { query, closeConnection } from '../lib/hfsql-auto.js'
 import { setDiversCartonContenu } from '../routes/expeditions.js'
+import { StockDiversInsuffisant } from '../lib/stock-divers-dispo.js'
 
 const ROUNDTRIP = process.argv.includes('--roundtrip')
 
@@ -90,22 +99,26 @@ async function checkOffOrderItems(): Promise<void> {
   }
 }
 
-/** 3 · Stock coverage is partial, so stock can only ever be a warning. */
+/** 3 · Stock blocks a shipment: no row may be negative, and the open orders' articles without a row are named. */
 async function checkStockCoverage(): Promise<void> {
-  console.log('\n3. stock_divers coverage of the combos users ship')
+  console.log('\n3. stock_divers — nothing leaves without stock')
   const [lignes, stock] = await Promise.all([
-    query<any>(`SELECT TYPE AS tk, IDreference, IDVariation1, IDVariation2 FROM ligne_commande_client`),
-    query<any>(`SELECT IDref_divers, IDVariation1, IDVariation2 FROM stock_divers`),
+    query<any>(
+      `SELECT l.TYPE AS tk, l.IDreference, l.IDVariation1, l.IDVariation2 FROM ligne_commande_client l ` +
+        `INNER JOIN commande_client c ON c.IDcommande_client = l.IDcommande_client WHERE c.est_soldee = 0 AND c.IDsociete = 1`,
+    ),
+    query<any>(`SELECT IDref_divers, IDVariation1, IDVariation2, quantite FROM stock_divers`),
   ])
+  const negatives = (stock as any[]).filter((s) => r2(s.quantite) < 0).length
+  if (negatives > 0) fail(`${negatives} stock_divers row(s) below zero — a writer shipped without asking refusStockDivers()`)
+  else ok('no stock row below zero')
   const have = new Set((stock as any[]).map((s) => combo(s.IDref_divers, s.IDVariation1, s.IDVariation2)))
   const want = new Set(
     (lignes as any[]).filter((l) => Number(l.tk) === 3).map((l) => combo(l.IDreference, l.IDVariation1, l.IDVariation2)),
   )
   let tracked = 0, untracked = 0
   for (const k of want) { if (have.has(k)) tracked++; else untracked++ }
-  console.log(`     ${tracked} order-line combos tracked, ${untracked} with no stock_divers row`)
-  if (untracked === 0) ok('fully covered today, but the UI must still not hard-block on stock')
-  else ok('partial coverage — blocking a save on stock would make these unshippable')
+  console.log(`     open orders: ${tracked} article(s) with a stock row, ${untracked} without (stock to enter before they ship)`)
 }
 
 /** 4 · Round-trip the real writer, asserting the stock ledger stays in step. */
@@ -127,15 +140,31 @@ async function roundtrip(): Promise<void> {
     const lignes = await query<any>(
       `SELECT TYPE AS tk, IDreference, IDVariation1, IDVariation2 FROM ligne_commande_client WHERE IDcommande_client = ${Number(e.IDcommande_client)}`,
     )
+    // …holding at least the 2 units the round-trip ships (nothing leaves without stock).
     const hit = (lignes as any[]).find(
-      (l) => Number(l.tk) === 3 && stockOf.has(combo(l.IDreference, l.IDVariation1, l.IDVariation2)),
+      (l) => Number(l.tk) === 3 && (stockOf.get(combo(l.IDreference, l.IDVariation1, l.IDVariation2)) ?? 0) >= 2,
     )
     if (hit) {
       target = { expId: Number(e.IDexpedition_divers), ref: Number(hit.IDreference), v1: Number(hit.IDVariation1) || 0, v2: Number(hit.IDVariation2) || 0 }
       break
     }
   }
-  if (!target) { fail('no unbilled divers shipment with a stock-tracked article — cannot round-trip'); return }
+  // No order line with stock to spare (the usual case: stock is entered to be shipped): any article
+  // holding stock will do — the writer does not need the article to be on the order.
+  if (!target && exps.length > 0) {
+    const nbRows = new Map<string, number>()
+    for (const s of stockRows as any[]) {
+      const k = combo(s.IDref_divers, s.IDVariation1, s.IDVariation2)
+      nbRows.set(k, (nbRows.get(k) ?? 0) + 1)
+    }
+    const best = (stockRows as any[])
+      .filter((s) => r2(s.quantite) >= 2 && nbRows.get(combo(s.IDref_divers, s.IDVariation1, s.IDVariation2)) === 1)
+      .sort((a, b) => r2(b.quantite) - r2(a.quantite))[0]
+    if (best) {
+      target = { expId: Number((exps as any[])[0].IDexpedition_divers), ref: Number(best.IDref_divers), v1: Number(best.IDVariation1) || 0, v2: Number(best.IDVariation2) || 0 }
+    }
+  }
+  if (!target) { fail('no unbilled divers shipment, or no article holding 2 units of stock — cannot round-trip'); return }
 
   const key = combo(target.ref, target.v1, target.v2)
   const readStock = async (): Promise<number> => {
@@ -153,6 +182,8 @@ async function roundtrip(): Promise<void> {
 
   const stock0 = await readStock()
   console.log(`     exp ${target.expId} · article ${key} · stock ${stock0}`)
+  // Two quantities within the stock on hand: a first one, then a raise.
+  const [q1, q2] = stock0 >= 5 ? [3, 5] : [1, 2]
 
   // Scratch carton — created here, deleted at the end whatever happens.
   await query(
@@ -166,26 +197,26 @@ async function roundtrip(): Promise<void> {
 
   const item = (q: number) => [{ IDref_divers: target!.ref, IDVariation1: target!.v1, IDVariation2: target!.v2, quantite: q }]
   try {
-    // add 3 → stock must drop by 3
-    let res = await setDiversCartonContenu(cartonId, item(3))
+    // add q1 → stock must drop by q1
+    let res = await setDiversCartonContenu(cartonId, item(q1))
     let stock = await readStock()
     if (res.created !== 1) fail(`add: expected created=1, got ${JSON.stringify(res)}`)
-    else if (stock !== r2(stock0 - 3)) fail(`add: stock ${stock}, expected ${r2(stock0 - 3)}`)
-    else if ((await readQty(cartonId)) !== 3) fail('add: carton quantity is not 3')
-    else ok('add 3 → one row created, stock −3')
+    else if (stock !== r2(stock0 - q1)) fail(`add: stock ${stock}, expected ${r2(stock0 - q1)}`)
+    else if ((await readQty(cartonId)) !== q1) fail(`add: carton quantity is not ${q1}`)
+    else ok(`add ${q1} → one row created, stock −${q1}`)
 
-    // raise to 5 → stock must drop by 2 more
-    res = await setDiversCartonContenu(cartonId, item(5))
+    // raise to q2 → stock must drop by the difference
+    res = await setDiversCartonContenu(cartonId, item(q2))
     stock = await readStock()
     if (res.updated !== 1) fail(`raise: expected updated=1, got ${JSON.stringify(res)}`)
-    else if (stock !== r2(stock0 - 5)) fail(`raise: stock ${stock}, expected ${r2(stock0 - 5)}`)
-    else ok('raise to 5 → row updated, stock −2 more')
+    else if (stock !== r2(stock0 - q2)) fail(`raise: stock ${stock}, expected ${r2(stock0 - q2)}`)
+    else ok(`raise to ${q2} → row updated, stock −${q2 - q1} more`)
 
     // unchanged → no write at all, stock untouched
-    res = await setDiversCartonContenu(cartonId, item(5))
+    res = await setDiversCartonContenu(cartonId, item(q2))
     stock = await readStock()
     if (res.created + res.updated + res.removed !== 0) fail(`no-op: expected no write, got ${JSON.stringify(res)}`)
-    else if (stock !== r2(stock0 - 5)) fail(`no-op: stock moved to ${stock}`)
+    else if (stock !== r2(stock0 - q2)) fail(`no-op: stock moved to ${stock}`)
     else ok('same quantity again → nothing written (this is what protects duplicate rows)')
 
     // an unnamed combo is left alone
@@ -194,9 +225,19 @@ async function roundtrip(): Promise<void> {
       res = await setDiversCartonContenu(cartonId, [
         { IDref_divers: Number(other[0].IDref_divers), IDVariation1: 0, IDVariation2: 0, quantite: 0 },
       ])
-      if ((await readQty(cartonId)) !== 5) fail('unnamed combo: the existing article was disturbed')
+      if ((await readQty(cartonId)) !== q2) fail('unnamed combo: the existing article was disturbed')
       else ok('a payload naming other combos leaves this one untouched')
     }
+
+    // beyond the stock → refused whole, nothing written
+    let refusedStock = false
+    try {
+      await setDiversCartonContenu(cartonId, item(r2(stock0 + 1)))
+    } catch (e) { refusedStock = e instanceof StockDiversInsuffisant }
+    stock = await readStock()
+    if (!refusedStock) fail('a carton taking more than the stock on hand was accepted')
+    else if (stock !== r2(stock0 - q2) || (await readQty(cartonId)) !== q2) fail('a refused carton still wrote something')
+    else ok(`asking for ${r2(stock0 + 1)} with ${stock0} on hand → refused, nothing written`)
 
     // drop to 0 → row deleted, stock fully restored
     res = await setDiversCartonContenu(cartonId, item(0))

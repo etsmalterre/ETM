@@ -336,6 +336,83 @@ async function variationBelongsToRef(vid: number, refId: number): Promise<boolea
   return Number(r[0]?.n ?? 0) > 0
 }
 
+/** The combination a write names on a reference: an axis set to « Aucun » carries no value (forced to 0,
+ *  never trusted from the client); an active axis requires a value that belongs to the reference. */
+async function combinaisonDe(
+  ref: RefContext, b: { IDVariation1?: number; IDVariation2?: number },
+): Promise<{ v1: number; v2: number } | { erreur: string }> {
+  const v1 = ref.sTypeVariation1 === 'Aucun' ? 0 : (b.IDVariation1 ?? 0)
+  const v2 = ref.sTypeVariation2 === 'Aucun' ? 0 : (b.IDVariation2 ?? 0)
+  for (const [niveau, vid, axis] of [
+    [1, v1, ref.sTypeVariation1],
+    [2, v2, ref.sTypeVariation2],
+  ] as const) {
+    if (axis === 'Aucun') continue
+    if (vid <= 0) return { erreur: `Sélectionnez une valeur pour la variation ${niveau}.` }
+    if (!(await variationBelongsToRef(vid, ref.IDref_divers))) return { erreur: 'Cette valeur de variation n’appartient pas à la référence.' }
+  }
+  return { v1, v2 }
+}
+
+// POST /api/stock-divers/entree — « Entrée en stock » (Vincent 2026-11-27): goods came in, the quantity
+// is ADDED to the combination's stock, its row created when there is none. This is the step before a
+// divers shipment, since nothing leaves without stock (lib/stock-divers-dispo.ts) — asked from the order
+// line's drawer (Clients › Commandes), where the person sees what is left to ship.
+// Rights follow what the gesture does to the row: adding to a combination that already carries stock
+// changes a visible figure (`edit_stock_divers`); filling an empty or missing one creates stock
+// (`create_stock_divers`), as POST / does.
+stockDiversRouter.post('/entree', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const parsed = z.object({
+      IDref_divers: z.number().int().positive(),
+      IDVariation1: z.number().int().nonnegative().optional(),
+      IDVariation2: z.number().int().nonnegative().optional(),
+      quantite: z.number().finite().positive(),
+    }).safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const b = parsed.data
+
+    const ref = (await loadRefContext()).get(b.IDref_divers)
+    if (!ref) { res.status(404).json({ error: 'reference_introuvable', message: 'Référence introuvable.' }); return }
+    if (ref.archive === 1) {
+      res.status(409).json({ error: 'reference_archivee', message: 'Cette référence est archivée : désarchivez-la avant d’y ajouter du stock.' })
+      return
+    }
+    const combi = await combinaisonDe(ref, b)
+    if ('erreur' in combi) { res.status(400).json({ error: 'variation_invalide', message: combi.erreur }); return }
+    const { v1, v2 } = combi
+
+    const existing = await query<Record<string, unknown>>(
+      `SELECT IDstock_divers, quantite FROM stock_divers
+       WHERE IDref_divers = ${b.IDref_divers} AND IDVariation1 = ${v1} AND IDVariation2 = ${v2}
+       ORDER BY IDstock_divers`,
+    )
+    // The row that carries the combination's stock, else the first (empty) one — POST /'s choice.
+    const cible = existing.find((r) => qty(r.quantite) !== 0) ?? existing[0]
+    const avant = cible ? qty(cible.quantite) : 0
+    const key = avant !== 0 ? 'edit_stock_divers' : 'create_stock_divers'
+    if (!(await userHasPermission(req.userId, isEffectiveAdmin(req), key))) {
+      res.status(403).json({ error: `permission denied: ${key}`, message: 'Vous n’avez pas le droit d’entrer ce stock.' })
+      return
+    }
+
+    const apres = qty(avant + b.quantite)
+    if (cible) {
+      await query(`UPDATE stock_divers SET quantite = ${apres} WHERE IDstock_divers = ${Number(cible.IDstock_divers) || 0}`)
+    } else {
+      await query(
+        `INSERT INTO stock_divers (IDref_divers, quantite, unite, IDVariation1, IDVariation2)
+         VALUES (${b.IDref_divers}, ${apres}, ${ref.unite || 0}, ${v1}, ${v2})`,
+      )
+    }
+    res.status(cible ? 200 : 201).json({ ok: true, quantite: apres })
+  } catch (err) {
+    console.error('Error entering stock_divers:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // POST /api/stock-divers — legacy "Ajouter" in FEN_Stock_Divers. An UPSERT: see
 // the combination guard below. Filling an empty row counts as creating stock, so
 // `create_stock_divers` alone gates that path — it can only ever turn a 0 into a
@@ -367,25 +444,9 @@ stockDiversRouter.post('/', async (req: Request, res: Response) => {
       return
     }
 
-    // An axis set to "Aucun" carries no value: force the id to 0 rather than
-    // trusting the client. An active axis requires a value that belongs to the
-    // reference.
-    const v1 = ref.sTypeVariation1 === 'Aucun' ? 0 : (b.IDVariation1 ?? 0)
-    const v2 = ref.sTypeVariation2 === 'Aucun' ? 0 : (b.IDVariation2 ?? 0)
-    for (const [niveau, vid, axis] of [
-      [1, v1, ref.sTypeVariation1],
-      [2, v2, ref.sTypeVariation2],
-    ] as const) {
-      if (axis === 'Aucun') continue
-      if (vid <= 0) {
-        res.status(400).json({ error: `Sélectionnez une valeur pour la variation ${niveau}.` })
-        return
-      }
-      if (!(await variationBelongsToRef(vid, b.IDref_divers))) {
-        res.status(400).json({ error: `Cette valeur de variation n’appartient pas à la référence.` })
-        return
-      }
-    }
+    const combi = await combinaisonDe(ref, b)
+    if ('erreur' in combi) { res.status(400).json({ error: combi.erreur }); return }
+    const { v1, v2 } = combi
 
     const quantite = qty(b.quantite ?? 0)
 

@@ -77,6 +77,7 @@ import { rechercherExpeditionsDivers, rechercherExpeditionsFormelles, type Reche
 import { valeurStab } from '../lib/stabilites.js'
 import { loadRendementVenteEcru, loadRendementsVenteEcru, metrageEcruVendu } from '../lib/unite-ecru.js'
 import { grouperRouleaux, libelleArticle, lignesDetail, type LigneBrute, type PiecesAvis, type RouleauBrut } from '../lib/expe-pieces.js'
+import { refusStockDivers, StockDiversInsuffisant } from '../lib/stock-divers-dispo.js'
 
 export const expeditionsRouter: RouterType = Router()
 
@@ -1474,9 +1475,13 @@ const r4 = (v: unknown): number => Math.round((Number(v) || 0) * 10000) / 10000
  *  on the same live rows.
  *
  *  `delta` is signed: negative = shipped (take off stock), positive = restored.
- *  ETM never CREATES a stock_divers row — rows are opened by the legacy
- *  FEN_Gestion_Stock_Divers screen when goods are received. A combo with no
- *  row is simply untracked and the call is a no-op. */
+ *  This never CREATES a stock_divers row — rows are opened when goods are
+ *  entered (Divers › Stock, or « Entrée en stock » on an order line). A combo
+ *  with no row has nothing on hand and the call is a no-op.
+ *
+ *  ⚠️ Nothing leaves without stock (Vincent 2026-11-27): a writer that takes
+ *  MORE out asks `refusStockDivers()` (lib/stock-divers-dispo.ts) before its
+ *  first write, so this never drives a row negative any more. */
 export async function adjustDiversStock(
   refId: number, v1: number, v2: number, delta: number,
 ): Promise<void> {
@@ -1627,6 +1632,8 @@ expeditionsRouter.post('/divers/lignes/:lineId/items', async (req: Request, res:
     const v1 = d.IDVariation1 ?? 0
     const v2 = d.IDVariation2 ?? 0
     const prix = d.prix ?? (await resolveDiversPrix(d.IDref_divers, v1, v2))
+    const refus = await refusStockDivers([{ ref: d.IDref_divers, v1, v2, quantite: r4(d.quantite) }])
+    if (refus) { res.status(409).json(refus); return }
     await query(
       `INSERT INTO ref_divers_expedie (IDligne_expedition_divers, designation, quantite, unite, prix, IDref_divers, IDVariation1, IDVariation2) ` +
         `VALUES (${lineId}, ${sqlText(d.designation ?? '')}, ${r4(d.quantite)}, ${unite}, ${r4(prix)}, ${n(d.IDref_divers)}, ${n(v1)}, ${n(v2)})`,
@@ -1677,6 +1684,18 @@ expeditionsRouter.put('/divers/items/:itemId', async (req: Request, res: Respons
     if (d.prix !== undefined) sets.push(`prix = ${r4(d.prix)}`)
     if (d.designation !== undefined) sets.push(`designation = ${sqlText(d.designation)}`)
     if (sets.length === 0) { res.status(400).json({ error: 'No fields to update' }); return }
+    // What the edit takes out on top of what the item already holds: its old quantity comes back, the
+    // new one leaves (another article when the reference or a variation changes).
+    if (before) {
+      const refus = await refusStockDivers([
+        { ref: before.ref, v1: before.v1, v2: before.v2, quantite: -before.qty },
+        {
+          ref: d.IDref_divers ?? before.ref, v1: d.IDVariation1 ?? before.v1, v2: d.IDVariation2 ?? before.v2,
+          quantite: d.quantite !== undefined ? r4(d.quantite) : before.qty,
+        },
+      ])
+      if (refus) { res.status(409).json(refus); return }
+    }
     await query(`UPDATE ref_divers_expedie SET ${sets.join(', ')} WHERE IDref_divers_expedie = ${itemId}`)
     if (before) {
       await adjustDiversStock(before.ref, before.v1, before.v2, before.qty)
@@ -1750,7 +1769,8 @@ const diversContenuBody = z.object({
  *    and deletes the extras — the invoice already sums them into one line.
  *
  *  Stock goes through `adjustDiversStock` on every mutation exactly as the
- *  per-item routes do, so the ledger stays in step with the WinDev app. */
+ *  per-item routes do. A carton that would take more than the stock on hand is
+ *  refused whole (`StockDiversInsuffisant`, 409 `stock_insuffisant`). */
 export interface DiversContenuItem {
   IDref_divers: number
   IDVariation1: number
@@ -1788,6 +1808,14 @@ export async function setDiversCartonContenu(
     arr.push({ id: Number(r.IDref_divers_expedie) || 0, qty: r4(r.quantite) })
     byCombo.set(k, arr)
   }
+
+  // Nothing leaves without stock: the whole carton is checked before its first write, on what each
+  // article takes out on top of what the carton already holds (lib/stock-divers-dispo.ts).
+  const refus = await refusStockDivers([...wanted].map(([k, want]) => ({
+    ref: want.ref, v1: want.v1, v2: want.v2,
+    quantite: r4(want.qty - r4((byCombo.get(k) ?? []).reduce((s, r) => s + r.qty, 0))),
+  })))
+  if (refus) throw new StockDiversInsuffisant(refus)
 
   let created = 0, updated = 0, removed = 0
   for (const [k, want] of wanted) {
@@ -1835,6 +1863,7 @@ expeditionsRouter.put('/divers/lignes/:lineId/contenu', async (req: Request, res
     try {
       res.json({ ok: true, ...(await setDiversCartonContenu(lineId, parsed.data.items)) })
     } catch (e) {
+      if (e instanceof StockDiversInsuffisant) { res.status(409).json(e.refus); return }
       res.status(400).json({ error: e instanceof Error ? e.message : 'Requête invalide' })
     }
   } catch (err) {
