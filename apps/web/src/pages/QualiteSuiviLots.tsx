@@ -28,6 +28,7 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tansta
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   ShieldCheck,
+  BellRing,
   Search,
   Loader2,
   AlertCircle,
@@ -96,6 +97,7 @@ import {
   type GesteLot,
   type NatureSoumission,
   type PrealableLot,
+  type RelanceClientLot,
   type SoumissionsLot,
 } from '@/components/qualite/LotCycle'
 import { JournalLotTab } from '@/components/qualite/JournalLot'
@@ -247,6 +249,8 @@ interface SuiviLotDetail {
   /** Coloris (before the stenter) and stabilités soumissions (LIVA #1313). */
   soumissions?: SoumissionsLot
   /** 'YYYY-MM-DD': the « coloris validé » mailed to the dyer. */
+  /** The client's answer to a soumission is waited: « Relancer le client » (API relanceClientDuDetail). */
+  relance_client?: RelanceClientLot | null
   ok_ramer_le?: string | null
   /** The controls the lot's reference asks (Finis › Références, 2026-10-26). Absent = both. */
   controles?: {
@@ -529,6 +533,8 @@ export function QualiteSuiviLots() {
   const [refusOpen, setRefusOpen] = useState(false)
   // The « coloris validé » mail to the dyer (LIVA #1313).
   const [okRamerOpen, setOkRamerOpen] = useState(false)
+  // « Relancer le client »: the relance mail of a soumission whose answer is waited (2026-11-27).
+  const [relanceClientOpen, setRelanceClientOpen] = useState(false)
   const natureReponse: NatureSoumission = (detail?.etape && natureEnAttente(detail.etape)) ?? 'stabilites'
   const reponseMut = useMutation({
     mutationFn: (p: { accepte: boolean; commentaire?: string }) =>
@@ -548,6 +554,7 @@ export function QualiteSuiviLots() {
     else if (g === 'reprendre') setRepriseOpen(true)
     else if (g === 'accepte') reponseMut.mutate({ accepte: true })
     else if (g === 'ok_ramer') setOkRamerOpen(true)
+    else if (g === 'relance_client') setRelanceClientOpen(true)
     else setRefusOpen(true)
   }, [etatMut, reponseMut])
   // A refused lot is taken back for the client's reason — a refused coloris re-dyes it.
@@ -738,6 +745,7 @@ export function QualiteSuiviLots() {
               natureSoumission={natureSoumission}
               onSoumettre={() => setSoumissionPickerOpen(true)}
               onOkRamer={() => setOkRamerOpen(true)}
+              onRelanceClient={() => setRelanceClientOpen(true)}
               clientsRc={detail.clients_rc ?? []}
               onRapportControle={setRcClient}
             />
@@ -886,6 +894,22 @@ export function QualiteSuiviLots() {
           onSend={async (p) => {
             await postEmail(`${API_URL}/suivi-lots/${selectedId}/ok-ramer/email`, p)
             invalidateLotQualityCaches(queryClient)
+          }}
+        />
+      )}
+      {selectedId !== null && relanceClientOpen && (
+        <SendEmailDialog
+          open
+          onClose={() => setRelanceClientOpen(false)}
+          title="Relancer le client"
+          contextLabel={`Lot ${detail?.lot ?? ''}`}
+          queryKey={['suivi-lot-relance-client-email-defaults', selectedId, detail?.relance_client?.nombre ?? 0]}
+          loadDefaults={() => apiFetch(`/suivi-lots/${selectedId}/relance-client/email-defaults`)}
+          onSend={async (p) => {
+            await postEmail(`${API_URL}/suivi-lots/${selectedId}/relance-client/email`, p)
+            // The lot is calm again for 5 working days, here and on its dye order.
+            invalidateLotQualityCaches(queryClient)
+            queryClient.invalidateQueries({ queryKey: ['commande-sst-journal', cmdId] })
           }}
         />
       )}
@@ -1167,6 +1191,12 @@ function LotList({
 
 // ── Detail header ────────────────────────────────────────
 
+/** Today, 'YYYY-MM-DD', local. */
+function aujourdhuiIso(): string {
+  const t = new Date()
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
+}
+
 function LotDetailHeader({
   detail,
   isEditing,
@@ -1181,6 +1211,7 @@ function LotDetailHeader({
   natureSoumission,
   onSoumettre,
   onOkRamer,
+  onRelanceClient,
   clientsRc,
   onRapportControle,
 }: {
@@ -1199,6 +1230,7 @@ function LotDetailHeader({
   natureSoumission: NatureSoumission
   onSoumettre: () => void
   onOkRamer: () => void
+  onRelanceClient: () => void
   /** The lot's clients — the rapport de contrôle's possible recipients. */
   clientsRc: ClientRc[]
   onRapportControle: (c: ClientRc) => void
@@ -1291,6 +1323,19 @@ function LotDetailHeader({
                   )}
                 </Button>
               )}
+              {canManage && detail.relance_client && (() => {
+                // §41: red = ours to chase now; before that day the button is there, without a dot.
+                const du = detail.relance_client.due <= aujourdhuiIso()
+                return (
+                  <Button
+                    variant="outline" size="icon" className="h-9 w-9 relative" onClick={onRelanceClient}
+                    title={du ? 'Relancer le client — à faire' : 'Relancer le client'}
+                  >
+                    <BellRing className="h-4 w-4" />
+                    {du && <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-white" />}
+                  </Button>
+                )
+              })()}
               {canManage && clientsRc.length > 0 && (
                 <RcMenuButton clients={clientsRc} onSelect={onRapportControle} />
               )}
@@ -2156,6 +2201,7 @@ function LotSidebar({
               etapes={detail.prealables_detail}
               attendu={detail.attendu}
               clients={detail.clients_rc ?? []}
+              relance={detail.relance_client}
             />
           )}
         </div>

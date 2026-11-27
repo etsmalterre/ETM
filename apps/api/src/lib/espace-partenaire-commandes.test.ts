@@ -3,7 +3,7 @@ import { SANS_SOUMISSION, type EtapeLot, type LotFait } from './cycle-ennoblisse
 import {
   article, debutDouzeMois, etapeCommandePartenaire, etapeLignePartenaire, etapeLotPartenaire, lotsVus, LOT_A_VOUS,
   deuxMoisAvant, fenetre, fenetreCommande, fenetreLot, LOT_MESURABLE, mesuresDuLot, mesuresMalterre, sansMouvementDepuis, tolerancesRef,
-  respectCommande, libelleDefaut,
+  respectCommande, libelleDefaut, attenteReponseLot,
 } from './espace-partenaire-commandes.js'
 import { CONTROLES_PAR_DEFAUT, type ControlesRef } from './controles-lot.js'
 
@@ -54,6 +54,33 @@ describe('the partner’s time at a step', () => {
     // Malterre's own time on the lot is never told.
     expect(fenetreLot(lot({ reception: '2026-11-18' }), 'en_controle', '2026-11-25')).toBeNull()
     expect(fenetreLot(lot({ reception: '2026-11-18' }), 'coloris_soumis', '2026-11-25')).toBeNull()
+  })
+})
+
+describe('the wait for the answer to a coloris soumission (Vincent 2026-11-27)', () => {
+  const lot = (p: Partial<LotFait>): LotFait => ({
+    lot: 'MA1', idsuivilot: 1, etat: 1, reception: null, mesuresTeinturier: false, tirelleMesuree: false,
+    coloris: SANS_SOUMISSION, stabilites: SANS_SOUMISSION, ...p,
+  })
+  // Sent Monday 2026-11-16: five working days end Monday 23.
+  const soumis = { requise: true, envoyeeLe: '2026-11-16', reponse: null }
+  it('since when, the day expected, and Malterre’s relances — the day expected moves with each', () => {
+    expect(attenteReponseLot(lot({ coloris: soumis }), 'coloris_soumis'))
+      .toEqual({ soumisLe: '2026-11-16', reponseAttendueLe: '2026-11-23', relanceLe: null, relances: 0 })
+    expect(attenteReponseLot(lot({ coloris: { ...soumis, relances: ['2026-11-24'] } }), 'coloris_soumis'))
+      .toEqual({ soumisLe: '2026-11-16', reponseAttendueLe: '2026-12-01', relanceLe: '2026-11-24', relances: 1 })
+  })
+  it('only while the answer is really waited, and never a key that names who is waited on', () => {
+    // The answer came, Malterre has not passed it on: the partner still reads « coloris soumis », nothing is waited.
+    const oui = { ...soumis, reponse: { accepte: true, commentaire: '', le: '2026-11-18 10:00:00.000' } }
+    expect(etapeLotPartenaire('ok_ramer_a_envoyer', false, false)).toBe('coloris_soumis')
+    expect(attenteReponseLot(lot({ coloris: oui }), 'coloris_soumis')).toBeNull()
+    expect(attenteReponseLot(lot({ coloris: oui, okRamerLe: '2026-11-19' }), 'coloris_valide')).toBeNull()
+    // A coloris asked on rolls already received, a stabilités soumission: Malterre's control, not told.
+    expect(attenteReponseLot(lot({ reception: '2026-11-12', coloris: soumis }), 'mesures_a_transmettre')).toBeNull()
+    expect(attenteReponseLot(lot({ reception: '2026-11-12', mesuresTeinturier: true, stabilites: soumis }), 'en_controle')).toBeNull()
+    const cles = Object.keys(attenteReponseLot(lot({ coloris: soumis }), 'coloris_soumis')!).join(' ')
+    expect(cles).not.toMatch(/client|prix|commentaire|observa|par\b/i)
   })
 })
 

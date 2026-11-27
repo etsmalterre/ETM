@@ -57,6 +57,54 @@ export function natureInferee(envoi: string, reception: string | null, demandees
   return !reception || envoi < reception ? 'coloris' : 'stabilites'
 }
 
+// ── « Relancer le client » (Vincent 2026-11-27) ──────────
+//
+// The client has RELANCE_J.soumis working days (5) to answer a soumission.
+// Beyond, the lot is red on Suivi lots; the relance is an e-mail sent from
+// there to the client's soumission contacts, recorded in relance_soumission.
+// It moves OUR next chase only (lib/cycle-ennoblissement.ts `relanceClientDue`).
+
+/** What the relance mail names. Dates 'YYYY-MM-DD'. */
+export interface LotARelancer {
+  lot: string
+  nature: NatureSoumission
+  /** The soumission's send. */
+  soumisLe: string
+  /** Our relances since, sorted. */
+  relances: string[]
+  /** The lot came back from the dyer. */
+  recu: boolean
+  reference: string
+  coloris: string
+  /** The client's own name for the reference (designation_client). */
+  designation: string
+  refCommandeClient: string
+}
+
+const jjmmaaaa = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`
+
+/** The relance mail as it opens: short, the person reads it before it leaves. Pure. */
+export function mailRelanceClient(l: LotARelancer): { subject: string; body: string } {
+  const coloris = l.nature === 'coloris'
+  const article = [l.reference, l.coloris].filter(Boolean).join(' - ')
+  const derniere = l.relances.at(-1)
+  const quoi = coloris ? 'le coloris' : 'les stabilités'
+  const nom = l.designation || l.reference
+  const pour = nom ? ` pour la référence ${nom}${l.coloris ? ` (coloris ${l.coloris})` : ''}` : ''
+  return {
+    subject: `Relance - Soumission ${coloris ? 'coloris' : 'lot'} ${l.lot}${article ? ` - ${article}` : ''}${l.refCommandeClient ? ` · ${l.refCommandeClient}` : ''}`,
+    body:
+      `Bonjour,\n\n` +
+      `Nous vous avons soumis ${quoi} du lot ${l.lot}${pour} le ${jjmmaaaa(l.soumisLe)}` +
+      `${derniere ? ` et, malgré notre relance du ${jjmmaaaa(derniere)}, nous` : ' et'} n’avons pas encore reçu votre réponse.\n\n` +
+      (l.refCommandeClient ? `Réf commande client : ${l.refCommandeClient}\n\n` : '') +
+      `${coloris && !l.recu ? 'Le lot attend votre accord chez notre ennoblisseur pour être terminé' : 'Le lot attend votre accord pour être expédié'} : ` +
+      `la livraison de votre commande dépend de votre réponse.\n\n` +
+      `Pouvez-vous nous la donner ?\n\n` +
+      `Cordialement,`,
+  }
+}
+
 // ── Writes (native PostgreSQL) ───────────────────────────
 
 export async function enregistrerSoumission(opts: {
@@ -74,6 +122,24 @@ export async function enregistrerSoumission(opts: {
                                 idcommande_client, envoyee_par_id, envoyee_par, destinataires)
     VALUES (${opts.nature}, ${opts.idcommande}, ${opts.ligneId}, ${opts.idsuivilot}, ${opts.lot.trim()},
             ${opts.idcommandeClient}, ${opts.par.id}, ${opts.par.nom}, ${opts.destinataires.join(', ')})`
+}
+
+/** « Relancer le client » (Vincent 2026-11-27): the relance e-mail left for a
+ *  soumission whose answer is waited. The fact the cycle reads to push OUR next
+ *  chase 5 working days further (lib/cycle-ennoblissement.ts `relanceClientDue`);
+ *  the client's own delay never restarts. Table `relance_soumission` (0087),
+ *  append-only — and never an envoi_email row of type 15, which is a soumission. */
+export async function enregistrerRelanceClient(opts: {
+  nature: NatureSoumission
+  idsuivilot: number
+  idcommande: number
+  lot: string
+  par: { id: number; nom: string }
+  destinataires: string[]
+}): Promise<void> {
+  await mpsPg()`
+    INSERT INTO relance_soumission (nature, idsuivilot, idcommande_sous_traitant, lot, relance_par_id, relance_par, destinataires)
+    VALUES (${opts.nature}, ${opts.idsuivilot}, ${opts.idcommande}, ${opts.lot.trim()}, ${opts.par.id}, ${opts.par.nom}, ${opts.destinataires.join(', ')})`
 }
 
 export async function enregistrerOkRamer(opts: {

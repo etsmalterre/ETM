@@ -34,7 +34,7 @@ import {
 } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { CycleCard, type AttenduLot, type ClientRc, type EtapeLot, type PrealableLot } from './LotCycle'
+import { CycleCard, type AttenduLot, type ClientRc, type EtapeLot, type PrealableLot, type RelanceClientLot } from './LotCycle'
 
 export interface EntreeJournal {
   le: string
@@ -57,6 +57,7 @@ const LOOK: Record<string, { icon: LucideIcon; color: string }> = {
   tirelle_jete: { icon: Trash2, color: 'text-zinc-600 bg-zinc-500/10' },
   tirelle_boite_videe: { icon: Trash2, color: 'text-zinc-600 bg-zinc-500/10' },
   soumission: { icon: Send, color: 'text-violet-600 bg-violet-500/10' },
+  relance_client: { icon: BellRing, color: 'text-violet-600 bg-violet-500/10' },
   reponse_ok: { icon: ThumbsUp, color: 'text-green-700 bg-green-500/10' },
   reponse_refus: { icon: ThumbsDown, color: 'text-red-600 bg-red-500/10' },
   ok_ramer: { icon: MailCheck, color: 'text-sky-600 bg-sky-500/10' },
@@ -156,7 +157,7 @@ export function JournalListe({ entrees, isLoading, error }: {
 }
 
 export function JournalLotTab({
-  lotId, etape, prealables, etapes, attendu, clients,
+  lotId, etape, prealables, etapes, attendu, clients, relance,
 }: {
   lotId: number
   etape: EtapeLot | null | undefined
@@ -164,6 +165,7 @@ export function JournalLotTab({
   etapes?: PrealableLot[]
   attendu?: AttenduLot | null
   clients: ClientRc[]
+  relance?: RelanceClientLot | null
 }) {
   // Under ['suivi-lot', id]: every gesture on the lot already invalidates it.
   const { data, isLoading, error } = useQuery({
@@ -179,7 +181,7 @@ export function JournalLotTab({
       {etape && (
         <section className="space-y-1.5">
           <h3 className="text-[10px] font-semibold uppercase tracking-wide text-primary/70 px-0.5">Prochaines étapes</h3>
-          <CycleCard etape={etape} prealables={prealables} etapes={etapes} attendu={attendu} clients={clients} />
+          <CycleCard etape={etape} prealables={prealables} etapes={etapes} attendu={attendu} clients={clients} relance={relance} />
         </section>
       )}
       <JournalListe entrees={data?.entrees ?? []} isLoading={isLoading} error={error} />

@@ -49,8 +49,13 @@
 //    coup ça devient rouge »): the partner is shown the clock of each step that is ITS OWN, exactly as ETM runs
 //    it (`fenetreCommande` / `fenetreLot`): the working days it gets, those gone, and whether the time is up —
 //    the day ETM itself turns the order or the lot red. Waiting is never red. Never add the clocks that are not
-//    the partner's: Malterre's own steps and chase dates, the client's days on a soumission (the dyer's délai is
-//    pushed by what the client took beyond its 5: only the resulting day is told, `sortie`). The bon de commande PDF is the document Malterre e-mails: it carries what was sent
+//    the partner's: Malterre's own steps and chase dates. ONE clock that is not the partner's IS told since
+//    2026-11-27 (Vincent, reversing « never the client's days on a soumission »): while the client's answer to a
+//    COLORIS soumission is waited, the lot says since when, the day the answer is expected (5 working days after
+//    the send, then after each relance of Malterre) and how many times Malterre chased (`attenteReponse`) — the
+//    partner's matter waits on it. Shown in neutral, never red: it is not the partner's to act on. Still never
+//    told: the client itself, who was written to, the stabilités soumission. The dyer's délai is pushed by what
+//    the client took beyond its 5: the resulting day is `sortie`. The bon de commande PDF is the document Malterre e-mails: it carries what was sent
 //    (the partner's own prices included) and nothing is added to it here.
 //
 // Steps. ETM's cycle says where an order and its lots stand AND whose move it is at Malterre; the partner is told
@@ -92,7 +97,7 @@
 import { mpsPg } from './mps-pg.js'
 import { consumedEcruIds } from './fini-sources.js'
 import {
-  calendrierTraitement, etatCommande, etapeLot, joursOuvresDepuis, lireCommandesEnnoblissement, plusJoursOuvres, RELANCE_J,
+  calendrierTraitement, etatCommande, etapeLot, joursOuvresDepuis, lireCommandesEnnoblissement, plusJoursOuvres, relanceClientDue, RELANCE_J,
   type CommandeFait, type EtapeLot, type EtatCommande, type LotFait,
 } from './cycle-ennoblissement.js'
 import { DELAI_PREMIERE_DEMANDE_J } from './delai-sst.js'
@@ -311,6 +316,22 @@ export interface Lot {
   /** The partner's clock at this step (the lot to finish after « coloris validé », its controls after the
    *  reception); null when the step is not its own, or has no date (a reprise, a reteinture). */
   fenetre: Fenetre | null
+  /** The answer to the coloris soumission is waited (`attenteReponseLot`); null at any other moment. A clock
+   *  that is not the partner's: shown in neutral, never red. */
+  attenteReponse: AttenteReponse | null
+}
+
+/** A coloris submitted whose answer is waited. Dates YYYY-MM-DD. No key here may name who is waited on, nor
+ *  who chased: the portal refuses them in a lot's JSON. */
+export interface AttenteReponse {
+  /** The day the coloris was submitted. */
+  soumisLe: string
+  /** The day the answer is expected: 5 working days after the latest of the send and Malterre's relances. */
+  reponseAttendueLe: string
+  /** Malterre's latest relance; null = not chased yet. */
+  relanceLe: string | null
+  /** How many times Malterre chased. */
+  relances: number
 }
 
 /** A quality action the lot is judged against: the MENTION (the sentence already printed on the bon de commande)
@@ -478,6 +499,21 @@ export function fenetreLot(fait: LotFait, etape: EtapeLotPartenaire, today: stri
   }
   if (etape === 'mesures_a_transmettre' && fait.reception) return fenetre(fait.reception, plusJoursOuvres(fait.reception, RELANCE_J.controle), today, true)
   return null
+}
+
+/** The wait for the answer to a coloris soumission, as the partner reads it (Vincent 2026-11-27): only while that
+ *  answer is really waited — ETM's `coloris_soumis`; not `ok_ramer_a_envoyer`, where the answer came and the
+ *  partner still reads « coloris soumis » until Malterre passes it on. The day expected is ETM's own chase date
+ *  (`relanceClientDue`): the send + 5 working days, then each relance + 5. Pure. */
+export function attenteReponseLot(fait: LotFait, etape: EtapeLotPartenaire): AttenteReponse | null {
+  if (etape !== 'coloris_soumis' || etapeLot(fait) !== 'coloris_soumis' || !fait.coloris.envoyeeLe) return null
+  const relances = fait.coloris.relances ?? []
+  return {
+    soumisLe: fait.coloris.envoyeeLe,
+    reponseAttendueLe: relanceClientDue(fait.coloris)!,
+    relanceLe: relances.at(-1) ?? null,
+    relances: relances.length,
+  }
 }
 
 /** The steps of a lot at which the partner may type its measures: once it finishes the lot (coloris validé, or
@@ -937,6 +973,7 @@ function lotsDe(v: Vue, noms: Map<number, { reference: string; coloris: string }
         : l.etape === 'coloris_refuse' ? l.fait.coloris.reponse?.commentaire.trim() || null : null,
       controle: mesures.length ? { mesures, modifiable: v.etape !== 'terminee' && LOT_MESURABLE.has(l.etape) } : null,
       fenetre: v.etape === 'terminee' ? null : fenetreLot(l.fait, l.etape, aujourdhui()),
+      attenteReponse: v.etape === 'terminee' ? null : attenteReponseLot(l.fait, l.etape),
     }
   })
 }

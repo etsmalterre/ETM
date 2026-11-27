@@ -11,11 +11,12 @@
 //
 // Shown: the bon de commande sent, the délai recorded and pushed back, the urgency (asked, cancelled, its
 // answer), the order closed or reopened; for each lot: received, its controls recorded (the dyer's, Malterre's),
-// the coloris (submitted, validated, refused, to put on the stenter), a reprise with its reason (the one the
-// lot's page already shows), a quality action judged, the lot validated.
+// the coloris (submitted, validated, refused, to put on the stenter; and, since 2026-11-27, « Client relancé pour
+// le coloris »: Vincent — the partner's matter waits on that answer, it reads that Malterre chased it), a reprise
+// with its reason (the one the lot's page already shows), a quality action judged, the lot validated.
 // Never add: who did it (`par`, Malterre's people — and so the author is never sent at all), any `detail` that is
 // free text (notes, a client's comment, a report's motif and « de notre fait »), e-mail recipients, relances and
-// Points (the chasing), the échéance Malterre pushes back for an answer, the rapport de contrôle (it names the
+// Points of the PARTNER (the chasing of its délai), the échéance Malterre pushes back for an answer, the rapport de contrôle (it names the
 // client), the stabilités submitted to a client, the tirelle, the reminders, « Commande créée » (Malterre's own
 // preparation, before the bon is sent).
 
@@ -84,6 +85,9 @@ function duLot(e: Pick<EntreeJournalCommande, 'type' | 'titre' | 'detail'>): Sor
       return t === 'Coloris contrôlé' ? { titre: 'Coloris contrôlé par Malterre' } : null
     case 'soumission':
       return t === 'Coloris soumis au client' ? { titre: t } : null
+    case 'relance_client':
+      // The coloris only (the stabilités are between Malterre and its client); never who was written to.
+      return t === 'Client relancé pour le coloris' ? { titre: t } : null
     case 'reponse_ok':
       return t === 'Le client accepte le coloris' ? { titre: 'Coloris validé' } : t === 'Action qualité jugée conforme' ? { titre: t } : null
     case 'reponse_refus':

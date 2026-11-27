@@ -4,7 +4,7 @@
 //
 // Two kinds of source, never copied into each other:
 //   - the facts that already carry who + when in their own table (soumissions,
-//     the client's answers, « coloris validé », rapports de contrôle and their
+//     the client's answers and our relances of it, « coloris validé », rapports de contrôle and their
 //     dispenses, reprises, action verdicts, Tricobot's measures) are READ there;
 //   - the gestures that had no trace of their own (reception, dyer / Malterre
 //     measures typed on Suivi lots, the lab tablet, état changes) are written in
@@ -157,7 +157,7 @@ export async function lireJournalLot(idsuivilot: number, sql: Sql = mpsPg()): Pr
   const cle = cleLot(lot.lot)
   const memeLot = (l: string | null) => !!l && cleLot(String(l)) === cle
 
-  const [propres, soumissions, reponses, okRamer, rcs, dispenses, reprises, verdicts, labo, tricobot] = await Promise.all([
+  const [propres, soumissions, reponses, okRamer, rcs, dispenses, reprises, verdicts, labo, tricobot, relancesClient] = await Promise.all([
     sql<{ evenement: string; detail: string | null; par: string | null; le: Date; source: string }[]>`
       SELECT evenement, detail, par, le, source FROM journal_lot WHERE idsuivilot = ${idsuivilot} ORDER BY le, id`,
     sql<{ nature: string; lot: string; le: Date; par: string | null; destinataires: string | null; idsuivilot: number }[]>`
@@ -187,6 +187,9 @@ export async function lireJournalLot(idsuivilot: number, sql: Sql = mpsPg()): Pr
     sql<{ le: Date; proposition: string | null; statut: string | null; revu_par: string | null; revu_le: Date | null }[]>`
       SELECT cree_le AS le, proposition, statut, revu_par, revu_le FROM saisie_agent
       WHERE idsuivilot = ${idsuivilot} AND competence = 'controles' AND ecrit AND mode <> 'observation'`,
+    // « Relancer le client »: the relance e-mails for a soumission's answer (lib/soumission-lot.ts, 0087).
+    sql<{ nature: string; le: Date; par: string | null; destinataires: string | null }[]>`
+      SELECT nature, relance_le AS le, relance_par AS par, destinataires FROM relance_soumission WHERE idsuivilot = ${idsuivilot}`,
   ])
 
   const out: EntreeJournal[] = []
@@ -234,6 +237,14 @@ export async function lireJournalLot(idsuivilot: number, sql: Sql = mpsPg()): Pr
       le: r.le ? iso(r.le) : `${r.jour}T00:00:00.000Z`, type: r.reponse === 1 ? 'reponse_ok' : 'reponse_refus',
       titre: `Le client ${r.reponse === 1 ? 'accepte' : 'refuse'} ${quoi}`,
       detail: r.commentaire?.trim() || null, par: r.par, auteur: r.par ? 'personne' : 'inconnu',
+    })
+  }
+  // The wording is read by the partner's journal too (lib/espace-partenaire-journal.ts, a closed list).
+  for (const r of relancesClient) {
+    out.push({
+      le: iso(r.le), type: 'relance_client',
+      titre: r.nature === 'coloris' ? 'Client relancé pour le coloris' : 'Client relancé pour les stabilités',
+      detail: r.destinataires ? `À ${r.destinataires}` : null, par: r.par, auteur: r.par ? 'personne' : 'inconnu',
     })
   }
   for (const o of okRamer) {

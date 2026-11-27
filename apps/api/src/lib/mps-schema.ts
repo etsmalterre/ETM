@@ -2256,6 +2256,36 @@ ${grantApi('USAGE, SELECT', 'SEQUENCE envoi_id_seq')}
 ${grantApi('SELECT, INSERT', 'envoi_document')}
 `,
   },
+  {
+    // « Relancer le client » on a soumission whose answer is waited (Vincent
+    // 2026-11-27, lib/soumission-lot.ts): the client has 5 working days to
+    // answer; beyond, the lot was red « relancer le client » and stayed red
+    // until the answer, since nothing recorded that we had chased. One row per
+    // relance e-mail sent from Qualité › Suivi lots: who, when, to whom. A
+    // relance moves only OUR next chase (5 working days after it); the
+    // client's own delay still counts from the soumission's send
+    // (lib/cycle-ennoblissement.ts). Never an envoi_email row of type 15: that
+    // one is a soumission, and the latest of them restarts the client's clock.
+    // Append-only: the API role may only SELECT / INSERT.
+    name: '0087_relance_soumission',
+    sql: `
+CREATE TABLE relance_soumission (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  nature text NOT NULL CHECK (nature IN ('coloris', 'stabilites')),
+  idsuivilot bigint NOT NULL,
+  idcommande_sous_traitant bigint NOT NULL,
+  lot text NOT NULL,
+  relance_le timestamptz NOT NULL DEFAULT now(),
+  relance_par_id bigint NOT NULL DEFAULT 0,
+  relance_par text,
+  destinataires text
+);
+CREATE INDEX relance_soumission_commande ON relance_soumission (idcommande_sous_traitant);
+CREATE INDEX relance_soumission_lot ON relance_soumission (idsuivilot);
+${grantApi('SELECT, INSERT', 'relance_soumission')}
+${grantApi('USAGE, SELECT', 'SEQUENCE relance_soumission_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

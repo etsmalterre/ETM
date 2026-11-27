@@ -40,9 +40,9 @@ import { mpsPg } from '../lib/mps-pg.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import {
-  cleLot, depuisEtape, etapeLot, joursOuvresDepuis, lireCommandesEnnoblissement, prealableAttendu, prealablesDetail, urgenceLot, type Prealable, type EtapeLot, type LotFait, type SoumissionFait,
+  cleLot, depuisEtape, etapeLot, joursOuvresDepuis, lireCommandesEnnoblissement, prealableAttendu, prealablesDetail, relanceClientDue, urgenceLot, type Prealable, type EtapeLot, type LotFait, type SoumissionFait,
 } from '../lib/cycle-ennoblissement.js'
-import { enregistrerOkRamer, type NatureSoumission } from '../lib/soumission-lot.js'
+import { enregistrerOkRamer, enregistrerRelanceClient, mailRelanceClient, type LotARelancer, type NatureSoumission } from '../lib/soumission-lot.js'
 import { findEligibleLots } from './commandes-sous-traitant.js'
 import { clientsDesLots, cleLotLigne, journaliserEnvoiRc, rapportControleLot, type ClientDuLot, type RapportControleLot } from '../lib/rapport-controle-lot.js'
 import { nomFichierRc, renderRapportControle } from '../lib/rc-soumission.js'
@@ -801,6 +801,17 @@ function soumissionDuDetail(s: SoumissionFait | undefined) {
   }
 }
 
+/** « Relancer le client » as the detail shows it: non-null while the client's answer
+ *  to a soumission is waited. `due` = the day it is ours to chase (again), the rule of
+ *  the card's colour (lib/cycle-ennoblissement.ts `relanceClientDue`). */
+function relanceClientDuDetail(etape: EtapeLot | null, f: LotFait | undefined) {
+  const nature: NatureSoumission | null = etape === 'coloris_soumis' ? 'coloris' : etape === 'soumis' ? 'stabilites' : null
+  const s = nature && f ? f[nature] : null
+  if (!nature || !s?.envoyeeLe) return null
+  const relances = s.relances ?? []
+  return { nature, soumis_le: s.envoyeeLe, derniere: relances.at(-1) ?? null, nombre: relances.length, due: relanceClientDue(s)! }
+}
+
 /** The detail's cycle block: step, the controls the reference asks, what blocks the validation, both
  *  soumissions and the client's answers (LIVA #1313), the « coloris validé », the
  *  clients a RC can go to. */
@@ -836,6 +847,7 @@ async function cycleDuDetail(id: number, cmdId: number, ligneId: number, lot: st
       : null,
     recu: !!f?.reception,
     soumissions: { coloris: soumissionDuDetail(f?.coloris), stabilites: soumissionDuDetail(f?.stabilites) },
+    relance_client: relanceClientDuDetail(e?.etape ?? null, f),
     ok_ramer_le: f?.okRamerLe ?? null,
     // What the lot's reference asks (Finis › Références, lib/controles-lot.ts).
     controles: f?.controles ?? CONTROLES_PAR_DEFAUT,
@@ -1483,6 +1495,162 @@ suiviLotsRouter.post('/:id/ok-ramer/email', async (req: Request, res: Response) 
     res.json({ ok: true, messageId })
   } catch (err) {
     console.error('Error sending ok à ramer:', err)
+    const message = err instanceof Error ? err.message : 'Internal server error'
+    res.status(500).json({ error: 'send_failed', message })
+  }
+})
+
+// ── « Relancer le client » (Vincent 2026-11-27) ──────────────────────────────
+//
+// The client has 5 working days to answer a soumission (coloris or stabilités);
+// beyond, the lot is red « relancer le client ». The relance IS this e-mail, sent
+// from ETM to the client's soumission contacts and recorded in relance_soumission
+// (lib/soumission-lot.ts): the lot is calm again for 5 working days, then red
+// again, and so on (lib/cycle-ennoblissement.ts `relanceClientDue`). The client's
+// own delay never restarts. Offered while the answer is waited, whatever the day.
+//   GET  /suivi-lots/:id/relance-client/email-defaults
+//   POST /suivi-lots/:id/relance-client/email
+
+interface LotRelanceClient extends LotARelancer {
+  id: number
+  cmd: number
+  idsousTraitant: number
+  idclient: number
+  client: string
+}
+
+const MAIL_VALIDE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+/** The lot, while the client's answer to one of its soumissions is waited. */
+async function lotRelanceClient(req: Request, res: Response): Promise<LotRelanceClient | null> {
+  const id = parseInt(req.params.id, 10)
+  if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return null }
+  const sql = mpsPg()
+  const [s] = await sql<{ cmd: number; ligne: number; lot: string; sst: number; idref_fini: number; reference: string | null; coloris: string | null }[]>`
+    SELECT COALESCE(s.idcommande_sous_traitant, 0) AS cmd, COALESCE(s.idligne_commande_sous_traitant, 0) AS ligne,
+           trim(s.lot::text) AS lot, COALESCE(s.idsous_traitant, 0) AS sst, COALESCE(s.idref_fini, 0) AS idref_fini,
+           rf.reference::text AS reference,
+           CASE WHEN COALESCE(rf.avec_teinture, 1) = 0 THEN ce.reference::text ELSE COALESCE(rfc.reference::text, ce.reference::text) END AS coloris
+    FROM suivilot s
+    LEFT JOIN ref_fini rf ON rf.idref_fini = s.idref_fini
+    LEFT JOIN ref_fini_colori rfc ON rfc.idref_fini_colori = s.idcoloris
+    LEFT JOIN colori_ecru ce ON ce.idcolori_ecru = s.idcoloris
+    WHERE s.idsuivilot = ${id}`
+  if (!s) { res.status(404).json({ error: 'Lot introuvable' }); return null }
+  const cycle = await etapeDuLot(id)
+  const nature: NatureSoumission | null = cycle?.etape === 'coloris_soumis' ? 'coloris' : cycle?.etape === 'soumis' ? 'stabilites' : null
+  const fait = nature ? cycle!.fait[nature] : null
+  if (!nature || !fait?.envoyeeLe) {
+    res.status(409).json({ error: 'pas_en_attente', message: 'Ce lot n’attend pas de réponse du client.' })
+    return null
+  }
+  // The client: the order the soumission named; a soumission from before
+  // soumission_lot (2026-10-22) has only the lot's pieces to name it.
+  const [sl] = await sql<{ idclient: number; client: string | null; ref_client: string | null }[]>`
+    SELECT cc.idclient, c.nom::text AS client, cc.ref_client::text AS ref_client
+    FROM soumission_lot sl
+    JOIN commande_client cc ON cc.idcommande_client = sl.idcommande_client
+    LEFT JOIN client c ON c.idclient = cc.idclient
+    WHERE sl.idsuivilot = ${id} AND sl.nature = ${nature}
+    ORDER BY sl.envoyee_le DESC LIMIT 1`
+  const parPieces = sl ? null : (await clientsDesLots([{ ligne: Number(s.ligne), lot: s.lot }])).get(cleLotLigne(Number(s.ligne), s.lot))?.[0] ?? null
+  const idclient = Number(sl?.idclient ?? parPieces?.idclient) || 0
+  const [d] = idclient > 0 && Number(s.idref_fini) > 0
+    ? await sql<{ designation: string | null }[]>`
+        SELECT designation::text AS designation FROM designation_client
+        WHERE idclient = ${idclient} AND idref_fini = ${Number(s.idref_fini)} AND COALESCE(archive, 0) = 0
+        ORDER BY iddesignation_client LIMIT 1`
+    : []
+  return {
+    id, cmd: Number(s.cmd), lot: s.lot, nature, soumisLe: fait.envoyeeLe, relances: fait.relances ?? [], recu: !!cycle!.fait.reception,
+    idsousTraitant: Number(s.sst), reference: (s.reference ?? '').trim(), coloris: (s.coloris ?? '').trim(),
+    idclient, client: (sl?.client ?? parPieces?.nom ?? '').trim(),
+    designation: (d?.designation ?? '').trim(), refCommandeClient: (sl?.ref_client ?? '').trim(),
+  }
+}
+
+suiviLotsRouter.get('/:id/relance-client/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const l = await lotRelanceClient(req, res)
+    if (!l) return
+    const sql = mpsPg()
+    type Contact = { id: number; nom: string | null; prenom: string | null; mail: string | null; soumission: number; visible: number; du_client: boolean }
+    // To: the client's soumission contacts (those the soumission went to in copy).
+    // Offered: its other contacts, and the dyer's soumission contacts while it holds the lot.
+    const sst = l.nature === 'coloris' && !l.recu ? l.idsousTraitant : 0
+    const contacts = await sql<Contact[]>`
+      SELECT idcontact AS id, nom::text AS nom, prenom::text AS prenom, mail::text AS mail,
+             COALESCE(envoi_soumission, 0)::int AS soumission, COALESCE(est_visible, 1)::int AS visible,
+             (${l.idclient} > 0 AND idclient = ${l.idclient}) AS du_client
+      FROM contact
+      WHERE (${l.idclient} > 0 AND idclient = ${l.idclient})
+         OR (${sst} > 0 AND idsous_traitant = ${sst} AND COALESCE(envoi_soumission, 0) = 1)
+      ORDER BY idcontact`
+    type Destinataire = { email: string; name?: string; source: 'contact'; contactId: number }
+    const selected: Destinataire[] = []
+    const suggestions: Destinataire[] = []
+    const vus = new Set<string>()
+    for (const c of [...contacts.filter((x) => x.du_client), ...contacts.filter((x) => !x.du_client)]) {
+      const mail = (c.mail ?? '').trim()
+      if (Number(c.visible) === 0 || !MAIL_VALIDE.test(mail) || vus.has(mail.toLowerCase())) continue
+      vus.add(mail.toLowerCase())
+      const name = [c.prenom, c.nom].map((x) => (x ?? '').trim()).filter(Boolean).join(' ')
+      const r: Destinataire = { email: mail, source: 'contact', contactId: Number(c.id), ...(name ? { name } : {}) }
+      if (c.du_client && Number(c.soumission) === 1) selected.push(r)
+      else suggestions.push(r)
+    }
+    res.json({ recipients: { selected, suggestions }, ...mailRelanceClient(l), sousTraitantNom: l.client, numero: l.lot })
+  } catch (err) {
+    console.error('Error building relance client email defaults:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+suiviLotsRouter.post('/:id/relance-client/email', async (req: Request, res: Response) => {
+  try {
+    if (!(await ensureResponsable(req, res))) return
+    const parsed = okRamerBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const l = await lotRelanceClient(req, res)
+    if (!l) return
+    const nom = await nomUtilisateur(req.userId!)
+    const devSkip = parsed.data.dev_skip_send === true && process.env.NODE_ENV !== 'production'
+    let messageId: string
+    if (devSkip) {
+      messageId = `dev-skip-${Date.now()}`
+      console.log(`[dev-skip-send] relance client lot=${l.lot} (${l.nature}) — fake send to ${parsed.data.to.join(', ')}`)
+    } else {
+      const from = await getUserEmail(req.userId!)
+      if (!from) {
+        res.status(400).json({
+          error: 'no_sender_email',
+          message: "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs.",
+        })
+        return
+      }
+      const attachments = (parsed.data.extra_attachments ?? []).map((a) => ({
+        filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type,
+      }))
+      messageId = await sendMail({
+        from,
+        fromName: `${nom} — ETS Malterre`,
+        to: parsed.data.to,
+        cc: parsed.data.cc,
+        bcc: parsed.data.bcc,
+        subject: parsed.data.subject,
+        body: parsed.data.body,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      })
+    }
+    // The mail left: the relance is this fact (never an envoi_email row of type 15,
+    // which the cycle reads as a new soumission and would restart the client's clock).
+    await enregistrerRelanceClient({
+      nature: l.nature, idsuivilot: l.id, idcommande: l.cmd, lot: l.lot,
+      par: { id: req.userId ?? 0, nom }, destinataires: [...parsed.data.to, ...(parsed.data.cc ?? [])],
+    })
+    res.json({ ok: true, messageId })
+  } catch (err) {
+    console.error('Error sending relance client:', err)
     const message = err instanceof Error ? err.message : 'Internal server error'
     res.status(500).json({ error: 'send_failed', message })
   }

@@ -42,7 +42,13 @@
 //     a_valider           nothing left to do: the responsable qualité validates
 //
 // Every step says whose move it is and when to chase: the relance is computed
-// from the step's own date, never typed. Delays below are first estimates, to be
+// from the step's own date, never typed. A soumission waits for the CLIENT: it
+// has RELANCE_J.soumis working days to answer, then it is ours to chase it
+// (« Relancer le client » on Suivi lots, an e-mail recorded in
+// relance_soumission, Vincent 2026-11-27) — and again that many days after each
+// relance. Our relances move only OUR next chase: the client's own delay
+// (depassementClient, the dyer's délai pushed by it) counts from the
+// soumission's send, whatever we did since. Delays below are first estimates, to be
 // corrected from PE's use like the point's rules.
 
 import { mpsPg } from './mps-pg.js'
@@ -88,6 +94,9 @@ export interface SoumissionFait {
   /** The client's answer to it, recorded on Suivi lots. null = not answered yet.
    *  `le` 'YYYY-MM-DD HH:MM:SS.mmm' (ms: an answer and a new send can share a second). */
   reponse: { accepte: boolean; commentaire: string; le: string; par?: string } | null
+  /** The days we chased the client for this answer since that send (« Relancer
+   *  le client », relance_soumission), sorted. 'YYYY-MM-DD'. Absent = never. */
+  relances?: string[]
 }
 
 export const SANS_SOUMISSION: SoumissionFait = { requise: false, envoyeeLe: null, reponse: null }
@@ -139,7 +148,8 @@ export const RELANCE_J = {
    *  Red only after: relance the dyer or do the Malterre controls. The Point still
    *  asks the measures every day, only the colour waits. */
   controle: 5,
-  /** The client answers a soumission. */
+  /** The client answers a soumission; and, once we chased it, the days it gets
+   *  again before the next relance (Vincent 2026-11-27: « repartir pour 5 jours »). */
   soumis: 5,
   /** The dyer rames the lot and ships it after the « coloris validé » — only when its line carries no délai:
    *  a lot « en rame » is due with its line's délai (`LotFait.tempsLigne`, Vincent 2026-11-26: the bon de
@@ -180,6 +190,23 @@ export function plusJoursOuvres(iso: string, n: number): string {
 
 const enAttente = (s: SoumissionFait) => !!s.envoyeeLe && !s.reponse
 const refusee = (s: SoumissionFait) => !!s.envoyeeLe && !!s.reponse && !s.reponse.accepte
+
+/** The last day the client heard from us about this soumission: its send, or
+ *  our latest relance since. null = never sent. Pure. */
+export function dernierContactClient(s: Pick<SoumissionFait, 'envoyeeLe' | 'relances'>): string | null {
+  if (!s.envoyeeLe) return null
+  const derniere = s.relances?.at(-1)
+  return derniere && derniere > s.envoyeeLe ? derniere : s.envoyeeLe
+}
+
+/** When it is ours to chase the client for its answer: RELANCE_J.soumis working
+ *  days after the latest of the send and our relances — calm in between, then
+ *  due again, and so on. The client's own delay does not restart
+ *  (depassementClient counts from the send). null = never sent. Pure. */
+export function relanceClientDue(s: Pick<SoumissionFait, 'envoyeeLe' | 'relances'>): string | null {
+  const contact = dernierContactClient(s)
+  return contact ? plusJoursOuvres(contact, RELANCE_J.soumis) : null
+}
 
 export function etapeLot(l: LotFait): EtapeLot {
   if (l.etat === ETAT_LOT.VALIDE || l.etat === ETAT_LOT.EXPEDIE) return 'valide'
@@ -273,13 +300,15 @@ const CONTROLE_RECU: EtapeLot[] = ['attente_mesures', 'attente_tirelle', 'colori
 /** Since when the lot is at its step and how many working days the step gets
  *  before we chase (the same dates as etatLot's relance). The control steps share
  *  one window from the reception (« en contrôle » = 5 working days, 2026-11-03):
- *  2 days in is fine, 5 is a problem (Vincent 2026-11-05). null = no date known
- *  (en reprise, reteinture: the dyer gives it back in the point). */
+ *  2 days in is fine, 5 is a problem (Vincent 2026-11-05). A soumission's window
+ *  is the client's 5 days since we last asked (the send, then each relance).
+ *  null = no date known (en reprise, reteinture: the dyer gives it back in the point). */
 export function depuisEtape(l: LotFait, etape: EtapeLot = etapeLot(l)): { depuis: string; delai: number } | null {
   const r = l.reception
   if (CONTROLE_RECU.includes(etape) && r) return { depuis: r, delai: RELANCE_J.controle }
-  if (etape === 'coloris_soumis' && l.coloris.envoyeeLe) return { depuis: l.coloris.envoyeeLe, delai: RELANCE_J.soumis }
-  if (etape === 'soumis' && l.stabilites.envoyeeLe) return { depuis: l.stabilites.envoyeeLe, delai: RELANCE_J.soumis }
+  // The client's window starts again at each relance: the days since we last asked.
+  if (etape === 'coloris_soumis' && l.coloris.envoyeeLe) return { depuis: dernierContactClient(l.coloris)!, delai: RELANCE_J.soumis }
+  if (etape === 'soumis' && l.stabilites.envoyeeLe) return { depuis: dernierContactClient(l.stabilites)!, delai: RELANCE_J.soumis }
   if (etape === 'ok_ramer_a_envoyer' && l.coloris.reponse) return { depuis: l.coloris.reponse.le.slice(0, 10), delai: RELANCE_J.nous }
   if (etape === 'en_rame') {
     // Due with its line: the dyer's days from the bon de commande to the line's délai, as its order counts them.
@@ -301,8 +330,8 @@ export function etatLot(l: LotFait): EtatLot {
   const r = l.reception
   let relance: string | null = null
   if (CONTROLE_RECU.includes(etape) && r) relance = plusJoursOuvres(r, RELANCE_J.controle)
-  else if (etape === 'coloris_soumis' && l.coloris.envoyeeLe) relance = plusJoursOuvres(l.coloris.envoyeeLe, RELANCE_J.soumis)
-  else if (etape === 'soumis' && l.stabilites.envoyeeLe) relance = plusJoursOuvres(l.stabilites.envoyeeLe, RELANCE_J.soumis)
+  else if (etape === 'coloris_soumis') relance = relanceClientDue(l.coloris)
+  else if (etape === 'soumis') relance = relanceClientDue(l.stabilites)
   else if (etape === 'ok_ramer_a_envoyer' && l.coloris.reponse) relance = plusJoursOuvres(l.coloris.reponse.le.slice(0, 10), RELANCE_J.nous)
   else if (etape === 'en_rame') relance = l.tempsLigne?.echeance ?? (l.okRamerLe ? plusJoursOuvres(l.okRamerLe, RELANCE_J.en_rame) : null)
   else if (etape === 'refuse_client' && r) relance = plusJoursOuvres(r, RELANCE_J.nous)
@@ -399,6 +428,9 @@ export interface AttenteClient {
   du: string
   /** The client's answer, 'YYYY-MM-DD'. null = still waited. */
   au: string | null
+  /** Our latest relance of the client for this answer, 'YYYY-MM-DD' (absent = never
+   *  chased). It moves OUR next chase only: the client's delay counts from `du`. */
+  relanceLe?: string
 }
 
 export interface EtatTraitement {
@@ -429,7 +461,10 @@ export function depassementClient(a: AttenteClient, fin: string): number {
 function attentesDe(lots: readonly LotFait[]): AttenteClient[] {
   return lots
     .filter((l) => !!l.coloris.envoyeeLe && (!l.reception || l.coloris.envoyeeLe < l.reception))
-    .map((l) => ({ lot: l.lot, du: l.coloris.envoyeeLe!, au: l.coloris.reponse ? l.coloris.reponse.le.slice(0, 10) : null }))
+    .map((l) => {
+      const relanceLe = l.coloris.relances?.at(-1)
+      return { lot: l.lot, du: l.coloris.envoyeeLe!, au: l.coloris.reponse ? l.coloris.reponse.le.slice(0, 10) : null, ...(relanceLe ? { relanceLe } : {}) }
+    })
     .sort((a, b) => a.du.localeCompare(b.du))
 }
 
@@ -518,11 +553,12 @@ export function calendrierTraitement(t: EtatTraitement, today: string): Calendri
 
 /** Whose move and when to chase while the dyer holds the order (en traitement,
  *  or a solde): the client while a coloris answer is waited (its 5 days, then
- *  ours to chase IT — never the dyer for a délai the client is eating), else
- *  the dyer on its délai pushed by the client's delay. */
+ *  ours to chase IT — never the dyer for a délai the client is eating — and
+ *  again 5 days after each relance, `relanceClientDue`), else the dyer on its
+ *  délai pushed by the client's delay. */
 function chasseTraitement(c: CommandeFait, t: EtatTraitement | undefined): { main: Main; relance: string | null } {
   const enAttente = t?.attentes.find((a) => !a.au)
-  if (enAttente) return { main: 'client', relance: plusJoursOuvres(enAttente.du, RELANCE_J.soumis) }
+  if (enAttente) return { main: 'client', relance: relanceClientDue({ envoyeeLe: enAttente.du, relances: enAttente.relanceLe ? [enAttente.relanceLe] : [] }) }
   const reste = t ? Math.max(0, t.retardClient - t.reporteClient) : 0
   return { main: 'teinturier', relance: t && reste > 0 ? plusJoursOuvres(t.delai, reste) : c.delai }
 }
@@ -675,6 +711,8 @@ function rang(sstatut: string | null): 0 | 1 | 2 {
 
 /** One soumission sent, as the reader assembles it. `ts` 'YYYY-MM-DD HH:MM:SS.mmm'. */
 export interface EnvoiSoumission { nature: NatureSoumission; jour: string; ts: string }
+/** One relance of the client for an answer still waited (relance_soumission). */
+export interface RelanceSoumission { nature: NatureSoumission; jour: string; ts: string }
 /** One answer of the client, its nature resolved. */
 export interface ReponseSoumission { nature: NatureSoumission; accepte: boolean; commentaire: string; ts: string; par: string }
 
@@ -683,21 +721,26 @@ const plusRecent = <T extends { ts: string }>(xs: T[]): T | null =>
 
 /** The lot's soumission of one nature, from its sends and the client's
  *  answers: the latest send still valid (not before `invalideAvant`, the day
- *  the lot came back reworked), and the latest answer given after it. Pure. */
+ *  the lot came back reworked), the latest answer given after it, and our
+ *  relances of the client since that send (an older one chased an older
+ *  question). Pure. */
 export function faitSoumission(
   nature: NatureSoumission,
   requise: boolean,
   envois: EnvoiSoumission[],
   reponses: ReponseSoumission[],
   invalideAvant: string | null,
+  relances: RelanceSoumission[] = [],
 ): SoumissionFait {
   const dernier = plusRecent(envois.filter((e) => e.nature === nature && (!invalideAvant || e.jour >= invalideAvant)))
   if (!dernier) return { requise, envoyeeLe: null, reponse: null }
   const rep = plusRecent(reponses.filter((r) => r.nature === nature && r.ts >= dernier.ts))
+  const jours = relances.filter((r) => r.nature === nature && r.ts >= dernier.ts).map((r) => r.jour).sort()
   return {
     requise,
     envoyeeLe: dernier.jour,
     reponse: rep ? { accepte: rep.accepte, commentaire: rep.commentaire, le: rep.ts, par: rep.par } : null,
+    ...(jours.length > 0 ? { relances: jours } : {}),
   }
 }
 
@@ -714,7 +757,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     SELECT idligne_commande_sous_traitant AS idl, to_char(ancien_delai, 'YYYY-MM-DD') AS a, to_char(delai_donne, 'YYYY-MM-DD') AS n
       FROM delai_sst_evenement
      WHERE type = 'report_delai' AND imputable = 'client' AND idcommande_sous_traitant = ANY(${cmdIds})`
-  const [entetes, lignes, envoisMail, envoisNature, reponses, oksRamer] = await Promise.all([
+  const [entetes, lignes, envoisMail, envoisNature, reponses, oksRamer, relancesClient] = await Promise.all([
     sql<{ id: number; est_soldee: number; idcommande_client: number }[]>`
       SELECT idcommande_sous_traitant AS id, est_soldee,
              COALESCE(idcommande_client, 0) AS idcommande_client
@@ -745,6 +788,12 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       SELECT idcommande_sous_traitant AS cmd, lot,
              to_char(envoye_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD HH24:MI:SS.MS') AS ts
       FROM ok_a_ramer_envoi WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
+    // « Relancer le client »: our relances for an answer still waited (0087).
+    sql<{ cmd: number; lot: string; nature: NatureSoumission; jour: string; ts: string }[]>`
+      SELECT idcommande_sous_traitant AS cmd, lot, nature,
+             to_char(relance_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS jour,
+             to_char(relance_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD HH24:MI:SS.MS') AS ts
+      FROM relance_soumission WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
   ])
 
   const faitsDelai = await faitsDelaiP
@@ -915,14 +964,20 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     const k = `${o.cmd}:${cleLot(o.lot)}`
     if ((okParCle.get(k) ?? '') < o.ts) okParCle.set(k, o.ts)
   }
+  const relancesParCle = new Map<string, RelanceSoumission[]>()
+  for (const r of relancesClient) {
+    const k = `${r.cmd}:${cleLot(r.lot)}`
+    relancesParCle.set(k, [...(relancesParCle.get(k) ?? []), { nature: r.nature, jour: r.jour, ts: r.ts }])
+  }
   const rcParLot = await clientsDesLots(lots.map((s) => ({ ligne: Number(s.ligne), lot: String(s.lot ?? '') })))
 
   /** The soumission facts of one lot. */
   const soumissionsDuLot = (k: string, natures: NatureSoumission[], rep: { dernierRetour: string | null; dernierRetourTeinture: string | null } | undefined) => {
     const envois = envoisParCle.get(k) ?? []
     const reps = reponsesParCle.get(k) ?? []
-    const coloris = faitSoumission('coloris', natures.includes('coloris'), envois, reps, rep?.dernierRetourTeinture ?? null)
-    const stabilites = faitSoumission('stabilites', natures.includes('stabilites'), envois, reps, rep?.dernierRetour ?? null)
+    const rels = relancesParCle.get(k) ?? []
+    const coloris = faitSoumission('coloris', natures.includes('coloris'), envois, reps, rep?.dernierRetourTeinture ?? null, rels)
+    const stabilites = faitSoumission('stabilites', natures.includes('stabilites'), envois, reps, rep?.dernierRetour ?? null, rels)
     const ok = okParCle.get(k)
     const okRamerLe = coloris.reponse?.accepte && ok && ok >= coloris.reponse.le ? ok.slice(0, 10) : null
     return { coloris, stabilites, okRamerLe }

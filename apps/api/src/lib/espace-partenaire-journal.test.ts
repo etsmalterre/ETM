@@ -33,6 +33,9 @@ describe('the order’s journal as the partner reads it', () => {
     expect(e('urgence', 'Urgence relancée')).toBeNull()
     expect(e('rc', 'Rapport de contrôle envoyé à CLIENT SA', null, 'MA1')).toBeNull()
     expect(e('soumission', 'Stabilités soumises au client', null, 'MA1')).toBeNull()
+    // Malterre chased its client for the coloris (2026-11-27): told, without who was written to; the stabilités never.
+    expect(e('relance_client', 'Client relancé pour le coloris', 'À achats@client.example', 'MA1')).toEqual({ le: '2026-11-24T09:00:00.000Z', titre: 'Client relancé pour le coloris', detail: null, lot: 'MA1' })
+    expect(e('relance_client', 'Client relancé pour les stabilités', 'À achats@client.example', 'MA1')).toBeNull()
     expect(e('reponse_refus', 'Le client refuse les stabilités', null, 'MA1')).toBeNull()
     expect(e('tirelle_jete', 'Tirelle jetée', null, 'MA1')).toBeNull()
     expect(e('rappel', 'Rappel posé', 'appeler le client', 'MA1')).toBeNull()

@@ -5,11 +5,15 @@
 // Two soumissions since LIVA #1313: the COLORIS one before the stenter (the
 // client's yes = « coloris validé », mailed to the dyer) and the STABILITÉS one on
 // the received rolls.
+// While the client's answer to a soumission is waited, « Relancer le client »
+// (Vincent 2026-11-27) sends the relance e-mail: the lot is calm for 5 working
+// days after it, then red again.
 // The step and its blockers are computed by apps/api/src/lib/cycle-ennoblissement.ts.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   AlertCircle,
+  BellRing,
   CheckCircle2,
   ChevronUp,
   ClipboardCheck,
@@ -80,6 +84,18 @@ export const SANS_SOUMISSIONS: SoumissionsLot = {
   stabilites: { requise: false, envoyee_le: null, reponse: null },
 }
 
+/** « Relancer le client » (API `relanceClientDuDetail`): present while the client's
+ *  answer to a soumission is waited. Dates 'YYYY-MM-DD'. */
+export interface RelanceClientLot {
+  nature: NatureSoumission
+  soumis_le: string
+  /** Our latest relance; null = not chased yet. */
+  derniere: string | null
+  nombre: number
+  /** The day it is ours to chase (again): 5 working days after the latest of the two. */
+  due: string
+}
+
 /** The soumission the client is to answer at this step, if any. */
 export function natureEnAttente(etape: EtapeLot): NatureSoumission | null {
   return etape === 'coloris_soumis' ? 'coloris' : etape === 'soumis' ? 'stabilites' : null
@@ -122,7 +138,7 @@ const fmtJour = (iso: string | null) => (iso ? `${iso.slice(8, 10)}/${iso.slice(
 
 // ── Footer: the step pill + its gestures (§29.4) ─────────
 
-export type GesteLot = 'valider' | 'reprendre' | 'accepte' | 'refuse' | 'ok_ramer'
+export type GesteLot = 'valider' | 'reprendre' | 'accepte' | 'refuse' | 'ok_ramer' | 'relance_client'
 
 export function LotCycleFooter({
   etape, prealables, recu, canManage, isChanging, disabled, onGeste,
@@ -198,6 +214,7 @@ export function LotCycleFooter({
           {etape === 'coloris_soumis' && item('refuse', 'Le client refuse le coloris…', ThumbsDown, 'text-red-600')}
           {etape === 'soumis' && item('accepte', 'Le client accepte les stabilités', ThumbsUp, 'text-green-600')}
           {etape === 'soumis' && item('refuse', 'Le client refuse les stabilités…', ThumbsDown, 'text-red-600')}
+          {(etape === 'coloris_soumis' || etape === 'soumis') && item('relance_client', 'Relancer le client…', BellRing, 'text-violet-600')}
           {(etape === 'ok_ramer_a_envoyer' || etape === 'en_rame') && item(
             'ok_ramer', etape === 'en_rame' ? 'Retransmettre la validation du coloris à l’ennoblisseur…' : 'Transmettre la validation du coloris à l’ennoblisseur…', MailCheck, 'text-amber-600',
           )}
@@ -250,7 +267,7 @@ export interface PrealableLot {
  *  The gestures stay in the footer menu (no button on the card, 2026-11-05);
  *  the RC per client in the header button. */
 export function CycleCard({
-  etape, prealables, etapes, attendu, clients,
+  etape, prealables, etapes, attendu, clients, relance,
 }: {
   etape: EtapeLot
   prealables: string[]
@@ -259,6 +276,8 @@ export function CycleCard({
   /** Absent from an older API: the card falls back to the first prealable. */
   attendu?: AttenduLot | null
   clients: ClientRc[]
+  /** The client's answer is waited: when it was asked and when we last chased. */
+  relance?: RelanceClientLot | null
 }) {
   const valide = etape === 'valide'
   const rcDus = clients.filter((c) => c.du)
@@ -294,6 +313,12 @@ export function CycleCard({
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-base font-semibold leading-snug" title={tete.texte}>{meta.label}</p>
+            {relance && (
+              <p className="text-xs text-muted-foreground">
+                Soumis le {fmtJour(relance.soumis_le).slice(0, 5)}
+                {relance.derniere && ` · relancé le ${fmtJour(relance.derniere).slice(0, 5)}${relance.nombre > 1 ? ` (${relance.nombre} relances)` : ''}`}
+              </p>
+            )}
           </div>
           {mesure && (
             <div className="flex-shrink-0 text-right">

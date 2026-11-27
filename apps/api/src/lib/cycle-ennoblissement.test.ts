@@ -6,6 +6,8 @@ import {
   etatCommande,
   etatLot,
   depuisEtape,
+  dernierContactClient,
+  relanceClientDue,
   joursOuvresDepuis,
   plusJoursOuvres,
   prealableAttendu,
@@ -212,6 +214,84 @@ describe('etatLot: whose move and when to chase', () => {
   })
   it('reprise: the dyer gives the date in the point, nothing computed', () => {
     expect(etatLot(lot({ etat: 2 }))).toMatchObject({ main: 'teinturier', relance: null })
+  })
+})
+
+describe('« Relancer le client »: 5 more working days after each relance (Vincent 2026-11-27)', () => {
+  // October 2026 has no public holiday. Coloris sent Mon 12/10: the client's 5 days end Mon 19/10.
+  const soumis = (relances?: string[]) => lot({ reception: null, idligne: 7, coloris: { ...soum({ requise: true, le: '2026-10-12' }), ...(relances ? { relances } : {}) } })
+  const cmd = (l: LotFait) => commande({ delaiFaits: faitsDelai({ demandeLe: '2026-10-05' }), lignesOuvertes: [{ id: 7, delai: '2026-10-20' }], lots: [l], ecruChezTeinturier: 1 })
+
+  it('the chase date: the send + 5, then the latest relance + 5', () => {
+    expect(dernierContactClient(soum({ le: '2026-10-12' }))).toBe('2026-10-12')
+    expect(relanceClientDue(soum({ le: '2026-10-12' }))).toBe('2026-10-19')
+    expect(relanceClientDue({ envoyeeLe: '2026-10-12', relances: ['2026-10-20'] })).toBe('2026-10-27')
+    expect(relanceClientDue({ envoyeeLe: '2026-10-12', relances: ['2026-10-20', '2026-10-27'] })).toBe('2026-11-03')
+    expect(relanceClientDue(soum())).toBeNull()
+  })
+  it('the lot: red until we chase, calm for 5 working days, red again — coloris and stabilités alike', () => {
+    expect(urgenceLot(soumis(), '2026-10-20')).toEqual({ niveau: 'rouge', raison: 'Relancer le client depuis le 19/10' })
+    // Chased Tue 20/10: nothing to do until the day before the next chase (Tue 27/10).
+    const relance = soumis(['2026-10-20'])
+    expect(etatLot(relance)).toMatchObject({ etape: 'coloris_soumis', main: 'client', relance: '2026-10-27', fenetre: { depuis: '2026-10-20', delai: 5 } })
+    expect(urgenceLot(relance, '2026-10-20')).toBeNull()
+    expect(urgenceLot(relance, '2026-10-23')).toBeNull()
+    expect(urgenceLot(relance, '2026-10-26')?.niveau).toBe('ambre')
+    expect(urgenceLot(relance, '2026-10-27')).toEqual({ niveau: 'rouge', raison: 'Relancer le client aujourd’hui' })
+    // …and so on after a second relance.
+    expect(urgenceLot(soumis(['2026-10-20', '2026-10-27']), '2026-10-28')).toBeNull()
+    // The stabilités soumission of a received lot follows the same rule.
+    const stab = lot({ mesuresTeinturier: true, stabilites: { ...soum({ le: '2026-10-12' }), relances: ['2026-10-20'] } })
+    expect(etatLot(stab)).toMatchObject({ etape: 'soumis', relance: '2026-10-27' })
+    expect(depuisEtape(stab)).toEqual({ depuis: '2026-10-20', delai: 5 })
+  })
+  it('the order waits on the client the same way: its chase moves with the relance', () => {
+    expect(urgenceCommande(etatCommande(cmd(soumis())), '2026-10-21')).toBe('late')
+    const e = etatCommande(cmd(soumis(['2026-10-20'])))
+    expect(e).toMatchObject({ etape: 'en_teinture', main: 'client', relance: '2026-10-27' })
+    expect(e.traitement!.attentes).toEqual([{ lot: 'MA109377', du: '2026-10-12', au: null, relanceLe: '2026-10-20' }])
+    expect(urgenceCommande(e, '2026-10-21')).toBeNull()
+    expect(urgenceCommande(e, '2026-10-27')).toBe('late')
+  })
+  it('the client’s own delay does NOT restart: it counts from the soumission’s send, relances or not', () => {
+    const sans = etatCommande(cmd(soumis()))
+    const avec = etatCommande(cmd(soumis(['2026-10-20'])))
+    // Wed 21/10: 7 working days since the send = 2 beyond its 5; the dyer is expected 22/10 instead of 20/10.
+    for (const e of [sans, avec]) {
+      expect(calendrierTraitement(e.traitement!, '2026-10-21')).toMatchObject({ retardClient: 2, resteClient: 2, sortie: '2026-10-22', attente: { depuis: '2026-10-12', jours: 7, fin: '2026-10-19' } })
+    }
+    // The lot « en rame » on that line is due with the same pushed day.
+    expect(tempsDesLignes(cmd(soumis(['2026-10-20'])), '2026-10-21').get(7)).toEqual({ depuis: '2026-10-05', echeance: '2026-10-22' })
+    // Answered Wed 28/10 after two relances: 12 working days = 7 of delay, all the client's.
+    const repondu = lot({ reception: null, idligne: 7, okRamerLe: '2026-10-28', coloris: { ...soum({ requise: true, le: '2026-10-12', accepte: true, reponseLe: '2026-10-28' }), relances: ['2026-10-20', '2026-10-27'] } })
+    expect(etatCommande(cmd(repondu)).traitement).toMatchObject({ retardClient: 7 })
+  })
+  it('faitSoumission keeps the relances of the CURRENT send only, by nature', () => {
+    const envois = [
+      { nature: 'coloris' as const, jour: '2026-10-01', ts: '2026-10-01 09:00:00.000' },
+      { nature: 'coloris' as const, jour: '2026-10-12', ts: '2026-10-12 09:00:00.000' },
+    ]
+    const relances = [
+      { nature: 'coloris' as const, jour: '2026-10-08', ts: '2026-10-08 10:00:00.000' }, // chased the first send
+      { nature: 'coloris' as const, jour: '2026-10-27', ts: '2026-10-27 10:00:00.000' },
+      { nature: 'coloris' as const, jour: '2026-10-20', ts: '2026-10-20 10:00:00.000' },
+      { nature: 'stabilites' as const, jour: '2026-10-21', ts: '2026-10-21 10:00:00.000' },
+    ]
+    expect(faitSoumission('coloris', true, envois, [], null, relances)).toEqual({ requise: true, envoyeeLe: '2026-10-12', reponse: null, relances: ['2026-10-20', '2026-10-27'] })
+    expect(faitSoumission('coloris', true, envois, [], null)).toEqual({ requise: true, envoyeeLe: '2026-10-12', reponse: null })
+  })
+  it('⚠️ a soumission sent AGAIN restarts the client’s clock (why a relance is never stored as a soumission)', () => {
+    // Sent 12/10, sent again 20/10 without an answer: the cycle reads the latest send, the 6 days already
+    // waited are lost — the client's delay on 28/10 is 1 working day instead of 7.
+    const envois = [
+      { nature: 'coloris' as const, jour: '2026-10-12', ts: '2026-10-12 09:00:00.000' },
+      { nature: 'coloris' as const, jour: '2026-10-20', ts: '2026-10-20 09:00:00.000' },
+    ]
+    const renvoye = faitSoumission('coloris', true, envois, [], null)
+    expect(renvoye.envoyeeLe).toBe('2026-10-20')
+    const e = etatCommande(cmd(lot({ reception: null, idligne: 7, coloris: renvoye })))
+    expect(calendrierTraitement(e.traitement!, '2026-10-28').retardClient).toBe(1)
+    expect(calendrierTraitement(etatCommande(cmd(soumis(['2026-10-20']))).traitement!, '2026-10-28').retardClient).toBe(7)
   })
 })
 

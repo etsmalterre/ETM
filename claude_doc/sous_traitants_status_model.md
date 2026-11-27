@@ -371,7 +371,11 @@ never in the stat row, where its extra lines pushed the figures down.
 OK). The gauge is a calendar of working days coloured by who held the hand (`calendrierTraitement`: sky = dyer, violet =
 client answering, pale violet = what is left of its 5 days, `RELANCE_J.soumis`), read from the soumissions and answers
 recorded, nothing typed. While the answer is waited the order's chase is the CLIENT's (`chasseTraitement`: main `client`,
-relance = sent + 5 working days, « Réponse coloris : relancer le client »), never the dyer's délai. Working days beyond 5
+relance = sent + 5 working days, « Réponse coloris : relancer le client »), never the dyer's délai. **Since 2026-11-27 the
+chase restarts at each relance** (« Relancer le client » on Qualité › Suivi lots, an e-mail recorded in
+`relance_soumission`: `relanceClientDue` = the latest of the send and the relances + 5 working days, the order neutral in
+between; `AttenteClient.relanceLe`) — our relances move OUR chase only, the client's delay below still counts from the
+send (`screen_notes.md` § 10). Working days beyond 5
 are the client's own delay (`retardClient`): printed, and the date the dyer is expected slides by as much (`sortie`),
 unless a report already moved the délai. Such a report is due to the **client** (third imputable of a LINE's report,
 migration 0074, pre-filled in the line form), and its days are taken off the delay the dyer carries (`retardClientReports`).
