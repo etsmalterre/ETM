@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { echeanceDelai, historiqueDelai, relanceDue, type FaitsDelai } from './delai-sst.js'
+import { echeanceDelai, historiqueDelai, mailRelanceDelai, relanceDue, type FaitsDelai } from './delai-sst.js'
 import { etatCommande, urgenceCommande, type CommandeFait } from './cycle-ennoblissement.js'
 
 function faits(p: Partial<FaitsDelai> = {}): FaitsDelai {
@@ -89,5 +89,20 @@ describe('historique', () => {
     }))
     expect(h.map((e) => e.type)).toEqual(['demande', 'relance', 'relance', 'delai_recu'])
     expect(h[2].texte).toBe('Relancé par téléphone — Perrine absente')
+  })
+})
+
+describe('the relance mail of the délai', () => {
+  const base = { numero: 9182, commandeLe: '2026-11-24', articles: '031A - 0212 bleu marine 61508/1', derniereRelance: null }
+  it('names the order, its lines and its date', () => {
+    const m = mailRelanceDelai(base)
+    expect(m.subject).toBe('Relance — Délai de notre commande N°9182 — ETS Malterre')
+    expect(m.body).toContain('notre commande N°9182 (031A - 0212 bleu marine 61508/1) du 24/11/2026 : nous n’avons pas encore votre délai.')
+  })
+  it('says when we already chased', () => {
+    expect(mailRelanceDelai({ ...base, derniereRelance: '2026-11-26' }).body).toContain(': malgré notre relance du 26/11/2026, nous n’avons pas encore votre délai.')
+  })
+  it('without lines nor date: the order alone', () => {
+    expect(mailRelanceDelai({ ...base, articles: null, commandeLe: null }).body).toContain('notre commande N°9182 : nous n’avons')
   })
 })

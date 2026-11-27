@@ -1,8 +1,4 @@
-import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { BellRing, Ban } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { ConfirmDialog } from '@/components/shared/ConfirmDialog'
 import { SendEmailDialog } from '@/components/email/SendEmailDialog'
 import { apiFetch, API_URL } from '@/lib/api'
 import { postEmail } from '@/lib/email'
@@ -88,26 +84,26 @@ export function UrgenceChoix({ value, onChange, disabled, qui = 'le tricoteur', 
   )
 }
 
-/** A gesture on the urgency of a knitting line (API lib/urgence-sst.ts): 'relance' asks again (same
- *  date wished, a new answer day), 'refus' = the knitter cannot, 'levee' = we give it up. The client
- *  lines that wait for this knitting read it too. */
+/** A gesture that ends the urgency of a line (API lib/urgence-sst.ts): 'refus' = the sous-traitant
+ *  cannot, 'levee' = we give it up. Both live in the line's edit dialog. The client lines that wait
+ *  for this knitting read it too. */
 export function useGesteUrgence(commandeId: number, onDone?: () => void) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ ligneId, geste }: { ligneId: number; geste: 'relance' | 'refus' | 'levee' }) => {
-      const base = `/commandes-sous-traitant/${commandeId}/lignes/${ligneId}/urgence`
-      return apiFetch(geste === 'relance' ? base : `${base}/${geste}`, { method: 'POST', body: JSON.stringify({}) })
-    },
+    mutationFn: ({ ligneId, geste }: { ligneId: number; geste: 'refus' | 'levee' }) =>
+      apiFetch(`/commandes-sous-traitant/${commandeId}/lignes/${ligneId}/urgence/${geste}`, { method: 'POST', body: JSON.stringify({}) }),
     onSuccess: () => { invalidateSstCommandeCaches(queryClient); invalidateCommandeClientCaches(queryClient); onDone?.() },
   })
 }
 
-/** The mail that tells the sous-traitant of an urgency gesture (Vincent 2026-11-16): opened
- *  pre-filled right after « Passer en urgence » ('demande'), « Relancer » ('relance') or « Retirer
- *  l'urgence » ('levee'), to the contacts who receive the orders, the bon de commande attached (it
- *  prints « URGENT » while the urgency awaits). The gesture is already recorded: closing the window
- *  without sending is fine — the sous-traitant was told by phone. `t` = when it was asked (the
- *  defaults are read again each time). */
+/** The mail that tells the sous-traitant of an urgency gesture (Vincent 2026-11-16), to the
+ *  contacts who receive the orders, the bon de commande attached (it prints « URGENT » while the
+ *  urgency awaits). 'demande' (« Passer en urgence ») and 'levee' (« Retirer l'urgence »): opened
+ *  pre-filled right after the gesture, which is already recorded — closing the window without
+ *  sending is fine, the sous-traitant was told by phone. 'relance' (Vincent 2026-11-27, as on Suivi
+ *  lots): opened from the order's mail button, the mail IS the relance — the API notes it when the
+ *  mail leaves, nothing when the window is closed. `t` = when it was asked (the defaults are read
+ *  again each time). */
 export interface MailUrgence { ligneId: number; geste: 'demande' | 'relance' | 'levee'; article: string; t: number }
 
 export function UrgenceMail({ commandeId, mail, contextLabel, onClose }: {
@@ -124,6 +120,7 @@ export function UrgenceMail({ commandeId, mail, contextLabel, onClose }: {
     <SendEmailDialog
       open
       onClose={onClose}
+      title={mail.geste === 'relance' ? 'Relancer la demande d’urgence' : undefined}
       contextLabel={contextLabel}
       queryKey={['commande-sst-urgence-email', commandeId, mail.ligneId, mail.geste, mail.t]}
       loadDefaults={() => apiFetch(`${base}/email-defaults?geste=${mail.geste}&article=${encodeURIComponent(mail.article)}`)}
@@ -131,8 +128,10 @@ export function UrgenceMail({ commandeId, mail, contextLabel, onClose }: {
       pdfAttachmentLabel={`commande-sous-traitant-${commandeId}.pdf`}
       onSend={async (p) => {
         await postEmail(`${API_URL}${base}/email?geste=${mail.geste}`, p, { includeAttachPdf: true })
-        // The Journal tells the mail sent.
+        // The Journal tells the mail sent; a relance also calms the order and the client lines
+        // that wait for it.
         invalidateSstCommandeCaches(queryClient)
+        invalidateCommandeClientCaches(queryClient)
         queryClient.invalidateQueries({ queryKey: ['commande-sst-journal', commandeId] })
       }}
     />
@@ -142,34 +141,20 @@ export function UrgenceMail({ commandeId, mail, contextLabel, onClose }: {
 /** One urgency awaiting its answer, as a row of « Prochaines étapes » (Vincent 2026-11-16): asking the
  *  knitter to go faster is a process of its own, running beside the knitting — its own clock (the
  *  working days since the ask over the days the knitter gets to answer, one segment each, like a lot
- *  on a dyer's order), its own chase (red the day after the answer was due) and its own two gestures:
- *  « Relancer » (asked again) and « Refusée » (the knitter cannot, its délai stands). The answer
- *  itself is the knitter's délai, which ends the row. Asking, and giving it up, live in the line's
- *  edit dialog. */
-export function UrgenceEnCours({ commandeId, ligneId, urgence, article, articleMail, qui, disabled }: {
-  commandeId: number
-  ligneId: number
+ *  on a dyer's order) and its own chase (red the day after the answer was due). The answer itself
+ *  is the knitter's délai, which ends the row. ⚠️ A reading, no button (Vincent 2026-11-27): the
+ *  relance is a mail, sent from the order's mail button (« Relancer la demande d'urgence »);
+ *  asking, « Refusée » and giving it up live in the line's edit dialog. */
+export function UrgenceEnCours({ urgence, article, qui }: {
   urgence: UrgenceLigne
   /** « REF - coloris », named when the order has several lines */
   article?: string | null
-  /** « REF - coloris », always: the relance mail names the line */
-  articleMail: string
   /** « Tricotage Malterre », « MATEL », « le tricoteur » */
   qui: string
-  disabled?: boolean
 }) {
-  const [confirme, setConfirme] = useState<'relance' | 'refus' | null>(null)
-  // The relance noted, its mail opens pre-filled (closing it = chased by phone).
-  const [mail, setMail] = useState<MailUrgence | null>(null)
-  const geste = useGesteUrgence(commandeId, () => {
-    if (confirme === 'relance') setMail({ ligneId, geste: 'relance', article: articleMail, t: Date.now() })
-    setConfirme(null)
-  })
   const rouge = urgence.etat === 'a_relancer'
   const { jours, accordes } = urgence
   const retard = jours - accordes
-  const raison = disabled ? 'Terminez la modification d’abord' : undefined
-  const erreur = geste.error ? ((geste.error as Error & { body?: { message?: string } }).body?.message ?? (geste.error as Error).message) : null
   return (
     <div>
       <div className="flex items-center gap-2 text-sm">
@@ -194,30 +179,6 @@ export function UrgenceEnCours({ commandeId, ligneId, urgence, article, articleM
           Relancer {qui}{retard > 0 ? ` : ${retard} j de retard` : ''}
         </p>
       )}
-      <div className="mt-2 flex gap-2">
-        <Button variant="outline" size="sm" className="flex-1" disabled={disabled} onClick={() => setConfirme('relance')}
-          title={raison ?? 'Noter que l’urgence a été redemandée'}>
-          <BellRing className="h-3.5 w-3.5 mr-1.5" />Relancer
-        </Button>
-        <Button variant="outline" size="sm" className="flex-1" disabled={disabled} onClick={() => setConfirme('refus')}
-          title={raison ?? `${qui.charAt(0).toUpperCase()}${qui.slice(1)} ne peut pas livrer plus tôt`}>
-          <Ban className="h-3.5 w-3.5 mr-1.5" />Refusée
-        </Button>
-      </div>
-      <ConfirmDialog
-        open={confirme !== null}
-        variant="default"
-        title={confirme === 'refus' ? 'Urgence refusée' : 'Relancer l’urgence'}
-        description={confirme === 'refus'
-          ? `${qui.charAt(0).toUpperCase()}${qui.slice(1)} ne peut pas livrer plus tôt : ${urgence.delaiAvant ? `son délai du ${jjmmIso(urgence.delaiAvant)} est maintenu` : 'il donnera son délai'}. L’urgence est close, la ligne n’est plus marquée urgente.`
-          : `La relance est notée, puis le mail de relance s’ouvre, prêt à partir vers ${qui} (fermez-le si vous l’avez relancé par téléphone). Sa réponse est de nouveau attendue, la commande ne repasse en rouge qu’après.`}
-        confirmLabel={confirme === 'refus' ? 'Noter le refus' : 'Noter la relance'}
-        isPending={geste.isPending}
-        error={erreur}
-        onCancel={() => { geste.reset(); setConfirme(null) }}
-        onConfirm={() => { if (confirme) geste.mutate({ ligneId, geste: confirme }) }}
-      />
-      <UrgenceMail commandeId={commandeId} mail={mail} contextLabel={qui} onClose={() => setMail(null)} />
     </div>
   )
 }

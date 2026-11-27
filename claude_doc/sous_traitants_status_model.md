@@ -190,7 +190,8 @@ three weeks without a date nor an alert (9127, cols / bandes). So:
   `DELAI_TRM_J` = 1 working day later (ordered the 16th, due the 17th), ours to
   chase the working day after (red on the 18th), never amber: the dyers' facts
   and rule (`lib/delai-sst.ts`, `faitsDelaiTricotage()`), with the same
-  « Relancer » / « Repousser » gestures on the « Prochaines étapes » card (a TRM line counts
+  gestures: « Repousser » on the « Prochaines étapes » card, « Relancer la demande de
+  délai » from the header mail button (2026-11-27, below) (a TRM line counts
   as waiting while it has no date, whatever its `sstatut`).
 - **Only TRM gives the délai**, on its own screen (`PUT
   /commandes-trm/lignes/:id/delai`, recorded as « Délai reçu » on the first
@@ -221,12 +222,50 @@ three weeks without a date nor an alert (9127, cols / bandes). So:
   « Prochaines étapes » card gives the urgency awaited **a row of its own**
   (`UrgenceEnCours`, like an open lot on a dyer's order): the siren, « souhaité
   le … », « N j sur M » over one segment per working day the knitter gets to
-  answer, red « Relancer … » the day after, and the gestures « Relancer » /
-  « Refusée ». The knitting keeps its own bar above it; in « Attente délai » with
-  every undated line pressed, the urgency's bar is the only one (same question).
-  Each gesture that concerns the partner (asked, chased, given up) opens a
-  pre-filled mail to the contacts « envoi commande » (`UrgenceMail`); sent, it is
-  a fact `mail` of `urgence_sst`, never an `envoi_email` row of type 13.
+  answer, red « Relancer … » the day after — a reading, no button. The knitting
+  keeps its own bar above it; in « Attente délai » with every undated line
+  pressed, the urgency's bar is the only one (same question).
+  Asking and giving up open a pre-filled mail to the contacts « envoi commande »
+  (`UrgenceMail`); sent, it is a fact `mail` of `urgence_sst`, never an
+  `envoi_email` row of type 13.
+  **Relances leave from the order's ONE header « @ » button** (Vincent 2026-11-27,
+  as on Suivi lots; `components/email/MailMenuButton.tsx` fed by `mailsCommande()`):
+  « Envoyer le bon de commande », « Relancer la demande de délai » while the
+  partner owes its délai (not when every undated line is pressed: one question,
+  the urgency's — `GET / POST /:id/delai/relance/email`, text `mailRelanceDelai()`),
+  « Relancer la demande d'urgence » per line awaited (`…/urgence/email?geste=relance`).
+  Red dot + « À faire » once the chase day has come. Sending IS the relance
+  (a `relance` of canal `email` in `delai_sst_evenement`, a `relance` fact in
+  `urgence_sst`: the clock restarts); the window closed unsent notes nothing,
+  and a call is no longer noted. « Urgence refusée » is a link beside « Retirer
+  l'urgence » in the line's edit dialog.
+  **« Relancer le délai dépassé »** (same day, `lib/relance-retard-sst.ts`, PG
+  `relance_retard_sst`, migration 0089): offered while the partner holds the
+  order past its délai (`delaiDepasse()` for a dyer, `delaiDepasseTricotage()`
+  for a knitter « en tricotage »). What we want is a NEW délai, and ⚠️ **it may be
+  chased every working day until it comes** (Vincent): the relance calms the
+  order (`retardCalme()`, read by `urgenceCommande` / `urgenceTricotage`) and its
+  lots « en rame » (`urgenceLot`) for the day it is sent, red again the next
+  working day; a relance older than the délai now in place counts for nothing.
+- **The grouped relance of a sous-traitant** (Vincent 2026-11-27,
+  `lib/relance-groupee-sst.ts`): since Isabelle took the follow-up over we order,
+  the partner gives its délai and delivers, and all we do is chase it by e-mail
+  once a time it was given has run out. The daily Point said far more (planned
+  exits, reminders; unsent since 2026-11-25): fewer exchanges, the partner in
+  charge of its own work. Sous-traitants › Gestion: a red card « N dossiers à
+  relancer » and a counter pill (`GET /sous-traitants/relances`), the fiche's
+  « @ » button opens ONE mail (`GET / POST /sous-traitants/:id/relance/email…`,
+  text `mailRelanceGroupee()`): a new délai (délai passed), the answer to an
+  urgency, a délai, the controls of a received lot — only what is overdue TODAY.
+  ⚠️ No rule of its own, no automate: each dossier is read with the rule that
+  turns its card red, and the send writes, dossier by dossier, the relance its
+  own mail button writes (`noterRelanceGroupee()`), read again before the mail
+  leaves. Not in it: what waits on the client or on us, an étude coloris
+  (chased from its client line), anything not due. Still to do once this is in
+  use: remove the Point tab and its automate (the Journal keeps reading
+  `point_sst` for the history), and the Délais / Contrôles skills of Flux
+  Ennoblisseur, which read replies to « Point du JJ/MM » (to be replaced by
+  the espace partenaire, where the partner types them itself).
   Once answered the line stays « urgente » until delivered: the siren
   (`components/sst/UrgenceIcon.tsx`) on the line (a plain mention) and in the
   bottom-right corner of the list card.

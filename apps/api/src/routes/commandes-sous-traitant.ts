@@ -78,7 +78,7 @@ import {
 import { sstDeleteBlocker } from '../lib/sst-delete.js'
 import { isRectiligneType, LINE_TYPE_RECTILIGNE } from '../lib/sst-line-kind.js'
 import { etapeTricotage, etatsTricotage, familleOfTypeSst, parseFamille, tricoteurIds, type EtatTricotage, type SstFamille, type TricotagePhase } from '../lib/sst-tricotage.js'
-import { calendrierTraitement, cleLot, etatCommande, joursOuvresDepuis, lireCommandesEnnoblissement, urgenceCommande, urgenceDemandeeDe, type EtapeCommande, type EtapeLot, type EtatCommande } from '../lib/cycle-ennoblissement.js'
+import { calendrierTraitement, cleLot, delaiDepasse, etatCommande, joursOuvresDepuis, lireCommandesEnnoblissement, urgenceCommande, urgenceDemandeeDe, type EtapeCommande, type EtapeLot, type EtatCommande } from '../lib/cycle-ennoblissement.js'
 import { raisonCommandeSst, tricobotAttend, type CompteurTricobotSst, type FaitsRaisonSst } from '../lib/raison-commande-sst.js'
 import {
   loadRectiligneRefLabels,
@@ -98,9 +98,11 @@ import { adressesDuClient, clientEnCopie, nomFichierRc, PHRASE_RC_SOUMISSION, PI
 import { compteursParCommande, ligneModifiee, rouleauCorrige } from '../lib/agents/flux-ennoblisseur/saisies.js'
 import { correctionsRouleau } from '../lib/agents/flux-ennoblisseur/reception-bl.js'
 import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
-import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
-import { contexteMailUrgence, demanderUrgence, GESTES_MAIL, joursReponseUrgence, leverUrgence, noterMailUrgence, noterReponseUrgence, refuserUrgence, refusUrgenceNouvelleLigne, texteMailUrgence, UrgenceRefusee, urgencesLignes, type UrgenceLigne } from '../lib/urgence-sst.js'
+import { attendUnDelai, contexteMailRelanceDelai, DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, mailRelanceDelai, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
+import { contexteMailUrgence, demanderUrgence, GESTES_MAIL, joursReponseUrgence, leverUrgence, noterMailUrgence, noterReponseUrgence, refuserUrgence, refusUrgenceNouvelleLigne, texteMailUrgence, urgenceEnAttente, UrgenceRefusee, urgencesLignes, type UrgenceLigne } from '../lib/urgence-sst.js'
 import { fermetures } from '../lib/delais-standards.js'
+import { enregistrerRelanceRetard, mailRelanceRetard } from '../lib/relance-retard-sst.js'
+import { retardDeLaCommande } from '../lib/relance-groupee-sst.js'
 import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, noterAvanceDelai, refusAvanceDelai, reportsDelaiParLigne, retardClientReports, retardDelai } from '../lib/report-delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
@@ -999,6 +1001,8 @@ function cycleFields(e: EtatCommande) {
     // « Passer en urgence » asked of the dyer (lib/urgence-sst.ts): awaited / to chase, and the siren.
     urgence_demandee: urgenceDemandeeDe(e, todayIso()),
     urgente: (e.urgences?.lignes.length ?? 0) > 0,
+    // The dyer holds the order past its délai: « Relancer le délai dépassé » is offered (lib/relance-retard-sst.ts).
+    delaiDepasse: delaiDepasse(e, todayIso()),
     main: e.main,
     relance: e.relance,
     solde: e.solde,
@@ -2384,6 +2388,7 @@ commandesSousTraitantRouter.get('/:id', async (req: Request, res: Response) => {
       ...(etatTric ? {
         urgence: etatTric.urgence,
         urgence_demandee: etatTric.urgenceDemandee,
+        delai_depasse: !!etatTric.delaiDepasse,
         urgente: etatTric.urgente,
         tricotage: etapeTricotage(etatTric.commande, etatTric.phase, etatTric.faits, fermSst),
       } : {}),
@@ -7811,14 +7816,15 @@ commandesSousTraitantRouter.patch(
 
 // ── The délai question (LIVA #1314, lib/delai-sst.ts) ────
 //
-// POST /:id/delai/relances { canal: 'email' | 'telephone', note? } — the dyer
-//   was asked again (a Point sent counts by itself, never through here).
+// The relance IS a mail (Vincent 2026-11-27, as on Suivi lots): sent from the
+// order's mail button to the contacts who receive the orders, the bon attached,
+// and recorded as a relance of canal 'email' — the order is calm again for
+// RELANCE_SUIVANTE_J working days. A Point sent counts by itself, never through
+// here. Never an envoi_email row of type 13 (the bon, which starts the wait).
+//   GET  /:id/delai/relance/email-defaults?articles=…
+//   POST /:id/delai/relance/email
 // POST /:id/delai/reports { echeance, motif, imputable } — the délai is not
 //   expected before `echeance`, for a reason; moves date_notif too.
-const relanceDelaiBody = z.object({
-  canal: z.enum(['email', 'telephone']),
-  note: z.string().max(1000).optional().default(''),
-})
 const reportDelaiBody = z.object({
   echeance: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   motif: z.string().trim().min(1).max(1000),
@@ -7830,20 +7836,113 @@ async function repondreCycle(res: Response, id: number): Promise<void> {
   res.json({ ok: true, ...(etat ? { cycle: cycleFields(etat) } : {}) })
 }
 
-commandesSousTraitantRouter.post('/:id/delai/relances', async (req: Request, res: Response) => {
+const MESSAGE_PAS_EN_ATTENTE = 'Cette commande n’attend plus de délai.'
+
+commandesSousTraitantRouter.get('/:id/delai/relance/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const [defaults, ctx] = await Promise.all([buildEmailDefaults(id), contexteMailRelanceDelai(id)])
+    if (!defaults || !ctx) { res.status(404).json({ error: 'Commande not found' }); return }
+    if (!(await attendUnDelai(id))) { res.status(409).json({ error: 'pas_en_attente', message: MESSAGE_PAS_EN_ATTENTE }); return }
+    const articles = typeof req.query.articles === 'string' ? req.query.articles.trim().slice(0, 400) || null : null
+    const texte = mailRelanceDelai({ numero: id, articles, ...ctx })
+    res.json({ recipients: defaults.recipients, sousTraitantNom: defaults.sousTraitantNom, numero: defaults.numero, ...texte })
+  } catch (err) {
+    console.error('Error building délai relance email defaults:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesSousTraitantRouter.post('/:id/delai/relance/email', async (req: Request, res: Response) => {
   try {
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (refuseIfTerminee(res, await loadCommandeSoldee(id))) return
-    const p = relanceDelaiBody.safeParse(req.body)
-    if (!p.success) { res.status(400).json({ error: 'canal_requis', message: 'Indiquez comment le sous-traitant a été relancé.' }); return }
-    await noterRelance(id, p.data.canal, p.data.note, { id: req.userId, nom: await nomUtilisateur(req.userId) })
-    await repondreCycle(res, id)
+    const parsed = emailBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    // Checked BEFORE the mail leaves: a délai given meanwhile needs no relance.
+    if (!(await attendUnDelai(id))) { res.status(409).json({ error: 'pas_en_attente', message: MESSAGE_PAS_EN_ATTENTE }); return }
+    if (!(await envoyerMailRelance(req.userId, res, id, parsed.data, 'relance délai'))) return
+    // The mail left: the relance is this fact (the Journal names who it went to).
+    await noterRelance(id, 'email', `À ${[...parsed.data.to, ...(parsed.data.cc ?? [])].join(', ')}`.slice(0, 1000), { id: req.userId, nom: await nomUtilisateur(req.userId) })
+    res.json({ ok: true })
   } catch (err) {
     if (err instanceof DelaiRefuse) { res.status(409).json({ error: err.code, message: err.message }); return }
-    console.error('Error recording délai relance:', err)
+    console.error('Error sending délai relance:', err)
+    res.status(500).json({ error: 'send_failed', message: err instanceof Error ? err.message : 'Erreur d’envoi' })
+  }
+})
+
+/** Sends a relance mail of an order — the bon attached unless unticked, the dev fake send honoured.
+ *  False = it answered already (no sender address, unknown order): nothing left. */
+async function envoyerMailRelance(userId: number, res: Response, id: number, d: z.infer<typeof emailBody>, quoi: string): Promise<boolean> {
+  // Dev-only fake send, as for the bon de commande: everything but Gmail.
+  if (d.dev_skip_send === true && ALLOW_DEV_SKIP_SEND) {
+    console.log(`[dev-skip-send] ${quoi} commande_sst #${id} — fake send to ${d.to.join(', ')}`)
+    return true
+  }
+  const exp = await expediteurDe(userId)
+  if (!exp) { res.status(400).json({ error: 'no_sender_email', message: MESSAGE_SANS_ADRESSE }); return false }
+  const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = []
+  if (d.attach_pdf !== false) {
+    const data = await buildCommandePdfData(id)
+    if (!data) { res.status(404).json({ error: 'Commande not found' }); return false }
+    attachments.push({ filename: `commande-sous-traitant-${data.numero}.pdf`, content: await renderCommandePdfBuffer(data), contentType: 'application/pdf' })
+  }
+  for (const a of d.extra_attachments ?? []) {
+    attachments.push({ filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type })
+  }
+  await sendMail({
+    ...exp, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body: d.body,
+    attachments: attachments.length > 0 ? attachments : undefined,
+  })
+  return true
+}
+
+// « Relancer le délai dépassé » (Vincent 2026-11-27, lib/relance-retard-sst.ts): the partner holds
+// the order past its délai, we want a new one. The mail IS the relance; it may leave every working
+// day until a new délai is given (the order is calm the day it is sent, red again the next).
+//   GET  /:id/delai/retard/email-defaults?articles=…
+//   POST /:id/delai/retard/email
+const MESSAGE_PAS_EN_RETARD = 'Cette commande n’a pas de délai dépassé.'
+
+commandesSousTraitantRouter.get('/:id/delai/retard/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const defaults = await buildEmailDefaults(id)
+    if (!defaults) { res.status(404).json({ error: 'Commande not found' }); return }
+    const retard = await retardDeLaCommande(id, todayIso())
+    if (!retard) { res.status(409).json({ error: 'pas_en_retard', message: MESSAGE_PAS_EN_RETARD }); return }
+    const articles = typeof req.query.articles === 'string' ? req.query.articles.trim().slice(0, 400) || null : null
+    const texte = mailRelanceRetard({ numero: id, articles, ...retard })
+    res.json({ recipients: defaults.recipients, sousTraitantNom: defaults.sousTraitantNom, numero: defaults.numero, ...texte })
+  } catch (err) {
+    console.error('Error building retard relance email defaults:', err)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+commandesSousTraitantRouter.post('/:id/delai/retard/email', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = emailBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    // Checked BEFORE the mail leaves: a new délai given meanwhile needs no relance.
+    if (!(await retardDeLaCommande(id, todayIso()))) { res.status(409).json({ error: 'pas_en_retard', message: MESSAGE_PAS_EN_RETARD }); return }
+    if (!(await envoyerMailRelance(req.userId, res, id, parsed.data, 'relance délai dépassé'))) return
+    await enregistrerRelanceRetard({
+      idcommande: id, par: { id: req.userId, nom: await nomUtilisateur(req.userId) },
+      destinataires: [...parsed.data.to, ...(parsed.data.cc ?? [])],
+    })
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error sending retard relance:', err)
+    res.status(500).json({ error: 'send_failed', message: err instanceof Error ? err.message : 'Erreur d’envoi' })
   }
 })
 
@@ -7920,10 +8019,12 @@ for (const fin of ['refus', 'levee'] as const) {
 }
 
 // The mail that tells the sous-traitant of an urgency gesture (Vincent 2026-11-16): the web opens it
-// pre-filled right after « Passer en urgence », « Relancer » or « Retirer l'urgence »; closing it
-// without sending is fine (asked by phone). To the contacts who receive the orders, the bon de
-// commande attached (it prints « URGENT » while the urgency awaits). Sent, it is a fact 'mail' of
-// urgence_sst — never an envoi_email row of type 13, which is the bon and starts the délai wait.
+// pre-filled right after « Passer en urgence » or « Retirer l'urgence »; closing it without sending
+// is fine (asked by phone). To the contacts who receive the orders, the bon de commande attached
+// (it prints « URGENT » while the urgency awaits). Sent, it is a fact 'mail' of urgence_sst — never
+// an envoi_email row of type 13, which is the bon and starts the délai wait.
+// ⚠️ geste=relance (Vincent 2026-11-27, as on Suivi lots): opened from the order's mail button,
+// the mail IS the relance — sending it writes the 'relance' fact too; closed unsent, nothing is noted.
 // GET  /:commandeId/lignes/:ligneId/urgence/email-defaults?geste=demande|relance|levee&article=…
 // POST /:commandeId/lignes/:ligneId/urgence/email?geste=…
 const gesteMail = z.enum(GESTES_MAIL)
@@ -7954,7 +8055,16 @@ commandesSousTraitantRouter.post('/:commandeId/lignes/:ligneId/urgence/email', a
     if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
     const parsed = emailBody.safeParse(req.body)
     if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
-    if (!(await contexteMailUrgence(id, ligneId))) { res.status(404).json({ error: 'Ligne not found' }); return }
+    const ctx = await contexteMailUrgence(id, ligneId)
+    if (!ctx) { res.status(404).json({ error: 'Ligne not found' }); return }
+    // A relance IS its mail (Vincent 2026-11-27): checked BEFORE it leaves — an answer come
+    // meanwhile needs no relance.
+    if (geste.data === 'relance') {
+      if (refuseIfTerminee(res, await loadCommandeSoldee(id))) return
+      if (!(await urgenceEnAttente(ligneId, ctx.delai))) {
+        res.status(409).json({ error: 'pas_d_urgence', message: 'Aucune urgence n’attend de réponse sur cette ligne.' }); return
+      }
+    }
 
     // Dev-only fake send, as for the bon de commande: everything but Gmail.
     if (parsed.data.dev_skip_send === true && ALLOW_DEV_SKIP_SEND) {
@@ -7977,13 +8087,17 @@ commandesSousTraitantRouter.post('/:commandeId/lignes/:ligneId/urgence/email', a
         attachments: attachments.length > 0 ? attachments : undefined,
       })
     }
+    const par = { id: req.userId, nom: await nomUtilisateur(req.userId) }
+    // The relance mail left: asked again, the partner's answer time runs anew (same date wished).
+    if (geste.data === 'relance') await demanderUrgence({ idcommande: id, idligne: ligneId, dateSouhaitee: null, par, aujourdhui: todayIso() })
     await noterMailUrgence({
       idcommande: id, idligne: ligneId, geste: geste.data,
       destinataires: [...parsed.data.to, ...(parsed.data.cc ?? [])],
-      par: { id: req.userId, nom: await nomUtilisateur(req.userId) },
+      par,
     })
     res.json({ ok: true })
   } catch (err) {
+    if (err instanceof UrgenceRefusee) { res.status(err.status).json({ error: err.code, message: err.message }); return }
     console.error('Error sending urgency email:', err)
     res.status(500).json({ error: 'send_failed', message: err instanceof Error ? err.message : 'Erreur d’envoi' })
   }

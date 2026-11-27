@@ -19,6 +19,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { FacturesCommande } from '@/components/sst/FacturesCommande'
 import { JournalListe, type EntreeJournal } from '@/components/qualite/JournalLot'
 import { DelaiQuestion, type DelaiCycle } from '@/components/sst/DelaiQuestion'
+import { MailMenuButton, type MailChoix } from '@/components/email/MailMenuButton'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery, type InfiniteData } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
@@ -48,7 +49,6 @@ import {
   Link2,
   Unlink,
   Printer,
-  AtSign,
   Send,
   FileText,
   Upload,
@@ -113,7 +113,7 @@ import { mergedNumero, splitMergedNumero } from '@/lib/roll-merge'
 import { childNumero, cutBase, nextCutIndex } from '@/lib/roll-cut'
 import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
-import { invalidateCommandeClientCaches, invalidateLotQualityCaches, invalidateStockCaches, STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
+import { invalidateCommandeClientCaches, invalidateLotQualityCaches, invalidateSstCommandeCaches, invalidateStockCaches, STOCK_QUERY_FRESHNESS } from '@/lib/cache-sync'
 import { postEmail } from '@/lib/email'
 import { sstTypeTagClasses } from '@/lib/sst-type'
 import { pruneSelection } from '@/lib/transfert-picker'
@@ -198,6 +198,8 @@ interface CycleCommande {
   relance: string | null
   solde: boolean
   lots: LotCycle[]
+  /** The dyer holds the order past its délai: « Relancer le délai dépassé » is offered (API lib/relance-retard-sst.ts). */
+  delaiDepasse?: boolean
   /** attente_delai only: the délai question (API lib/delai-sst.ts, LIVA #1314). */
   delai?: DelaiCycle
   /** En traitement (or a solde at the dyer): bon → earliest open délai. */
@@ -312,6 +314,8 @@ interface AdresseLite {
 interface CommandeDetail {
   IDcommande_sous_traitant: number
   IDsous_traitant: number
+  /** Tricotage: the knitter holds the order past a délai — « Relancer le délai dépassé » is offered. */
+  delai_depasse?: boolean
   /** Tricotage: working days this knitter gets to answer an urgency (API lib/urgence-sst.ts) */
   urgence_reponse_jours?: number
   date_commande: string | null
@@ -940,6 +944,11 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [piecesDrawerLineId, setPiecesDrawerLineId] = useState<number | null>(null)
   const [emailModalOpen, setEmailModalOpen] = useState(false)
+  // A relance leaves from the header's mail button (Vincent 2026-11-27, as on Suivi lots): the
+  // délai's (the whole order) or an urgency's (one line). `t` = when it was opened.
+  const [relanceDelaiMail, setRelanceDelaiMail] = useState<{ articles: string; t: number } | null>(null)
+  const [relanceUrgenceMail, setRelanceUrgenceMail] = useState<MailUrgence | null>(null)
+  const [relanceRetardMail, setRelanceRetardMail] = useState<{ articles: string; t: number } | null>(null)
   const [autoEditForId, setAutoEditForId] = useState<number | null>(null)
   const [deleteCommandeConfirmOpen, setDeleteCommandeConfirmOpen] = useState(false)
   // The server's refusal (409 on an order TRM has started work on) —
@@ -1338,7 +1347,12 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
                 window.open(`${API_URL}/commandes-sous-traitant/${selectedId}/pdf`, '_blank')
               }
             }}
-            onEmailClick={() => setEmailModalOpen(true)}
+            mails={detail ? mailsCommande(detail, {
+              bon: () => setEmailModalOpen(true),
+              delai: (articles) => setRelanceDelaiMail({ articles, t: Date.now() }),
+              retard: (articles) => setRelanceRetardMail({ articles, t: Date.now() }),
+              urgence: (ligneId, article) => setRelanceUrgenceMail({ ligneId, geste: 'relance', article, t: Date.now() }),
+            }) : []}
             editDateCommande={editDateCommande}
             onEditDateCommandeChange={setEditDateCommande}
           />
@@ -1431,6 +1445,54 @@ export function SousTraitantsCommandes({ famille }: { famille: SstFamille }) {
             queryClient.invalidateQueries({ queryKey: ['commandes-sst'] })
             queryClient.invalidateQueries({ queryKey: ['commande-sst-journal', selectedId] })
           }}
+        />
+      )}
+
+      {/* « Relancer la demande de délai »: the mail IS the relance (API noterRelance at the send). */}
+      {selectedId !== null && relanceDelaiMail && (
+        <SendEmailDialog
+          open
+          onClose={() => setRelanceDelaiMail(null)}
+          title="Relancer la demande de délai"
+          contextLabel={detail?.sous_traitant_nom ?? undefined}
+          queryKey={['commande-sst-relance-delai-email', selectedId, relanceDelaiMail.t]}
+          loadDefaults={() => apiFetch(`/commandes-sous-traitant/${selectedId}/delai/relance/email-defaults?articles=${encodeURIComponent(relanceDelaiMail.articles)}`)}
+          pdfUrl={`${API_URL}/commandes-sous-traitant/${selectedId}/pdf`}
+          pdfAttachmentLabel={`commande-sous-traitant-${selectedId}.pdf`}
+          onSend={async (p) => {
+            await postEmail(`${API_URL}/commandes-sous-traitant/${selectedId}/delai/relance/email`, p, { includeAttachPdf: true })
+            // The order is calm again until the next chase day; the Journal tells the relance.
+            invalidateSstCommandeCaches(queryClient)
+            queryClient.invalidateQueries({ queryKey: ['commande-sst-journal', selectedId] })
+          }}
+        />
+      )}
+      {/* « Relancer le délai dépassé »: a new délai is wanted; may leave every working day until it comes. */}
+      {selectedId !== null && relanceRetardMail && (
+        <SendEmailDialog
+          open
+          onClose={() => setRelanceRetardMail(null)}
+          title="Relancer le délai dépassé"
+          contextLabel={detail?.sous_traitant_nom ?? undefined}
+          queryKey={['commande-sst-relance-retard-email', selectedId, relanceRetardMail.t]}
+          loadDefaults={() => apiFetch(`/commandes-sous-traitant/${selectedId}/delai/retard/email-defaults?articles=${encodeURIComponent(relanceRetardMail.articles)}`)}
+          pdfUrl={`${API_URL}/commandes-sous-traitant/${selectedId}/pdf`}
+          pdfAttachmentLabel={`commande-sous-traitant-${selectedId}.pdf`}
+          onSend={async (p) => {
+            await postEmail(`${API_URL}/commandes-sous-traitant/${selectedId}/delai/retard/email`, p, { includeAttachPdf: true })
+            // Calm until the next working day, here, on its lots « en rame » and on the client lines that wait.
+            invalidateSstCommandeCaches(queryClient)
+            invalidateLotQualityCaches(queryClient)
+            invalidateCommandeClientCaches(queryClient)
+            queryClient.invalidateQueries({ queryKey: ['commande-sst-journal', selectedId] })
+          }}
+        />
+      )}
+      {/* « Relancer la demande d'urgence »: same, on the urgency's own clock. */}
+      {selectedId !== null && (
+        <UrgenceMail
+          commandeId={selectedId} mail={relanceUrgenceMail}
+          contextLabel={detail?.sous_traitant_nom ?? undefined} onClose={() => setRelanceUrgenceMail(null)}
         />
       )}
 
@@ -1703,7 +1765,7 @@ function CommandeList({
 function DetailHeader({
   commande, isLoading, isEditing,
   onStartEdit, onCancelEdit, onSave, isSaving,
-  onDelete, onPrintClick, onEmailClick,
+  onDelete, onPrintClick, mails,
   editDateCommande, onEditDateCommandeChange,
 }: {
   commande: CommandeDetail | null
@@ -1717,7 +1779,8 @@ function DetailHeader({
   isSaving: boolean
   onDelete: () => void
   onPrintClick: () => void
-  onEmailClick: () => void
+  /** Every mail the order can send now, from the one mail button (mailsCommande). */
+  mails: MailChoix[]
 }) {
   if (!commande && !isLoading) return null
 
@@ -1792,9 +1855,7 @@ function DetailHeader({
                 <Button variant="outline" size="icon" className="h-9 w-9" title="Imprimer" onClick={onPrintClick}>
                   <Printer className="h-4 w-4" />
                 </Button>
-                <Button variant="outline" size="icon" className="h-9 w-9" title="Envoyer un email" onClick={onEmailClick}>
-                  <AtSign className="h-4 w-4" />
-                </Button>
+                <MailMenuButton mails={mails} />
                 <Button variant="gold" size="sm" onClick={onStartEdit}>
                   <Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier
                 </Button>
@@ -2391,8 +2452,24 @@ function LignesSection({
                 <span>
                   {urgenceEnAttente ? 'Urgence demandée' : 'Déjà passée en urgence'} le {jjmmIso(editingLine.urgence.demandeeLe)}
                   {editingLine.urgence.dateSouhaitee ? `, souhaitée pour le ${jjmmIso(editingLine.urgence.dateSouhaitee)}` : ''}
-                  {urgenceEnAttente ? ' : la relance et le refus se notent dans « Prochaines étapes ».' : ' : le sous-traitant a répondu.'}
+                  {urgenceEnAttente ? '.' : ' : le sous-traitant a répondu.'}
                   {' '}
+                  {/* The sous-traitant cannot: its délai stands, the urgency is over (no mail: it said so). */}
+                  {urgenceEnAttente && (
+                    <>
+                      <button
+                        type="button" disabled={retirerUrgence.isPending}
+                        onClick={() => retirerUrgence.mutate({ ligneId: editingLine.IDligne_commande_sous_traitant, geste: 'refus' }, {
+                          onSuccess: () => { onMutationSuccess(); setEditingLineId(null); resetLineForm() },
+                        })}
+                        title={`${quiUrgence.charAt(0).toUpperCase()}${quiUrgence.slice(1)} ne peut pas livrer plus tôt : ${editingLine.urgence.delaiAvant ? `son délai du ${jjmmIso(editingLine.urgence.delaiAvant)} est maintenu` : 'son délai reste à donner'}, la ligne n’est plus marquée urgente`}
+                        className="font-medium underline underline-offset-2 hover:text-foreground cursor-pointer disabled:opacity-50"
+                      >
+                        Urgence refusée
+                      </button>
+                      {' · '}
+                    </>
+                  )}
                   <button
                     type="button" disabled={retirerUrgence.isPending}
                     onClick={() => retirerUrgence.mutate({ ligneId: editingLine.IDligne_commande_sous_traitant, geste: 'levee' }, {
@@ -7408,7 +7485,7 @@ function CycleCard({ commande, cycle, isEditing }: {
           {cycle.lots.map((l) => <LotEnCours key={`${l.lot}-${l.idsuivilot}`} lot={l} />)}
         </div>
       )}
-      <UrgencesEnCours commande={commande} isEditing={isEditing} seul={!attenteDelai && !traitement && cycle.lots.length === 0} />
+      <UrgencesEnCours commande={commande} seul={!attenteDelai && !traitement && cycle.lots.length === 0} />
     </div>
   )
 }
@@ -7925,6 +8002,64 @@ function attenteToutePressee(commande: CommandeDetail): boolean {
   return commande.phase === 'attente_delai' && sansDelai.length > 0 && sansDelai.every((l) => urgentes.includes(l))
 }
 
+/** « REF - coloris » of a line. */
+function articleLigne(l: LigneCommande): string {
+  return `${l.ref_label || '—'}${l.colori_reference ? ` - ${l.colori_reference}` : ''}`
+}
+
+/** Every mail an order can send now, for its ONE header mail button (mps_designer §42, Vincent
+ *  2026-11-27: the relances left the « Prochaines étapes » card for it, as on Suivi lots): the bon
+ *  de commande, always; « Relancer la demande de délai » while the sous-traitant owes its délai
+ *  (not when that délai is asked through an urgency on every undated line: one question, the
+ *  urgency's); « Relancer le délai dépassé » while the partner holds the order past its délai (a
+ *  new délai is wanted: every working day until it comes, API lib/relance-retard-sst.ts);
+ *  « Relancer la demande d'urgence » for each line whose urgency awaits its answer.
+ *  §41: red = the chase day has come (the API's dates, the card's own colour). */
+function mailsCommande(commande: CommandeDetail, ouvrir: {
+  bon: () => void
+  /** `articles`: the lines still without a délai, named in the mail. */
+  delai: (articles: string) => void
+  /** `articles`: the lines whose délai has passed. */
+  retard: (articles: string) => void
+  urgence: (ligneId: number, article: string) => void
+}): MailChoix[] {
+  const mails: MailChoix[] = [{ key: 'bon', label: 'Envoyer le bon de commande', icon: FileText, onSelect: ouvrir.bon }]
+  const d = new Date()
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  if (commande.phase === 'attente_delai' && !attenteToutePressee(commande)) {
+    const relance = (commande.famille === 'tricotage' ? commande.tricotage?.relance : commande.cycle?.relance) ?? null
+    const sansDelai = commande.lignes.filter((l) => !l.date_livraison && !l.livree_le).map(articleLigne)
+    mails.push({
+      key: 'relance_delai', label: 'Relancer la demande de délai', icon: BellRing,
+      niveau: relance && relance <= today ? 'rouge' : null,
+      onSelect: () => ouvrir.delai([...new Set(sansDelai)].join(', ')),
+    })
+  }
+  const tricotage = commande.famille === 'tricotage'
+  if (tricotage ? commande.delai_depasse : commande.cycle?.delaiDepasse) {
+    const jour = today.replace(/-/g, '')
+    const ouvertes = commande.lignes.filter((l) => !!l.date_livraison && !l.livree_le)
+    const enRetard = ouvertes.filter((l) => l.date_livraison!.replace(/-/g, '').slice(0, 8) <= jour)
+    mails.push({
+      key: 'relance_retard', label: 'Relancer le délai dépassé', icon: BellRing,
+      // Chased today: the card is calm (the API's colour), the mail stays offered.
+      niveau: (tricotage ? commande.urgence : commande.cycle?.urgence) === 'late' ? 'rouge' : null,
+      onSelect: () => ouvrir.retard([...new Set((enRetard.length > 0 ? enRetard : ouvertes).map(articleLigne))].join(', ')),
+    })
+  }
+  const urgentes = lignesUrgentesDe(commande)
+  for (const l of urgentes) {
+    mails.push({
+      key: `relance_urgence_${l.IDligne_commande_sous_traitant}`,
+      label: `Relancer la demande d’urgence${urgentes.length > 1 ? ` · ${articleLigne(l)}` : ''}`,
+      icon: BellRing,
+      niveau: l.urgence?.etat === 'a_relancer' ? 'rouge' : null,
+      onSelect: () => ouvrir.urgence(l.IDligne_commande_sous_traitant, articleLigne(l)),
+    })
+  }
+  return mails
+}
+
 /** « Attente délai » when the délai is asked through an urgency: the title alone, the urgency's
  *  row below carries the clock. */
 function AttenteDelaiPressee({ qui }: { qui: string }) {
@@ -7942,9 +8077,10 @@ function AttenteDelaiPressee({ qui }: { qui: string }) {
 }
 
 /** The urgencies awaiting an answer, one row each (UrgenceEnCours): a process beside the knitting or
- *  the dyeing, with its own clock, chase and gestures (Vincent 2026-11-16), like the open lots of a
- *  dyer's order. `seul`: nothing is drawn above it in the card (no divider). */
-function UrgencesEnCours({ commande, isEditing, seul }: { commande: CommandeDetail; isEditing: boolean; seul?: boolean }) {
+ *  the dyeing, with its own clock and chase (Vincent 2026-11-16), like the open lots of a dyer's
+ *  order; its relance is a mail of the header's mail button (mailsCommande). `seul`: nothing is
+ *  drawn above it in the card (no divider). */
+function UrgencesEnCours({ commande, seul }: { commande: CommandeDetail; seul?: boolean }) {
   const lignes = lignesUrgentesDe(commande)
   if (lignes.length === 0) return null
   return (
@@ -7952,10 +8088,9 @@ function UrgencesEnCours({ commande, isEditing, seul }: { commande: CommandeDeta
       {lignes.map((l) => (
         <UrgenceEnCours
           key={l.IDligne_commande_sous_traitant}
-          commandeId={commande.IDcommande_sous_traitant} ligneId={l.IDligne_commande_sous_traitant} urgence={l.urgence!}
-          article={commande.lignes.length > 1 ? `${l.ref_label || '—'}${l.colori_reference ? ` - ${l.colori_reference}` : ''}` : null}
-          articleMail={`${l.ref_label || '—'}${l.colori_reference ? ` - ${l.colori_reference}` : ''}`}
-          qui={quiSousTraitant(commande)} disabled={isEditing}
+          urgence={l.urgence!}
+          article={commande.lignes.length > 1 ? articleLigne(l) : null}
+          qui={quiSousTraitant(commande)}
         />
       ))}
     </div>
@@ -7990,7 +8125,7 @@ function TricotageCard({ commande, etape, isEditing }: { commande: CommandeDetai
   const delaiTexte = etape.delai ? `Sortie prévue le ${date(etape.delai)}` : 'Délai en attente'
   // Urgencies asked of the knitter and still awaiting an answer: their own rows, below.
   const trm = commande.IDsous_traitant === TRICOTAGE_MALTERRE_ID
-  const urgencesEnCours = <UrgencesEnCours commande={commande} isEditing={isEditing} />
+  const urgencesEnCours = <UrgencesEnCours commande={commande} />
   const avantTricotage = phase === 'fil_a_affecter' || phase === 'a_lancer'
   const enTricotage = phase === 'en_tricotage'
 

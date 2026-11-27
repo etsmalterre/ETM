@@ -40,6 +40,7 @@ import { SEUIL_EXPEDIE } from './statut-ligne-client.js'
 import { LINE_TYPE_RECTILIGNE } from './sst-line-kind.js'
 import { enAttenteDeReponse, urgenceDemandee, urgencesLignes, type UrgenceLigne } from './urgence-sst.js'
 import { joursOuvresEntre, type Periode } from './jours-ouvres.js'
+import { lireRelancesRetard, retardCalme } from './relance-retard-sst.js'
 import {
   DELAI_TRM_J, derniereRelance, echeanceDelai, historiqueDelai, lireFaitsDelai, ouvresEntre, relanceDue,
   type EvenementDelai, type FaitsDelai,
@@ -121,7 +122,7 @@ export function phaseTricotage(c: CommandeTricotage): TricotagePhase {
 /** A circulaire line is delivered at SEUIL_EXPEDIE of its kg (the threshold
  *  Clients › Commandes uses); a rectiligne line is never followed after the
  *  order (no OF, no piece, no shipment, #1185), so only « soldée » ends it. */
-function ligneLivree(l: LigneTricotage): boolean {
+export function ligneLivree(l: LigneTricotage): boolean {
   if (isRectiligne(l)) return false
   return l.quantite > 0 && l.kg_livre >= l.quantite * SEUIL_EXPEDIE
 }
@@ -137,12 +138,14 @@ function dayOf(yyyymmdd: string): Date | null {
  *  days. Attente délai is the dyers' rule (lib/delai-sst.ts `relanceDue`,
  *  `relance` = that chase day, 'YYYY-MM-DD'): red once it has come and nobody
  *  chased, never amber — nothing to get ahead on. Soldée par TRM is never late:
- *  the goods are in, what is left is ETM's check. */
+ *  the goods are in, what is left is ETM's check. A passed délai chased by mail
+ *  (`relancesRetard`, lib/relance-retard-sst.ts) is calm until the next working day. */
 export function urgenceTricotage(
   c: CommandeTricotage,
   phase: TricotagePhase,
   relance: string | null,
   today: Date = new Date(),
+  relancesRetard: readonly string[] = [],
 ): Urgence {
   const t = new Date(today.getFullYear(), today.getMonth(), today.getDate())
   if (phase === 'terminee' || phase === 'trm_soldee') return null
@@ -157,9 +160,19 @@ export function urgenceTricotage(
   }
   if (!earliest) return null
   const diff = Math.round((earliest.getTime() - t.getTime()) / 86_400_000)
-  if (diff <= 0) return 'late'
+  if (diff <= 0) return phase === 'en_tricotage' && retardCalme(relancesRetard, isoDe(ymdOf(earliest)), isoDe(ymdOf(t))) ? null : 'late'
   if (diff <= 3) return 'soon'
   return null
+}
+
+const isoDe = (ymd: string) => `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`
+
+/** The earliest délai of a line not delivered yet once it has passed while the knitter knits
+ *  ('YYYY-MM-DD'), else null: « Relancer le délai dépassé » is offered then. Pure. */
+export function delaiDepasseTricotage(c: CommandeTricotage, phase: TricotagePhase, today: Date = new Date()): string | null {
+  if (phase !== 'en_tricotage') return null
+  const dates = c.lignes.filter((l) => !ligneLivree(l) && /^\d{8}$/.test(l.date_livraison)).map((l) => l.date_livraison).sort()
+  return dates[0] && dates[0] <= ymdOf(today) ? isoDe(dates[0]) : null
 }
 
 /** Where a knitting order stands INSIDE its status: the « Prochaines étapes »
@@ -294,6 +307,8 @@ export interface EtatTricotage {
   urgenceDemandee: 'attente' | 'a_relancer' | null
   /** A line still to deliver was passed « en urgence », answered or not: the order wears the icon. */
   urgente: boolean
+  /** The knitter holds the order past this délai ('YYYY-MM-DD'): to chase for a new one, every working day. */
+  delaiDepasse: string | null
 }
 
 /** The order's urgency asked of the knitter, from its lines' urgencies still awaiting an answer: one
@@ -424,6 +439,7 @@ export async function etatsTricotage(ids: number[], today: Date = new Date()): P
   // The délai question (asked, relances, reports) of the orders waiting for it only.
   const enAttente = [...commandes].filter(([, v]) => v.phase === 'attente_delai').map(([id]) => id)
   const faitsLus = enAttente.length > 0 ? await lireFaitsDelai(enAttente, sql) : new Map<number, FaitsDelai>()
+  const relancesRetard = await lireRelancesRetard(cmdIds, sql)
   for (const [id, { c, phase }] of commandes) {
     const faits = phase === 'attente_delai' ? faitsDelaiTricotage(c, faitsLus.get(id)) : null
     // Nothing left to ask once the goods are in (soldée, soldée par TRM, a line delivered).
@@ -434,13 +450,14 @@ export async function etatsTricotage(ids: number[], today: Date = new Date()): P
     out.set(id, {
       phase,
       urgence: urgenceAvecDemande(
-        urgenceTricotage(c, phase, faits ? relanceDue(faits) : null, today),
+        urgenceTricotage(c, phase, faits ? relanceDue(faits) : null, today, relancesRetard.get(id)),
         phase, demandee, sansDelai.length > 0 && sansDelai.every((l) => enAttenteDeReponse(urgences.get(l.id))),
       ),
       commande: c,
       faits,
       urgenceDemandee: demandee,
       urgente: deLaCommande.length > 0,
+      delaiDepasse: delaiDepasseTricotage(c, phase, today),
     })
   }
   return out

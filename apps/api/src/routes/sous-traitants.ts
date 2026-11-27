@@ -14,6 +14,9 @@ import { etatEcruChezSst, type SstLineInfo } from '../lib/ecru-etat-sst.js'
 import { repairAliased, repairAllJoins } from './stock-fini.js'
 import { qualiteService } from '../lib/qualite-service-sst.js'
 import { retirerAccesPartenaire } from '../lib/espace-partenaire-acces.js'
+import { sendMail } from '../lib/gmail.js'
+import { getUserEmail } from '../lib/user-emails.js'
+import { destinatairesSousTraitant, dossiersARelancer, dossiersDuSousTraitant, mailRelanceGroupee, nombreDossiers, noterRelanceGroupee } from '../lib/relance-groupee-sst.js'
 
 // Gestion route for the `sous_traitant` entity (subcontractor management).
 // Mirrors fournisseurs.ts (identical contacts/adresses sub-resource shape) with
@@ -100,6 +103,98 @@ sousTraitantsRouter.get('/type-sst', async (_req: Request, res: Response) => {
   } catch (err) {
     console.error('Error fetching type_sst:', err)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// ── The grouped relance (lib/relance-groupee-sst.ts, Vincent 2026-11-27) ──
+//
+// What is overdue on a sous-traitant's side today (a new délai, an urgency's
+// answer, a délai, its controls), chased in ONE mail from its fiche. Sending it
+// writes each dossier's own relance: every card is calm again as if chased alone.
+//   GET  /sous-traitants/relances                    { [idsous_traitant]: n } — the list's counters
+//   GET  /sous-traitants/:id/relance/email-defaults  the mail as it opens, and its dossiers
+//   POST /sous-traitants/:id/relance/email
+const jourParis = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris' }).format(new Date())
+
+sousTraitantsRouter.get('/relances', async (_req: Request, res: Response) => {
+  try {
+    const out: Record<number, number> = {}
+    for (const [id, d] of await dossiersARelancer(null, jourParis())) out[id] = nombreDossiers(d)
+    res.json(out)
+  } catch (err) {
+    console.error('Error counting sous-traitant relances:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const MESSAGE_RIEN_A_RELANCER = 'Rien n’est en retard chez ce sous-traitant : aucune relance à envoyer.'
+
+sousTraitantsRouter.get('/:id/relance/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const d = await dossiersDuSousTraitant(id, jourParis())
+    if (nombreDossiers(d) === 0) { res.status(409).json({ error: 'rien_a_relancer', message: MESSAGE_RIEN_A_RELANCER }); return }
+    res.json({ recipients: await destinatairesSousTraitant(id), ...mailRelanceGroupee(d), dossiers: d })
+  } catch (err) {
+    console.error('Error building grouped relance email defaults:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+const relanceGroupeeBody = z.object({
+  to: z.array(z.string().email()).min(1, 'At least one recipient is required'),
+  cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
+  subject: z.string().min(1).max(500),
+  body: z.string().min(1).max(20000),
+  extra_attachments: z.array(z.object({
+    filename: z.string().min(1).max(255),
+    content_base64: z.string().min(1),
+    content_type: z.string().min(1).max(100),
+  })).optional(),
+  dev_skip_send: z.boolean().optional(),
+})
+
+sousTraitantsRouter.post('/:id/relance/email', async (req: Request, res: Response) => {
+  try {
+    if (req.userId === undefined) { res.status(401).json({ error: 'not authenticated' }); return }
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
+    const parsed = relanceGroupeeBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const today = jourParis()
+    // Read again BEFORE the mail leaves: what was answered meanwhile is not chased.
+    const d = await dossiersDuSousTraitant(id, today)
+    if (nombreDossiers(d) === 0) { res.status(409).json({ error: 'rien_a_relancer', message: MESSAGE_RIEN_A_RELANCER }); return }
+    const nom = await nomUtilisateur(req.userId)
+    if (parsed.data.dev_skip_send === true && process.env.NODE_ENV !== 'production') {
+      console.log(`[dev-skip-send] relance groupée sous-traitant #${id} — fake send to ${parsed.data.to.join(', ')}`)
+    } else {
+      const from = await getUserEmail(req.userId)
+      if (!from) {
+        res.status(400).json({
+          error: 'no_sender_email',
+          message: "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs.",
+        })
+        return
+      }
+      const attachments = (parsed.data.extra_attachments ?? []).map((a) => ({
+        filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type,
+      }))
+      await sendMail({
+        from, fromName: `${nom} — ETS Malterre`,
+        to: parsed.data.to, cc: parsed.data.cc, bcc: parsed.data.bcc,
+        subject: parsed.data.subject, body: parsed.data.body,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      })
+    }
+    // The mail left: each dossier gets its own relance.
+    const notes = await noterRelanceGroupee(d, { id: req.userId, nom }, [...parsed.data.to, ...(parsed.data.cc ?? [])], today)
+    res.json({ ok: true, dossiers: nombreDossiers(d), notes })
+  } catch (err) {
+    console.error('Error sending grouped relance:', err)
+    res.status(500).json({ error: 'send_failed', message: err instanceof Error ? err.message : 'Erreur d’envoi' })
   }
 })
 

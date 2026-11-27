@@ -89,7 +89,6 @@ import {
   ETAPE_LOT_META,
   EtapeLotPill,
   LotCycleFooter,
-  MailMenuButton,
   RcMenuButton,
   RefusClientDialog,
   natureEnAttente,
@@ -98,13 +97,13 @@ import {
   type ClientRc,
   type EtapeLot,
   type GesteLot,
-  type MailLot,
   type NatureSoumission,
   type PrealableLot,
   type RelanceClientLot,
   type RelanceEnnoblisseurLot,
   type SoumissionsLot,
 } from '@/components/qualite/LotCycle'
+import { MailMenuButton, type MailChoix } from '@/components/email/MailMenuButton'
 import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { JournalLotTab } from '@/components/qualite/JournalLot'
 import { TableauMetrageLotDialog } from '@/components/etiquettes/TableauMetrageLotDialog'
@@ -1268,7 +1267,7 @@ function LotDetailHeader({
   // a menu when there are several, the mail itself when there is one. §41: a red
   // dot = a relance due, an amber one = a mail of ours to send.
   const today = aujourdhuiIso()
-  const mails: MailLot[] = []
+  const mails: MailChoix[] = []
   if (soumissionCount > 0) {
     mails.push({
       key: 'soumission',

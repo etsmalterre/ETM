@@ -61,6 +61,7 @@ import { faitsReprises } from './reprises.js'
 import { clientsDesLots, cleLotLigne } from './rapport-controle-lot.js'
 import { echeanceDelai, lireFaitsDelai, relanceDue, derniereRelance, historiqueDelai, type EvenementDelai, type FaitsDelai } from './delai-sst.js'
 import { urgenceDemandee, urgencesLignes, type UrgenceLigne } from './urgence-sst.js'
+import { lireRelancesRetard, retardCalme } from './relance-retard-sst.js'
 import { natureInferee, naturesDemandees, type NatureSoumission } from './soumission-lot.js'
 import { CONTROLES_PAR_DEFAUT, controlesDeRef, mesuresManquantes, type ControlesRef } from './controles-lot.js'
 import { colorisAControler, rondsZero, rondZeroDe, type RondZero } from './coloris-lot.js'
@@ -133,7 +134,7 @@ export interface LotFait {
   /** The dyer's time on the lot's LINE (`tempsDesLignes`): from the bon de commande to the line's délai, pushed
    *  by what the client took beyond its days on the line's coloris answers. What a lot « en rame » is due by
    *  (Vincent 2026-11-26). Absent: the line carries no délai, or the lot no line. */
-  tempsLigne?: { depuis: string | null; echeance: string } | null
+  tempsLigne?: { depuis: string | null; echeance: string; relancesRetard?: string[] } | null
   /** Clients still owed a rapport de contrôle for this lot (names). */
   rcAEnvoyer?: string[]
   /** A reprise of the lot is open at the dyer (lib/reprises.ts). */
@@ -405,6 +406,8 @@ export interface CommandeFait {
   ecruChezTeinturier: number
   /** Urgencies asked of the dyer on its open lines (lib/urgence-sst.ts). */
   urgences?: UrgencesCommande
+  /** The days we chased a passed délai of the order (lib/relance-retard-sst.ts), sorted. 'YYYY-MM-DD'. */
+  relancesRetard?: string[]
 }
 
 /** What a dyer's order holds of « passer en urgence » (lib/urgence-sst.ts, Vincent 2026-11-16: the
@@ -445,6 +448,9 @@ export interface EtatCommande {
   enReprise?: RepriseEnCours[]
   /** Urgencies asked of the dyer on its open lines (lib/urgence-sst.ts). */
   urgences?: UrgencesCommande
+  /** The dyer holds the order past its délai (`relance`): the days we chased it for a new one
+   *  (lib/relance-retard-sst.ts). The order is calm until the working day after the latest. */
+  relancesRetard?: string[]
 }
 
 /** The client answers a coloris soumission while the dyed matter waits at the
@@ -499,8 +505,8 @@ function attentesDe(lots: readonly LotFait[]): AttenteClient[] {
 /** The dyer's time on each line not delivered yet that carries a délai: from the bon de commande to that délai
  *  pushed by the client's own delay on the line's coloris answers (`calendrierTraitement().sortie`, the day the
  *  order's card expects the dyer). What a lot « en rame » on that line is due by. Pure. */
-export function tempsDesLignes(c: CommandeFait, today: string): Map<number, { depuis: string | null; echeance: string }> {
-  const out = new Map<number, { depuis: string | null; echeance: string }>()
+export function tempsDesLignes(c: CommandeFait, today: string): Map<number, { depuis: string | null; echeance: string; relancesRetard?: string[] }> {
+  const out = new Map<number, { depuis: string | null; echeance: string; relancesRetard?: string[] }>()
   const depuis = c.delaiFaits?.demandeLe ?? c.delaiFaits?.reponduLe ?? null
   for (const ligne of c.lignesOuvertes ?? []) {
     const attentes = attentesDe(c.lots.filter((l) => l.idligne === ligne.id))
@@ -509,7 +515,7 @@ export function tempsDesLignes(c: CommandeFait, today: string): Map<number, { de
       retardClient: attentes.reduce((n, a) => n + (a.au ? depassementClient(a, a.au) : 0), 0),
       reporteClient: ligne.reporteClient ?? 0,
     }
-    out.set(ligne.id, { depuis, echeance: calendrierTraitement(t, today).sortie })
+    out.set(ligne.id, { depuis, echeance: calendrierTraitement(t, today).sortie, ...(c.relancesRetard?.length ? { relancesRetard: c.relancesRetard } : {}) })
   }
   return out
 }
@@ -584,11 +590,14 @@ export function calendrierTraitement(t: EtatTraitement, today: string): Calendri
  *  ours to chase IT — never the dyer for a délai the client is eating — and
  *  again 5 days after each relance, `relanceClientDue`), else the dyer on its
  *  délai pushed by the client's delay. */
-function chasseTraitement(c: CommandeFait, t: EtatTraitement | undefined): { main: Main; relance: string | null } {
+function chasseTraitement(c: CommandeFait, t: EtatTraitement | undefined): { main: Main; relance: string | null; relancesRetard?: string[] } {
   const enAttente = t?.attentes.find((a) => !a.au)
   if (enAttente) return { main: 'client', relance: relanceClientDue({ envoyeeLe: enAttente.du, relances: enAttente.relanceLe ? [enAttente.relanceLe] : [] }) }
   const reste = t ? Math.max(0, t.retardClient - t.reporteClient) : 0
-  return { main: 'teinturier', relance: t && reste > 0 ? plusJoursOuvres(t.delai, reste) : c.delai }
+  return {
+    main: 'teinturier', relance: t && reste > 0 ? plusJoursOuvres(t.delai, reste) : c.delai,
+    ...(c.relancesRetard?.length ? { relancesRetard: c.relancesRetard } : {}),
+  }
 }
 
 export interface EtatDelai {
@@ -677,11 +686,24 @@ export function urgenceCommande(e: EtatCommande, today: string): 'late' | 'soon'
   if (demandee === 'a_relancer') return 'late'
   if (e.etape === 'attente_delai' && demandee === 'attente' && e.urgences?.couvreAttente) return null
   if (!e.relance) return null
-  if (e.relance <= today) return 'late'
+  // A passed délai chased by mail is calm until the next working day (lib/relance-retard-sst.ts).
+  if (e.relance <= today) return retardChasse(e, today) ? null : 'late'
   // Waiting for the délai: nothing to get ahead on — the Point asks by itself (2026-11-02).
   if (e.etape === 'attente_delai') return null
   if (e.relance <= plusJoursOuvres(today, 1)) return 'soon'
   return null
+}
+
+/** True while the dyer holds the order past its délai and we chased it today (or on the last
+ *  working day's evening): nothing to do before the next working day. */
+export function retardChasse(e: EtatCommande, today: string): boolean {
+  return e.main === 'teinturier' && e.etape !== 'attente_delai' && !!e.relance && retardCalme(e.relancesRetard, e.relance, today)
+}
+
+/** True when the dyer holds the order past its délai: « Relancer le délai dépassé » is offered
+ *  (every working day until a new délai is given). */
+export function delaiDepasse(e: EtatCommande, today: string): boolean {
+  return e.main === 'teinturier' && (e.etape === 'en_teinture' || e.etape === 'en_controle') && !!e.relance && e.relance <= today
 }
 
 /** The order's urgency asked of the dyer: 'attente' while an answer is awaited, 'a_relancer' once
@@ -711,6 +733,8 @@ export function urgenceLot(l: LotFait, today: string): UrgenceLot | null {
     main = 'nous'
   }
   if (!relance) return null
+  // « En rame », due with its line: its order's passed délai chased by mail calms it too, until the next working day.
+  if (e.etape === 'en_rame' && relance <= today && retardCalme(l.tempsLigne?.relancesRetard, relance, today)) return null
   const niveau = relance <= today ? 'rouge' : relance <= plusJoursOuvres(today, 1) ? 'ambre' : null
   if (!niveau) return null
   const jour = relance === today ? 'aujourd’hui' : `le ${relance.slice(8, 10)}/${relance.slice(5, 7)}`
@@ -829,6 +853,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
   ])
 
   const faitsDelai = await faitsDelaiP
+  const relancesRetard = await lireRelancesRetard(cmdIds, sql)
   const reporteClient = new Map<number, number>()
   for (const r of await reportsClientP) {
     if (r.a && r.n && r.n > r.a) reporteClient.set(Number(r.idl), (reporteClient.get(Number(r.idl)) ?? 0) + joursOuvresDepuis(r.a, r.n))
@@ -1071,6 +1096,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       } } : {}),
       est_soldee: Number(e.est_soldee) === 1,
       rangStatut: Math.max(0, ...sesLignes.map((l) => rang(l.sstatut))) as 0 | 1 | 2,
+      ...(relancesRetard.has(id) ? { relancesRetard: relancesRetard.get(id)! } : {}),
       delaiFaits: faitsDelai.get(id),
       delai: delais[0] ?? null,
       delaisLignes: [...new Set(delais)],

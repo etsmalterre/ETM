@@ -2315,6 +2315,28 @@ ${grantApi('USAGE, SELECT', 'SEQUENCE relance_controle_id_seq')}
 `,
   },
   {
+    // « Relancer le délai dépassé » (Vincent 2026-11-27, lib/relance-retard-sst.ts):
+    // a sous-traitant order whose délai has passed is red until a new délai is
+    // given; the relance is an e-mail (the order's mail button, or the
+    // sous-traitant's grouped relance) and calms the order until the next
+    // working day — a passed délai may be chased every day. Append-only: the
+    // API role may only SELECT / INSERT.
+    name: '0089_relance_retard_sst',
+    sql: `
+CREATE TABLE relance_retard_sst (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idcommande_sous_traitant bigint NOT NULL,
+  relance_le timestamptz NOT NULL DEFAULT now(),
+  relance_par_id bigint NOT NULL DEFAULT 0,
+  relance_par text,
+  destinataires text
+);
+CREATE INDEX relance_retard_sst_commande ON relance_retard_sst (idcommande_sous_traitant, relance_le);
+${grantApi('SELECT, INSERT', 'relance_retard_sst')}
+${grantApi('USAGE, SELECT', 'SEQUENCE relance_retard_sst_id_seq')}
+`,
+  },
+  {
     // A sous-traitant's délai brought EARLIER (Vincent 2026-11-27, order 9161,
     // lib/report-delai-sst.ts): accepted when the sous-traitant announces it
     // ahead (the new date is still to come), and a fact of its own for the

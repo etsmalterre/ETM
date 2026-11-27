@@ -4245,6 +4245,7 @@ The standard color-coding model for master-detail **left-list cards**:
 |---|---|---|
 | Sous-traitants → Commandes | red | `attente_delai` relance due/overdue (`date_notif`), or delivery deadline passed/missing (§30), or **Tricobot waits for a person** on the order (a délai to validate, an aide — counted in the red pill too). The card prints the action under the sous-traitant (`raisonCarte()`: « Tricobot : délai à valider », « Délai à relancer », « Délai du 15/10 dépassé », « Sans délai : le demander »). Tricotage: also an urgency asked of the knitter whose answer did not come (« Urgence demandée : relancer le tricoteur », API `lib/urgence-sst.ts`) |
 | Sous-traitants → Commandes | amber | relance tomorrow, or delivery within 3 days (§30) |
+| Sous-traitants → Gestion | red | **this sous-traitant is to chase now**: at least one dossier overdue on its side (a passed délai, an urgency without its answer, a délai not given, the controls of a received lot — API `lib/relance-groupee-sst.ts`, each read with its own list's rule). The card prints « N dossiers à relancer »; the action is the fiche's « @ » button, ONE grouped mail whose send notes every dossier's relance. Never amber |
 | Clients → Commandes | red | **something to do now** on its most urgent line: fini to launch ≤ 35 j before the délai (écru ≤ 10 j), **a fini line whose écru is knitted and reserved but sits with us, none at a dyer** (« pièces à transférer »: the dyer order is made where the pieces are, 2026-11-27), ready to ship ≤ 3 j or late (on the date agreed with the client when the line has one), **a divers line without the stock to ship once its date has passed** (« en retard, sans stock »; before the date it is NEUTRAL, pill « Attente stock »: nobody can enter a stock that is not there, 2026-11-27), a « sur appel » line 120 j past its délai (chase the client), knitting / dyer past the délai, **an urgency asked of the knitter whose answer did not come** (« urgence demandée, relancer le tricoteur »; while the answer is awaited the « date client intenable » line is NEUTRAL, API `lib/urgence-sst.ts`, 2026-11-16), **a line waiting for yarn reserved on a supplier order whose date has passed or is missing** (relancer le fournisseur — neutral while the supplier is in time, 2026-10-23), **a line without a délai** (giving one is ours to do — 2026-10-22), **a fini line in étude coloris whose relance is due** (lab ≥ 17 j, client ≥ 21 j since the last move or relance), or whose étude was cancelled / accepted without a coloris on the line (`urgence.niveau`, API `lib/urgence-commande-client.ts` + `lib/etude-ligne-client.ts`) |
 | Fils → Commandes | red | **to do now** (API `urgenceCommandeFil`, `lib/cycle-commande-fil.ts`): yarn late or without a délai; received, no invoice attached 15 j after the first lot; an organic lot without GOTS certificate 75 j after it came in (p80 measured); an invoice 15 j past its due date (first lot + échéance) |
 | Fils → Commandes | amber | **can be done now, not yet imperative**: yarn due within 3 j; invoice to attach (it travels with the yarn); certificate missing 35–74 j after the lot (p50 34 j); invoice due. Both colours cover the cycle's « En attente » stage; search-bar tags = the stages (Fil attendu / Attente certificat GOTS / facture / paiement / Terminée) |
@@ -4345,7 +4346,7 @@ Usage in the §6.1 view-mode button row:
 - **Follow-up options go in a Dialog after selection**, not in the menu. When a document needs a pre-generation question (e.g. the fiche tarifs' "Inclure les tranches 15 et 30 rouleaux" toggle in `FinisReferences`), the menu row opens a small §18.A Dialog with the option control (§35 pill for booleans) and an Annuler / Générer footer. The menu itself stays a flat list of documents — never nest inputs inside it.
 - **Outside-click close** via the `mousedown` listener + `rootRef.contains` guard, same as the §29.4 status-footer menu. No scroll-close needed (the header doesn't scroll).
 
-**The same rule for e-mails that are not documents** (Vincent 2026-11-27, Qualité › Suivi lots): a screen whose record can send several KINDS of mail (a soumission, a relance of the client, a relance of the dyer…) has ONE « @ » header button, never one icon per kind (a bell for a relance beside a paper plane for a soumission was built and rejected the same day: the person must know « I send an e-mail from the e-mail button »). `MailMenuButton` in `components/qualite/LotCycle.tsx`: a menu when several mails are possible now, the mail itself when there is one, no button when there is none; a §41 dot on the trigger (red = a relance due, amber = a mail of ours to send) and « À faire » on the due rows.
+**The same rule for e-mails that are not documents** (Vincent 2026-11-27, Qualité › Suivi lots): a screen whose record can send several KINDS of mail (a soumission, a relance of the client, a relance of the dyer…) has ONE « @ » header button, never one icon per kind (a bell for a relance beside a paper plane for a soumission was built and rejected the same day: the person must know « I send an e-mail from the e-mail button »). `components/email/MailMenuButton.tsx` (Suivi lots, and Sous-traitants › Commandes since the same day: the bon de commande, « Relancer la demande de délai », « Relancer la demande d'urgence » — the relances left the « Prochaines étapes » card for it): a menu when several mails are possible now, the mail itself when there is one, no button when there is none; a §41 dot on the trigger (red = a relance due, amber = a mail of ours to send) and « À faire » on the due rows.
 
 ### 42.3 When to use vs the direct button
 
@@ -4720,14 +4721,17 @@ so that an order that was pressed is recognised at a glance on every screen of e
   is exceptional, and an affordance repeated on each row reads as routine (user-rejected the same
   day). Only a line that HAS an urgency shows it (« Urgent · souhaité le … », a plain mention).
 - **A gesture that concerns the partner opens its mail** (§32 `SendEmailDialog`, wrapped by
-  `UrgenceMail`): « Passer en urgence », « Relancer » and « Retirer l'urgence » record the gesture
-  first, then open the pre-filled mail; closing it unsent is a valid exit (told by phone). Never a
-  second entry point for the same mail (no menu on the header mail button — considered, rejected).
+  `UrgenceMail`): « Passer en urgence » and « Retirer l'urgence » record the gesture first, then
+  open the pre-filled mail; closing it unsent is a valid exit (told by phone). **A relance is the
+  other way round** (Vincent 2026-11-27, as on Suivi lots): it leaves from the order's ONE header
+  mail button (§42 `MailMenuButton`, « Relancer la demande d'urgence », red dot + « À faire » once
+  the answer is overdue) and sending the mail IS the relance. Never two entry points for one mail.
 - **An urgency awaited is a parallel process, so it gets its own row** in the « Prochaines étapes »
   card (`UrgenceEnCours`), in the grammar of an open lot (`LotEnCours`): title left, « N j sur M »
   right, one `h-1.5` segment per working day granted (sky, all red once overdue), the red action
-  line only when there is one, then two `outline` `sm` buttons (« Relancer » / « Refusée », each
-  through a default-variant §33 `ConfirmDialog`). Rows of parallel processes stack under the main
+  line only when there is one. **No button on the row** (2026-11-27: « Relancer » / « Refusée »
+  stood here and were user-rejected — the relance is the header mail button's, « Urgence refusée »
+  a link beside « Retirer l'urgence » in the line's edit dialog). Rows of parallel processes stack under the main
   block behind a `mt-3 pt-3 border-t border-border/60` divider. When two clocks would ask the same
   question (« Attente délai » + an urgency on every undated line), draw ONE bar.
   One date, never a « réponse attendue le » field: the partner's answer time is known to the API.

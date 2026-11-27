@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { UnsavedChangesDialog } from '@/components/shared/UnsavedChangesDialog'
 import { useUnsavedGuard } from '@/hooks/useUnsavedGuard'
 import {
+  BellRing,
   Building2,
   Search,
   Loader2,
@@ -42,7 +43,11 @@ import { QualiteServiceSection } from './sous-traitants/QualiteServiceSection'
 import { brouillonDe, corpsDe, DelaisInfo, delaisQueryKey, useDelaisSst, type BrouillonDelais, type DelaisPayload } from './sous-traitants/DelaisSection'
 import { SstTypeTag } from '@/lib/sst-type'
 import { cn } from '@/lib/utils'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, API_URL } from '@/lib/api'
+import { postEmail } from '@/lib/email'
+import { SendEmailDialog } from '@/components/email/SendEmailDialog'
+import { MailMenuButton } from '@/components/email/MailMenuButton'
+import { invalidateCommandeClientCaches, invalidateLotQualityCaches, invalidateSstCommandeCaches } from '@/lib/cache-sync'
 import { fmtNum } from '@/lib/format'
 import { formatHfsqlDate } from '@/lib/dates'
 import { EtatPill } from '@/lib/etat-stock-fini'
@@ -197,6 +202,15 @@ export function SousTraitantsGestion() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('actif')
+  // The grouped relance (API lib/relance-groupee-sst.ts, Vincent 2026-11-27): what is overdue on
+  // each sous-traitant's side today — the list's red, the fiche's mail button. Read with the lists'
+  // own rules; other screens move it (a délai typed, a lot measured): always fresh.
+  const { data: relances } = useQuery<Record<number, number>>({
+    queryKey: ['sous-traitants-relances'], queryFn: () => apiFetch('/sous-traitants/relances'),
+    staleTime: 0, refetchOnMount: 'always',
+  })
+  const [aRelancerOn, setARelancerOn] = useState(false)
+  const [relanceMail, setRelanceMail] = useState<number | null>(null)
   const [isEditing, setIsEditing] = useState(false)
   const [editNom, setEditNom] = useState('')
   const [editTel, setEditTel] = useState('')
@@ -217,9 +231,13 @@ export function SousTraitantsGestion() {
   const delaisKind = delaisKindDe(detail?.IDtype_sst)
   const { data: delais } = useDelaisSst(selectedId, !!delaisKind)
 
+  // §41: the counter pill hides at 0, so an armed filter must not survive an emptied bucket.
+  const nbARelancer = (sousTraitants ?? []).filter((s) => (relances?.[s.IDsous_traitant] ?? 0) > 0).length
+  const aRelancer = aRelancerOn && nbARelancer > 0
   const filtered = useMemo(() => {
     if (!sousTraitants) return []
     let rows = sousTraitants
+    if (aRelancer) rows = rows.filter((s) => (relances?.[s.IDsous_traitant] ?? 0) > 0)
     if (statusFilter === 'actif') rows = rows.filter((s) => !!s.est_visible)
     else if (statusFilter === 'inactif') rows = rows.filter((s) => !s.est_visible)
     const q = searchQuery.trim().toLowerCase()
@@ -231,7 +249,7 @@ export function SousTraitantsGestion() {
       )
     }
     return rows
-  }, [sousTraitants, searchQuery, statusFilter])
+  }, [sousTraitants, searchQuery, statusFilter, aRelancer, relances])
 
   // Keep the selection valid against the search/status-filtered list: narrowing
   // re-targets the top row instead of leaving the previous one on screen.
@@ -332,8 +350,10 @@ export function SousTraitantsGestion() {
         list={<SousTraitantList sousTraitants={filtered} isLoading={isLoading} isError={isError} error={error as Error | null}
           selectedId={selectedId} onSelect={handleSelect} searchQuery={searchQuery} onSearchChange={setSearchQuery}
           statusFilter={statusFilter} onStatusFilterChange={setStatusFilter}
+          relances={relances ?? {}} nbARelancer={nbARelancer} aRelancerOn={aRelancer} onToggleARelancer={() => setARelancerOn((v) => !v)}
           onNew={() => createMutation.mutate()} isCreating={createMutation.isPending} isEditing={isEditing} />}
         detailHeader={<DetailHeader sousTraitant={detail ?? null} isLoading={detailLoading && selectedId !== null}
+          aRelancer={selectedId !== null ? relances?.[selectedId] ?? 0 : 0} onRelancer={() => setRelanceMail(Date.now())}
           isEditing={isEditing} editNom={editNom} onEditNomChange={setEditNom}
           onStartEdit={startEdit} onCancelEdit={cancelEdit} onSave={() => saveMutation.mutate()} isSaving={saveMutation.isPending} />}
         detail={<DetailMain sousTraitant={detail ?? null} isLoading={detailLoading && selectedId !== null}
@@ -353,14 +373,35 @@ export function SousTraitantsGestion() {
         onAction={guard.handleAction}
         isSaving={guard.isSaving}
       />
+      {/* The grouped relance: ONE mail for everything overdue on this sous-traitant's side. Sending it
+          notes each dossier's own relance (its card is calm again as if chased alone). */}
+      {selectedId !== null && relanceMail !== null && (
+        <SendEmailDialog
+          open
+          onClose={() => setRelanceMail(null)}
+          title="Relancer les dossiers en retard"
+          contextLabel={detail?.nom ?? undefined}
+          queryKey={['sous-traitant-relance-email', selectedId, relanceMail]}
+          loadDefaults={() => apiFetch(`/sous-traitants/${selectedId}/relance/email-defaults`)}
+          onSend={async (p) => {
+            await postEmail(`${API_URL}/sous-traitants/${selectedId}/relance/email`, p)
+            queryClient.invalidateQueries({ queryKey: ['sous-traitants-relances'] })
+            invalidateSstCommandeCaches(queryClient)
+            invalidateLotQualityCaches(queryClient)
+            invalidateCommandeClientCaches(queryClient)
+          }}
+        />
+      )}
     </>
   )
 }
 
 // ── Left Panel: List ───────────────────────────────────
 
-function SousTraitantList({ sousTraitants, isLoading, isError, error, selectedId, onSelect, searchQuery, onSearchChange, statusFilter, onStatusFilterChange, onNew, isCreating, isEditing }: {
+function SousTraitantList({ sousTraitants, isLoading, isError, error, selectedId, onSelect, searchQuery, onSearchChange, statusFilter, onStatusFilterChange, relances, nbARelancer, aRelancerOn, onToggleARelancer, onNew, isCreating, isEditing }: {
   sousTraitants: SousTraitant[]; isLoading: boolean; isError: boolean; error: Error | null
+  /** Dossiers overdue on each sous-traitant's side (§41 red: to chase now), and how many sous-traitants have some. */
+  relances: Record<number, number>; nbARelancer: number; aRelancerOn: boolean; onToggleARelancer: () => void
   selectedId: number | null; onSelect: (id: number) => void; searchQuery: string; onSearchChange: (q: string) => void
   statusFilter: StatusFilter; onStatusFilterChange: (f: StatusFilter) => void
   onNew: () => void; isCreating: boolean; isEditing: boolean
@@ -373,10 +414,21 @@ function SousTraitantList({ sousTraitants, isLoading, isError, error, selectedId
   return (
     <div className="flex flex-col h-full rounded-lg border shadow-sm bg-zinc-100/80">
       <div className="p-3 border-b rounded-t-lg bg-zinc-200/50 space-y-2">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input type="text" placeholder="Rechercher..." value={searchQuery} onChange={(e) => onSearchChange(e.target.value)}
-            autoComplete="off" className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 min-w-0">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <input type="text" placeholder="Rechercher..." value={searchQuery} onChange={(e) => onSearchChange(e.target.value)}
+              autoComplete="off" className="w-full h-9 pl-9 pr-3 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring" />
+          </div>
+          {nbARelancer > 0 && (
+            <button type="button" onClick={onToggleARelancer} aria-pressed={aRelancerOn} title="Sous-traitants à relancer"
+              className={cn(
+                'h-7 min-w-[1.75rem] px-1.5 inline-flex items-center justify-center rounded-md text-xs font-semibold tabular-nums border transition-colors flex-shrink-0',
+                aRelancerOn ? 'bg-red-500 text-white border-red-500 shadow-sm' : 'bg-red-500/10 text-red-700 border-red-500/30 hover:bg-red-500/20',
+              )}>
+              {nbARelancer}
+            </button>
+          )}
         </div>
         <div className="flex flex-wrap gap-1">
           {filterOptions.map((opt) => (
@@ -392,10 +444,15 @@ function SousTraitantList({ sousTraitants, isLoading, isError, error, selectedId
         {isLoading ? <div className="flex items-center justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-accent" /></div>
         : isError ? <div className="flex flex-col items-center justify-center py-8 text-destructive"><AlertCircle className="h-6 w-6 mb-2" /><p className="text-sm">{error?.message || 'Erreur'}</p></div>
         : sousTraitants.length === 0 ? <div className="flex flex-col items-center justify-center py-8 text-muted-foreground"><Building2 className="h-12 w-12 mb-3 opacity-50" /><p className="text-sm">Aucun sous-traitant</p></div>
-        : sousTraitants.map((s) => (
+        : sousTraitants.map((s) => {
+          const n = relances[s.IDsous_traitant] ?? 0
+          return (
           <div key={s.IDsous_traitant} onClick={() => onSelect(s.IDsous_traitant)}
-            className={cn('relative p-3 border rounded-lg cursor-pointer transition-all',
-              selectedId === s.IDsous_traitant ? 'border-accent bg-white ring-1 ring-accent' : 'border-border bg-white hover:border-accent/50')}>
+            className={cn('relative p-3 border rounded-lg cursor-pointer transition-all bg-white',
+              n > 0
+                ? (selectedId === s.IDsous_traitant ? 'border-red-500 ring-1 ring-red-500' : 'border-border hover:border-red-500/50')
+                : (selectedId === s.IDsous_traitant ? 'border-accent ring-1 ring-accent' : 'border-border hover:border-accent/50'),
+              n > 0 && 'shadow-[inset_4px_0_0_0_rgb(239_68_68)]')}>
             {!s.est_visible && (
               <Badge variant="destructive" className="absolute top-2 right-2 text-[10px] py-0 gap-1">
                 <EyeOff className="h-2.5 w-2.5" />Inactif
@@ -410,8 +467,10 @@ function SousTraitantList({ sousTraitants, isLoading, isError, error, selectedId
                 <SstTypeTag type={s.type_label} size="sm" />
               </div>
             )}
+            {n > 0 && <p className="mt-1 ml-6 text-xs font-medium text-red-600">{n} dossier{n > 1 ? 's' : ''} à relancer</p>}
           </div>
-        ))}
+          )
+        })}
       </div>
       <div className="p-3 border-t text-xs text-muted-foreground flex items-center justify-between rounded-b-lg bg-zinc-200/50">
         <span>{sousTraitants.length} sous-traitant{sousTraitants.length !== 1 ? 's' : ''}</span>
@@ -427,8 +486,10 @@ function SousTraitantList({ sousTraitants, isLoading, isError, error, selectedId
 
 // ── Center: Detail Header ──────────────────────────────
 
-function DetailHeader({ sousTraitant, isLoading, isEditing, editNom, onEditNomChange, onStartEdit, onCancelEdit, onSave, isSaving }: {
+function DetailHeader({ sousTraitant, isLoading, isEditing, aRelancer, onRelancer, editNom, onEditNomChange, onStartEdit, onCancelEdit, onSave, isSaving }: {
   sousTraitant: SousTraitantDetail | null; isLoading: boolean; isEditing: boolean
+  /** Dossiers overdue on its side today: the mail button opens the grouped relance (none = no button). */
+  aRelancer: number; onRelancer: () => void
   editNom: string; onEditNomChange: (v: string) => void
   onStartEdit: () => void; onCancelEdit: () => void; onSave: () => void; isSaving: boolean
 }) {
@@ -471,7 +532,13 @@ function DetailHeader({ sousTraitant, isLoading, isEditing, editNom, onEditNomCh
                 </Button>
               </>
             ) : (
-              <Button variant="gold" size="sm" onClick={onStartEdit}><Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier</Button>
+              <>
+                <MailMenuButton mails={aRelancer > 0 ? [{
+                  key: 'relance', label: `Relancer ${aRelancer > 1 ? `les ${aRelancer} dossiers` : 'le dossier'} en retard`,
+                  icon: BellRing, niveau: 'rouge', onSelect: onRelancer,
+                }] : []} />
+                <Button variant="gold" size="sm" onClick={onStartEdit}><Pencil className="h-3.5 w-3.5 mr-1.5" />Modifier</Button>
+              </>
             )}
           </div>
         )}

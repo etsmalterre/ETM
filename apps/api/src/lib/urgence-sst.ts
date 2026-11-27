@@ -11,7 +11,8 @@
 // 0076-0077; the API role may SELECT / INSERT):
 //
 //   - 'demande'  the urgency is asked, with the date wished; opens an episode;
-//   - 'relance'  no answer on the day it was due: asked again;
+//   - 'relance'  no answer on the day it was due: asked again — written when the
+//                relance mail leaves from the order's mail button (2026-11-27);
 //   - 'reponse'  the partner answered by moving the délai it had given (written by
 //                the délai writers, for the Journal);
 //   - 'refus'    the partner cannot: its délai stands;

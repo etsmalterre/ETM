@@ -70,7 +70,7 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
     SELECT to_char(date_commande, 'YYYY-MM-DD') AS jour FROM commande_sous_traitant WHERE idcommande_sous_traitant = ${idcommande}`
   if (!entete) return []
 
-  const [propres, emails, delais, points, lots, urgences] = await Promise.all([
+  const [propres, emails, delais, points, lots, urgences, retards] = await Promise.all([
     sql<{ evenement: string; detail: string | null; par: string | null; le: Date }[]>`
       SELECT evenement, detail, par, le FROM journal_commande_sst WHERE idcommande_sous_traitant = ${idcommande} ORDER BY le, id`,
     sql<{ le: Date; type_doc: number; adresse: string | null; notes: string | null }[]>`
@@ -103,6 +103,10 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
       LEFT JOIN ref_ecru re ON re.idref_ecru = l.idreference AND l.type = 1
       LEFT JOIN ref_fini rf ON rf.idref_fini = l.idreference AND l.type = 2
       WHERE u.idcommande_sous_traitant = ${idcommande} ORDER BY u.le, u.id`,
+    // « Relancer le délai dépassé » (lib/relance-retard-sst.ts, 0089).
+    sql<{ le: Date; par: string | null; destinataires: string | null }[]>`
+      SELECT relance_le AS le, relance_par AS par, destinataires FROM relance_retard_sst
+      WHERE idcommande_sous_traitant = ${idcommande} ORDER BY relance_le`,
   ])
 
   const out: EntreeJournalCommande[] = []
@@ -191,6 +195,13 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
         detail: d.ref?.trim() || null, par: d.par, auteur: qui(d.par),
       }))
     }
+  }
+
+  for (const r of retards) {
+    out.push(commande({
+      le: iso(r.le), type: 'relance', titre: 'Délai dépassé relancé par e-mail',
+      detail: r.destinataires ? `À ${r.destinataires}` : null, par: r.par, auteur: qui(r.par),
+    }))
   }
 
   // Urgencies asked of the sous-traitant on a line (lib/urgence-sst.ts).

@@ -233,7 +233,42 @@ async function lignesEnAttente(sql: Sql, idcommande: number): Promise<number> {
   return Number(r?.n) || 0
 }
 
-/** « Relancer »: the dyer was asked again for the délai, by e-mail or phone. */
+/** True while the order still waits for a délai on a line: the relance mail is offered then. */
+export async function attendUnDelai(idcommande: number, sql: Sql = mpsPg()): Promise<boolean> {
+  return (await lignesEnAttente(sql, idcommande)) > 0
+}
+
+const jjmmaaaa = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`
+
+/** The relance mail of the délai as it opens (Vincent 2026-11-27: the relance IS this mail, sent
+ *  from the order's mail button, as on Suivi lots): short, the person reads it before it leaves.
+ *  `articles`: « REF - coloris » of the lines still without a délai; dates 'YYYY-MM-DD'. Pure. */
+export function mailRelanceDelai(p: {
+  numero: number; commandeLe: string | null; articles: string | null; derniereRelance: string | null
+}): { subject: string; body: string } {
+  return {
+    subject: `Relance — Délai de notre commande N°${p.numero} — ETS Malterre`,
+    body: 'Bonjour,\n\n'
+      + `Nous revenons vers vous au sujet de notre commande N°${p.numero}${p.articles ? ` (${p.articles})` : ''}`
+      + `${p.commandeLe ? ` du ${jjmmaaaa(p.commandeLe)}` : ''} : `
+      + `${p.derniereRelance ? `malgré notre relance du ${jjmmaaaa(p.derniereRelance)}, ` : ''}nous n’avons pas encore votre délai.`
+      + '\n\nPouvez-vous nous l’indiquer ?\n\nMerci d’avance.\n\nCordialement,',
+  }
+}
+
+/** What the relance mail is written from: the order's date and our latest own relance (a call or a
+ *  mail — the daily Point asks every day, it is not « notre relance du … »). Null = unknown order. */
+export async function contexteMailRelanceDelai(idcommande: number, sql: Sql = mpsPg()): Promise<{ commandeLe: string | null; derniereRelance: string | null } | null> {
+  const [c] = await sql<{ le: string | null }[]>`
+    SELECT to_char(date_commande, 'YYYY-MM-DD') AS le FROM commande_sous_traitant WHERE idcommande_sous_traitant = ${idcommande}`
+  if (!c) return null
+  const f = (await lireFaitsDelai([idcommande], sql)).get(idcommande)
+  const propres = f ? f.relances.filter((r) => r.canal !== 'point' && (!f.demandeLe || r.jour >= f.demandeLe)) : []
+  return { commandeLe: c.le, derniereRelance: propres.at(-1)?.jour ?? null }
+}
+
+/** The dyer was asked again for the délai: the relance mail sent from the order (canal 'email'),
+ *  or a call noted by an older version (canal 'telephone'). */
 export async function noterRelance(idcommande: number, canal: 'email' | 'telephone', note: string, par: Auteur): Promise<void> {
   const sql = mpsPg()
   if ((await lignesEnAttente(sql, idcommande)) === 0) throw new DelaiRefuse('pas_en_attente', 'Cette commande n’attend plus de délai.')

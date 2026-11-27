@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, BellRing, CalendarClock, Loader2, Mail, Phone } from 'lucide-react'
+import { AlertCircle, CalendarClock, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
@@ -24,27 +24,20 @@ export interface DelaiCycle {
 const jjmmaaaa = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`
 const isoJour = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
-/** The two gestures of an order waiting for the dyer's délai. A Point sent with
- *  the order counts as a relance by itself; « Relancer » records a call or an
- *  e-mail sent apart. When it was asked is the card's counter; the history is
- *  the Journal tab's (Vincent 2026-11-10). */
+/** The gesture of an order waiting for the dyer's délai: « Repousser » its échéance.
+ *  The relance is a mail, sent from the order's mail button (Vincent 2026-11-27, as
+ *  on Suivi lots) — no button here; a Point sent with the order counts as one by
+ *  itself. When it was asked is the card's counter; the history is the Journal
+ *  tab's (Vincent 2026-11-10). */
 export function DelaiQuestion({ commandeId, delai, disabled }: { commandeId: number; delai: DelaiCycle; disabled: boolean }) {
-  const [dialog, setDialog] = useState<'relance' | 'report' | null>(null)
-  const raison = disabled ? 'Terminez la modification d’abord' : undefined
+  const [ouvert, setOuvert] = useState(false)
   return (
     <>
-      <div className="flex gap-2">
-        <Button variant="outline" size="sm" className="flex-1" disabled={disabled} onClick={() => setDialog('relance')}
-          title={raison ?? 'Noter une relance par téléphone ou e-mail'}>
-          <BellRing className="h-3.5 w-3.5 mr-1.5" />Relancer
-        </Button>
-        <Button variant="outline" size="sm" className="flex-1" disabled={disabled} onClick={() => setDialog('report')}
-          title={raison ?? 'Le délai n’est pas attendu avant une autre date'}>
-          <CalendarClock className="h-3.5 w-3.5 mr-1.5" />Repousser
-        </Button>
-      </div>
-      <RelanceDialog open={dialog === 'relance'} commandeId={commandeId} onClose={() => setDialog(null)} />
-      <ReportDialog open={dialog === 'report'} commandeId={commandeId} echeance={delai.echeance} onClose={() => setDialog(null)} />
+      <Button variant="outline" size="sm" className="w-full" disabled={disabled} onClick={() => setOuvert(true)}
+        title={disabled ? 'Terminez la modification d’abord' : 'Le délai n’est pas attendu avant une autre date'}>
+        <CalendarClock className="h-3.5 w-3.5 mr-1.5" />Repousser
+      </Button>
+      <ReportDialog open={ouvert} commandeId={commandeId} echeance={delai.echeance} onClose={() => setOuvert(false)} />
     </>
   )
 }
@@ -56,62 +49,22 @@ const choixClass = (actif: boolean) => cn(
 
 const textareaClass = 'w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y'
 
-function useGeste(commandeId: number, chemin: 'relances' | 'reports', onDone: () => void) {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (body: Record<string, string>) =>
-      apiFetch(`/commandes-sous-traitant/${commandeId}/delai/${chemin}`, { method: 'POST', body: JSON.stringify(body) }),
-    onSuccess: () => { invalidateSstCommandeCaches(queryClient); onDone() },
-  })
-}
-
 function messageErreur(e: unknown): string | null {
   if (!e) return null
   const err = e as Error & { body?: { message?: string } }
   return err.body?.message || err.message
 }
 
-function RelanceDialog({ open, commandeId, onClose }: { open: boolean; commandeId: number; onClose: () => void }) {
-  const [canal, setCanal] = useState<'email' | 'telephone'>('telephone')
-  const [note, setNote] = useState('')
-  const mut = useGeste(commandeId, 'relances', onClose)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (open) { setCanal('telephone'); setNote(''); mut.reset() } }, [open])
-  const erreur = messageErreur(mut.error)
-  return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-md" onClose={onClose}>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2"><BellRing className="h-5 w-5 text-accent" />Relancer le sous-traitant</DialogTitle>
-        </DialogHeader>
-        <div className="mt-4 space-y-3">
-          <p className="text-xs text-muted-foreground">Le Point du jour compte déjà comme une relance : notez ici un appel ou un e-mail envoyé à part.</p>
-          <div className="flex gap-2">
-            <button type="button" className={choixClass(canal === 'telephone')} onClick={() => setCanal('telephone')}><Phone className="h-3.5 w-3.5" />Téléphone</button>
-            <button type="button" className={choixClass(canal === 'email')} onClick={() => setCanal('email')}><Mail className="h-3.5 w-3.5" />E-mail</button>
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Note (facultatif)</label>
-            <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} placeholder="Ex. : rappel prévu demain" className={textareaClass} />
-          </div>
-          {erreur && <p className="text-sm text-destructive flex items-center gap-1.5"><AlertCircle className="h-4 w-4 flex-shrink-0" />{erreur}</p>}
-        </div>
-        <DialogFooter className="mt-4">
-          <Button variant="outline" onClick={onClose}>Annuler</Button>
-          <Button onClick={() => mut.mutate({ canal, note })} disabled={mut.isPending}>
-            {mut.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <BellRing className="h-3.5 w-3.5 mr-1.5" />}Noter la relance
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 function ReportDialog({ open, commandeId, echeance, onClose }: { open: boolean; commandeId: number; echeance: string | null; onClose: () => void }) {
   const [date, setDate] = useState('')
   const [imputable, setImputable] = useState<'sous_traitant' | 'malterre'>('sous_traitant')
   const [motif, setMotif] = useState('')
-  const mut = useGeste(commandeId, 'reports', onClose)
+  const queryClient = useQueryClient()
+  const mut = useMutation({
+    mutationFn: (body: Record<string, string>) =>
+      apiFetch(`/commandes-sous-traitant/${commandeId}/delai/reports`, { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: () => { invalidateSstCommandeCaches(queryClient); onClose() },
+  })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (open) { setDate(''); setImputable('sous_traitant'); setMotif(''); mut.reset() } }, [open])
   const erreur = messageErreur(mut.error)
