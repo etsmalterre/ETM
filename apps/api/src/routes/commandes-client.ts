@@ -59,6 +59,7 @@ import { ValeurDonationPdf } from '../lib/pdf/ValeurDonationPdf.js'
 import { buildDonationValeurData, type DonationValeurPdfData } from '../lib/donation-valeur.js'
 import { attachDonationSql, detachDonationSql, planDonationSet } from '../lib/donation-pieces.js'
 import { FINI_EXPEDIABLE_SQL, finiNonValideRefus, isFiniExpediable, refsExpedieesDesReception } from '../lib/fini-expediable.js'
+import { LIEU_MALTERRE, refusLieuExpedition } from '../lib/lieu-expedition.js'
 import { calcLignePriceClient, expiredContractMessage } from '../lib/pricing-ligne-client.js'
 import { cotesARevoir, appliquerReprix } from '../lib/reprix-associes.js'
 import { prixUnitOf, resolveLigneTarifMode } from '../lib/tarif-client.js'
@@ -6481,7 +6482,7 @@ commandesClientRouter.get('/:id/lignes/:ligneId/expeditions', async (req: Reques
         lot: r.lot ?? null,
         poids: round2c(Number(r.poids) || 0),
         metrage: round2c(Number(r.metrage) || 0),
-        magasin_nom: magNames.get(Number(r.IDmagasin)) ?? null,
+        magasin_nom: Number(r.IDmagasin) > 0 ? (magNames.get(Number(r.IDmagasin)) ?? null) : LIEU_MALTERRE,
       })
       rollsByExp.set(expId, arr)
     }
@@ -6560,6 +6561,11 @@ commandesClientRouter.post('/:id/lignes/:ligneId/expedier', async (req: Request,
         return
       }
     }
+
+    // One avis, one place (lib/lieu-expedition.ts): rolls sitting in two places are two pickups,
+    // refused before anything is written so the person splits the selection.
+    const refusLieu = await refusLieuExpedition({ idExpedition: null, forme: ctx.kind, stockIds: usable.map((r: any) => Number(r.id)) })
+    if (refusLieu) { res.status(409).json(refusLieu); return }
 
     // Header defaults: livraison address from the commande, carrier from the
     // client. donation inherits the commande's flag so material shipped from a

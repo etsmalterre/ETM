@@ -47,6 +47,8 @@ import { fmtNum } from '@/lib/format'
 import { apiFetch, API_URL } from '@/lib/api'
 import { invalidateStockCaches } from '@/lib/cache-sync'
 import { EtatPill } from '@/lib/etat-stock-fini'
+import { RollTable, type RollTableColumn } from '@/components/stock/RollTable'
+import { RollDefautsIcon, RollObservationsIcon } from '@/components/stock/RollNoteIcons'
 
 // ── Types ──────────────────────────────────────────────
 
@@ -176,8 +178,13 @@ interface ExpeditionDetail {
   est_facture: number
   factures: FactureRef[]
   locked: boolean
+  /** Formelle: where its rolls sit. One place (an avis leaves from one place), none without a roll. */
+  depart?: LieuDepart[]
   lignes: FormelleLigne[] | DiversLigne[]
 }
+
+/** A place rolls sit in: 0 = the factory, « Malterre », else the sous-traitant holding them. */
+interface LieuDepart { id: number; nom: string; rouleaux: number }
 
 interface RollLite {
   id: number
@@ -186,6 +193,7 @@ interface RollLite {
   poids: number | null
   metrage: number | null
   coloris_reference: string | null
+  idmagasin: number
   magasin_nom: string | null
   second_choix: number | null
   observations: string | null
@@ -200,6 +208,8 @@ interface RollPayload {
   target_qty: number
   onExp: RollLite[]
   dispo: RollLite[]
+  /** Where the whole avis leaves from: a roll sitting elsewhere cannot join it. */
+  depart: LieuDepart[]
 }
 
 interface ClientLite { IDclient: number; nom: string }
@@ -1343,15 +1353,23 @@ function RollDrawer({
 
   const onExp = data?.onExp ?? []
   const dispo = data?.dispo ?? []
-  const dim = data?.dim ?? ligne.dim
   const rollKind: 'ecru' | 'fini' = (data?.kind ?? ligne.stock_kind) === 'fini' ? 'fini' : 'ecru'
   const EmptyIcon = rollKind === 'fini' ? FiniRollIcon : TmRollIcon
+  const etat = rollKind === 'fini' ? (r: RollLite) => <EtatPill libelle={r.etat_label} /> : undefined
+  // One avis, one place: the place of the rolls already on it, every line together.
+  const depart = data?.depart ?? []
+  const lieu = depart.length === 1 ? depart[0] : null
+  /** Why a roll cannot join the avis (undefined = it can). The API refuses the same. */
+  const raisonBloque = (r: RollLite): string | undefined =>
+    !r.expediable ? 'Seuls les rouleaux validés peuvent être expédiés'
+      : lieu && r.idmagasin !== lieu.id ? `Ce rouleau est chez ${r.magasin_nom || '—'}, l'expédition part de chez ${lieu.nom}`
+        : undefined
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden bg-zinc-100/80">
       <div className="flex-shrink-0 px-3 py-1.5 border-b bg-zinc-200/50 flex items-center justify-between">
         <span className="text-xs font-semibold text-muted-foreground truncate">
-          {ligne.ref_label || 'Rouleaux'}{ligne.colori_reference ? ` · ${ligne.colori_reference}` : ''}
+          {ligne.ref_label || 'Rouleaux'}{ligne.colori_reference ? ` - ${ligne.colori_reference}` : ''}
         </span>
         <Button variant="ghost" size="icon" onClick={onClose} className="h-7 w-7" title="Fermer">
           <X className="h-3.5 w-3.5" />
@@ -1381,28 +1399,55 @@ function RollDrawer({
 
         {onExp.length > 0 && (
           <section>
-            <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">Sur l'expédition ({onExp.length})</h3>
-            <div className="space-y-1.5">
-              {onExp.map((roll) => (
-                <RollRow key={roll.id} roll={roll} dim={dim} kind={rollKind} action="unlink" disabled={!editable}
-                  onAction={() => unlinkMut.mutate(roll.id)}
-                  isBusy={unlinkMut.isPending && unlinkMut.variables === roll.id} />
-              ))}
-            </div>
+            <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold mb-1.5">Sur l'expédition ({onExp.length})</h3>
+            <RollTable
+              rolls={onExp}
+              kind={rollKind}
+              columns={COLONNES_ROULEAU}
+              notes={notesRouleau}
+              etat={etat}
+              action={editable ? (r) => {
+                const busy = unlinkMut.isPending && unlinkMut.variables === r.id
+                return (
+                  <Button size="sm" variant="outline" className={ACTION_ROULEAU} disabled={busy} onClick={() => unlinkMut.mutate(r.id)}>
+                    {busy ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Unlink className="h-3 w-3 mr-1" />}Retirer
+                  </Button>
+                )
+              } : undefined}
+            />
           </section>
         )}
 
         {/* "Disponibles" only matters when the shipment can still be edited. */}
         {editable && dispo.length > 0 && (
           <section>
-            <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold mb-1.5">Disponibles ({dispo.length})</h3>
-            <div className="space-y-1.5">
-              {dispo.map((roll) => (
-                <RollRow key={roll.id} roll={roll} dim={dim} kind={rollKind} action="link" disabled={!editable}
-                  onAction={() => linkMut.mutate(roll.id)}
-                  isBusy={linkMut.isPending && linkMut.variables === roll.id} />
-              ))}
-            </div>
+            <h3 className="text-[10px] uppercase tracking-wide text-primary/70 font-semibold mb-1.5">Disponibles ({dispo.length})</h3>
+            <RollTable
+              rolls={dispo}
+              kind={rollKind}
+              columns={COLONNES_ROULEAU}
+              notes={notesRouleau}
+              etat={etat}
+              action={(r) => {
+                const bloque = raisonBloque(r)
+                // The span carries the tooltip a disabled button would swallow (#1235).
+                if (bloque) {
+                  return (
+                    <span title={bloque} className="inline-flex flex-shrink-0 cursor-not-allowed">
+                      <Button size="sm" disabled className={cn(ACTION_ROULEAU, 'pointer-events-none')}>
+                        <Ban className="h-3 w-3 mr-1" />Ajouter
+                      </Button>
+                    </span>
+                  )
+                }
+                const busy = linkMut.isPending && linkMut.variables === r.id
+                return (
+                  <Button size="sm" className={ACTION_ROULEAU} disabled={busy} onClick={() => linkMut.mutate(r.id)}>
+                    {busy ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Link2 className="h-3 w-3 mr-1" />}Ajouter
+                  </Button>
+                )
+              }}
+            />
           </section>
         )}
 
@@ -1414,66 +1459,19 @@ function RollDrawer({
   )
 }
 
-function RollRow({
-  roll, dim, kind, action, onAction, isBusy, disabled,
-}: {
-  roll: RollLite
-  dim: 'metrage' | 'poids'
-  /** Drives the domain icon: fini → green FiniRollIcon, écru → TmRollIcon
-   *  (mirrors the ClientsCommandes affectation drawer). */
-  kind: 'ecru' | 'fini'
-  action: 'link' | 'unlink'
-  onAction: () => void
-  isBusy: boolean
-  disabled: boolean
-}) {
-  const primary = dim === 'metrage' ? Number(roll.metrage) || 0 : Number(roll.poids) || 0
-  const primaryLabel = dim === 'metrage' ? 'Ml' : 'kg'
-  const secondary = dim === 'metrage' ? Number(roll.poids) || 0 : Number(roll.metrage) || 0
-  const secondaryLabel = dim === 'metrage' ? 'kg' : 'Ml'
-  return (
-    <div className="rounded-lg border border-border/60 bg-card shadow-sm p-3 flex items-center gap-3">
-      <div className={cn(
-        'h-10 w-10 rounded-md flex items-center justify-center flex-shrink-0',
-        kind === 'fini' ? 'bg-green-500/10' : 'bg-zinc-100',
-      )}>
-        {kind === 'fini'
-          ? <FiniRollIcon className="h-7 w-7 text-green-600" />
-          : <TmRollIcon className="h-7 w-7 text-muted-foreground" />}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-semibold truncate">{roll.numero || `Rouleau ${roll.id}`}</span>
-          {roll.lot && <span className="text-xs text-muted-foreground truncate">· Lot {roll.lot}</span>}
-          {!!roll.second_choix && <Badge variant="secondary" className="text-[10px] py-0 px-1.5">2nd choix</Badge>}
-        </div>
-        <div className="flex items-center gap-3 mt-1 text-[11px] text-muted-foreground tabular-nums">
-          <span className="font-medium text-foreground">{fmtNum(primary, 1)} {primaryLabel}</span>
-          {secondary > 0 && <span>· {fmtNum(secondary, 1)} {secondaryLabel}</span>}
-          {roll.coloris_reference && <span className="truncate">· {roll.coloris_reference}</span>}
-          {roll.magasin_nom && <span className="flex items-center gap-0.5 truncate"><MapPin className="h-2.5 w-2.5" />{roll.magasin_nom}</span>}
-        </div>
-      </div>
-      {!disabled && (action === 'link' && !roll.expediable ? (
-        // #1235 — only validated rolls ship; the span carries the tooltip a
-        // disabled button would swallow.
-        <span title="Seuls les rouleaux validés peuvent être expédiés" className="flex-shrink-0 cursor-not-allowed">
-          <Button size="sm" variant="default" disabled className="pointer-events-none">
-            <Ban className="h-3.5 w-3.5 mr-1.5" />Ajouter
-          </Button>
-        </span>
-      ) : (
-        <Button size="sm" variant={action === 'link' ? 'default' : 'outline'} onClick={onAction} disabled={isBusy} className="flex-shrink-0">
-          {isBusy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-            : action === 'link' ? <Link2 className="h-3.5 w-3.5 mr-1.5" /> : <Unlink className="h-3.5 w-3.5 mr-1.5" />}
-          {action === 'link' ? 'Ajouter' : 'Retirer'}
-        </Button>
-      ))}
-      {/* État anchored at the far right, solid on roll cards (§37). */}
-      <EtatPill libelle={roll.etat_label} variant="solid" className="flex-shrink-0" />
-    </div>
-  )
-}
+// The rolls of the drawer in the shared roll table (components/stock/RollTable): this screen's own
+// column is where the roll sits, since an avis leaves from one place (the factory reads « Malterre »).
+const COLONNES_ROULEAU: RollTableColumn<RollLite>[] = [
+  { key: 'loc', header: 'Localisation', cell: (r) => r.magasin_nom || '—' },
+]
+const notesRouleau = (r: RollLite) => (
+  <>
+    <RollDefautsIcon secondChoix={!!r.second_choix} />
+    <RollObservationsIcon text={r.observations} />
+  </>
+)
+/** A row action sized for the table's one row height. */
+const ACTION_ROULEAU = 'h-6 px-2 text-xs flex-shrink-0'
 
 // ── Divers: cartons (lignes) + articles (ref_divers_expedie) ──
 
@@ -2125,6 +2123,7 @@ function InfoTab({
           <input type="date" value={editDate} onChange={(e) => onEditDateChange(e.target.value)}
             className="h-7 px-2 text-sm rounded-md border border-input bg-white focus:outline-none focus:ring-2 focus:ring-ring text-right" />
         ) : (expedition.date ? formatHfsqlDate(expedition.date) : '—')} />
+        {isFormelle && <KV label="Départ de" value={(expedition.depart ?? []).map((l) => l.nom).join(', ') || '—'} />}
         <KV label="Transporteur" value={isEditing ? (
           <PopoverSelect size="sm" options={transporteurs.map((t) => ({ id: t.IDtransporteur, primary: t.nom }))}
             value={editIDTransporteur} onChange={onEditIDTransporteurChange} emptyLabel="—" />

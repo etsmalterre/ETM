@@ -3643,7 +3643,6 @@ function ExpeditionTab({
   // (line expeditions are always formal ones, hence the fixed bucket).
   const [emailExpId, setEmailExpId] = useState<number | null>(null)
   const sel = exps.find((e) => e.IDexpedition === selId) ?? exps[0] ?? null
-  const RollIcon = kind === 'fini' ? FiniRollIcon : TmRollIcon
 
   return (
     <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-transparent">
@@ -3741,35 +3740,11 @@ function ExpeditionTab({
 
       {sel && (
         <section>
-          <div className="rounded-lg border border-border/60 bg-card shadow-sm overflow-hidden">
-            <table className="w-full text-xs">
-              <thead className="bg-zinc-200/60 border-b border-border/60">
-                <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  <th className="px-2.5 py-2 font-semibold text-left w-full">Numéro</th>
-                  <th className="px-2.5 py-2 font-semibold text-left">Lot</th>
-                  <th className="px-2.5 py-2 font-semibold text-right">Métrage</th>
-                  <th className="px-2.5 py-2 font-semibold text-right">Poids</th>
-                  <th className="px-2.5 py-2 font-semibold text-left">Magasin</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sel.rolls.map((r) => (
-                  <tr key={r.id} className="border-b border-border/40 last:border-0 hover:bg-accent/5">
-                    <td className="px-2.5 py-1.5 whitespace-nowrap">
-                      <span className="inline-flex items-center gap-1.5 font-medium">
-                        <RollIcon className={cn('h-4 w-4 flex-shrink-0', kind === 'fini' ? 'text-green-600' : 'text-muted-foreground')} />
-                        {r.numero || `#${r.id}`}
-                      </span>
-                    </td>
-                    <td className="px-2.5 py-1.5 whitespace-nowrap tabular-nums">{r.lot || '—'}</td>
-                    <td className="px-2.5 py-1.5 whitespace-nowrap text-right tabular-nums">{r.metrage > 0 ? `${fmtNum(r.metrage, 1)} Ml` : '—'}</td>
-                    <td className="px-2.5 py-1.5 whitespace-nowrap text-right tabular-nums">{r.poids > 0 ? `${fmtNum(r.poids, 1)} kg` : '—'}</td>
-                    <td className="px-2.5 py-1.5 whitespace-nowrap truncate max-w-[140px]">{r.magasin_nom || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <RollTable
+            rolls={sel.rolls}
+            kind={kind}
+            columns={[{ key: 'loc', header: 'Localisation', cell: (r) => r.magasin_nom || '—' }]}
+          />
         </section>
       )}
     </div>

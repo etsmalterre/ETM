@@ -78,6 +78,7 @@ import { valeurStab } from '../lib/stabilites.js'
 import { loadRendementVenteEcru, loadRendementsVenteEcru, metrageEcruVendu } from '../lib/unite-ecru.js'
 import { grouperRouleaux, libelleArticle, lignesDetail, type LigneBrute, type PiecesAvis, type RouleauBrut } from '../lib/expe-pieces.js'
 import { refusStockDivers, StockDiversInsuffisant } from '../lib/stock-divers-dispo.js'
+import { LIEU_MALTERRE, departDeLAvis, refusLieuExpedition, type LieuDepart } from '../lib/lieu-expedition.js'
 
 export const expeditionsRouter: RouterType = Router()
 
@@ -215,8 +216,9 @@ export async function loadContactName(id: number): Promise<string | null> {
   return [c.prenom, c.nom].map((s: string | null) => (s ?? '').toString().trim()).filter((s: string) => s).join(' ') || null
 }
 
+/** Names of the places rolls sit in: magasin 0 is the factory, « Malterre », as on the stock screens. */
 async function resolveMagasinNames(ids: number[]): Promise<Map<number, string>> {
-  const out = new Map<number, string>()
+  const out = new Map<number, string>([[0, LIEU_MALTERRE]])
   const u = Array.from(new Set(ids.filter((x) => x > 0)))
   if (u.length === 0) return out
   const rows = await query<{ IDsous_traitant: number; nom: unknown }>(
@@ -287,7 +289,9 @@ function resolveColorisLabel(maps: ResolvedMaps, IDcolori: number, typeKind: num
 
 interface RollLite {
   id: number; numero: string | null; lot: string | null; poids: number | null; metrage: number | null
-  coloris_reference: string | null; magasin_nom: string | null; second_choix: number | null
+  coloris_reference: string | null; second_choix: number | null
+  /** Where the roll sits (0 = the factory, « Malterre »): an avis leaves from one place (lib/lieu-expedition.ts). */
+  idmagasin: number; magasin_nom: string | null
   observations: string | null; etat_label: string | null
   /** Fini: only « Validé » rolls ship (#1235). Écru carries no état → true. */
   expediable: boolean
@@ -736,12 +740,13 @@ expeditionsRouter.get('/:kind/:id', async (req: Request, res: Response) => {
         : []
       const IDclient = Number(cmdRows[0]?.IDclient) || 0
 
-      const [clientNames, transNames, adr, contactNom, factures, lignesRaw] = await Promise.all([
+      const [clientNames, transNames, adr, contactNom, factures, depart, lignesRaw] = await Promise.all([
         resolveClientNames([IDclient]),
         resolveTransporteurNames([Number(h.IDtransporteur)]),
         loadAdresse(Number(h.IDadresse) || 0),
         loadContactName(Number(h.IDcontact) || 0),
         attachedFactures('formelle', id),
+        departDeLAvis(id),
         cmdId > 0
           ? query<any>(
               `SELECT IDligne_commande_client, TYPE AS type_kind, IDreference, IDcolori, quantite, unite ` +
@@ -806,6 +811,8 @@ expeditionsRouter.get('/:kind/:id', async (req: Request, res: Response) => {
         est_facture: Number(h.est_facture) || 0,
         factures,
         locked: Number(h.est_facture) === 1 || factures.length > 0,
+        // Where its rolls sit: one place (lib/lieu-expedition.ts), none while it holds no roll.
+        depart,
         lignes,
       })
       return
@@ -1112,8 +1119,11 @@ async function buildRollPayload(expId: number, ctx: LineCtx) {
     target_qty: ctx.quantite,
     onExp: [] as RollLite[],
     dispo: [] as RollLite[],
+    // Where the WHOLE avis leaves from (every line): a roll sitting elsewhere cannot join it.
+    depart: [] as LieuDepart[],
   }
   if (ctx.kind === 'none') return base
+  base.depart = await departDeLAvis(expId)
   const leId = await findLigneExpedition(expId, ctx.lcc)
 
   if (ctx.kind === 'fini') {
@@ -1140,7 +1150,8 @@ async function buildRollPayload(expId: number, ctx: LineCtx) {
     const toRoll = (r: any): RollLite => ({
       id: Number(r.IDstock_fini), numero: r.numero ?? null, lot: r.lot ?? null,
       poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
-      coloris_reference: col.get(Number(r.IDColoris)) ?? null, magasin_nom: mag.get(Number(r.IDmagasin)) ?? null,
+      coloris_reference: col.get(Number(r.IDColoris)) ?? null,
+      idmagasin: Number(r.IDmagasin) || 0, magasin_nom: mag.get(Number(r.IDmagasin) || 0) ?? null,
       second_choix: Number(r.second_choix) || 0, observations: r.observations ?? null,
       etat_label: ETAT_FINI_LABELS[Number(r.IDetat_stock_fini)] ?? null,
       expediable: isFiniExpediable(r.IDetat_stock_fini, desReception),
@@ -1170,7 +1181,8 @@ async function buildRollPayload(expId: number, ctx: LineCtx) {
   const toRoll = (r: any): RollLite => ({
     id: Number(r.IDstock_ecru), numero: r.numero ?? null, lot: r.lot ?? null,
     poids: Number(r.poids) || 0, metrage: Number(r.metrage) || 0,
-    coloris_reference: col.get(Number(r.IDcolori_ecru)) ?? null, magasin_nom: mag.get(Number(r.IDmagasin)) ?? null,
+    coloris_reference: col.get(Number(r.IDcolori_ecru)) ?? null,
+    idmagasin: Number(r.IDmagasin) || 0, magasin_nom: mag.get(Number(r.IDmagasin) || 0) ?? null,
     second_choix: Number(r.second_choix) || 0, observations: r.observations ?? null, etat_label: null, expediable: true,
   })
   base.onExp = onFixed.map(toRoll)
@@ -1328,6 +1340,10 @@ expeditionsRouter.put('/formelle/:id/lignes/:lccId/rolls/:stockId', async (req: 
         res.status(409).json(finiNonValideRefus([String(pre[0].numero ?? stockId)])); return
       }
     }
+
+    // One avis, one place: a roll sitting elsewhere is another pickup (lib/lieu-expedition.ts).
+    const refusLieu = await refusLieuExpedition({ idExpedition: id, forme: ctx.kind, stockIds: [stockId] })
+    if (refusLieu) { res.status(409).json(refusLieu); return }
 
     // Ensure a ligne_expedition exists for (expedition, commande line).
     let leId = await findLigneExpedition(id, lccId)
