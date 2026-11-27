@@ -40,9 +40,10 @@ import { mpsPg } from '../lib/mps-pg.js'
 import { sendMail } from '../lib/gmail.js'
 import { getUserEmail } from '../lib/user-emails.js'
 import {
-  cleLot, depuisEtape, etapeLot, joursOuvresDepuis, lireCommandesEnnoblissement, prealableAttendu, prealablesDetail, relanceClientDue, urgenceLot, type Prealable, type EtapeLot, type LotFait, type SoumissionFait,
+  cleLot, depuisEtape, etapeLot, joursOuvresDepuis, lireCommandesEnnoblissement, prealableAttendu, prealablesDetail, relanceClientDue, relanceControleDue, urgenceLot, type Prealable, type EtapeLot, type LotFait, type SoumissionFait,
 } from '../lib/cycle-ennoblissement.js'
 import { enregistrerOkRamer, enregistrerRelanceClient, mailRelanceClient, type LotARelancer, type NatureSoumission } from '../lib/soumission-lot.js'
+import { enregistrerRelanceControle, mailRelanceEnnoblisseur, type LotControleARelancer } from '../lib/relance-controle.js'
 import { findEligibleLots } from './commandes-sous-traitant.js'
 import { clientsDesLots, cleLotLigne, journaliserEnvoiRc, rapportControleLot, type ClientDuLot, type RapportControleLot } from '../lib/rapport-controle-lot.js'
 import { nomFichierRc, renderRapportControle } from '../lib/rc-soumission.js'
@@ -539,16 +540,6 @@ suiviLotsRouter.get('/:id', async (req: Request, res: Response) => {
       await collectDefauts(2, ecruIds, (ref) => ref)
       await collectDefauts(1, ppIds, (ref) => ecruByPp.get(ref) ?? 0)
     }
-    // Resolve magasin (= sous_traitant) names in one batched query.
-    const magIds = Array.from(new Set(pieceRows.map((p) => Number(p.IDmagasin)).filter((m) => m > 0)))
-    const magMap = new Map<number, string>()
-    if (magIds.length > 0) {
-      const magRows = await query<{ IDsous_traitant: number; nom: string | null }>(
-        `SELECT IDsous_traitant, nom FROM sous_traitant WHERE IDsous_traitant IN (${magIds.join(',')})`,
-      )
-      for (const m of await fixEncoding(magRows, 'sous_traitant', 'IDsous_traitant', ['nom']))
-        magMap.set(Number(m.IDsous_traitant), (m.nom ?? '').toString())
-    }
     // Rendement validity bounds (the legacy's gxRendementMini / Maxi, lib/rendement-lot.ts): a piece is conforming
     // when its rdt (metrage / poids) falls in [mini, maxi].
     const bornesRdt = bornesRendement(n(raw.rendement_demande), {
@@ -573,7 +564,6 @@ suiviLotsRouter.get('/:id', async (req: Request, res: Response) => {
         numero: (p.numero ?? '').toString() || `#${Number(p.IDstock_fini)}`,
         poids,
         metrage,
-        magasin_nom: magMap.get(Number(p.IDmagasin)) ?? '',
         rdt,
         valid,
         quality: qualityByFini.get(Number(p.IDstock_fini)) ?? [],
@@ -812,6 +802,15 @@ function relanceClientDuDetail(etape: EtapeLot | null, f: LotFait | undefined) {
   return { nature, soumis_le: s.envoyeeLe, derniere: relances.at(-1) ?? null, nombre: relances.length, due: relanceClientDue(s)! }
 }
 
+/** « Relancer l'ennoblisseur » as the detail shows it: non-null while a received lot
+ *  waits for the dyer's controls. `due` = the day it is ours to chase (again), the rule
+ *  of the card's colour (lib/cycle-ennoblissement.ts `relanceControleDue`). */
+function relanceEnnoblisseurDuDetail(etape: EtapeLot | null, f: LotFait | undefined) {
+  if (etape !== 'attente_mesures' || !f?.reception) return null
+  const relances = f.relancesControle ?? []
+  return { recu_le: f.reception, derniere: relances.at(-1) ?? null, nombre: relances.length, due: relanceControleDue(f)! }
+}
+
 /** The detail's cycle block: step, the controls the reference asks, what blocks the validation, both
  *  soumissions and the client's answers (LIVA #1313), the « coloris validé », the
  *  clients a RC can go to. */
@@ -848,6 +847,7 @@ async function cycleDuDetail(id: number, cmdId: number, ligneId: number, lot: st
     recu: !!f?.reception,
     soumissions: { coloris: soumissionDuDetail(f?.coloris), stabilites: soumissionDuDetail(f?.stabilites) },
     relance_client: relanceClientDuDetail(e?.etape ?? null, f),
+    relance_ennoblisseur: relanceEnnoblisseurDuDetail(e?.etape ?? null, f),
     ok_ramer_le: f?.okRamerLe ?? null,
     // What the lot's reference asks (Finis › Références, lib/controles-lot.ts).
     controles: f?.controles ?? CONTROLES_PAR_DEFAUT,
@@ -1396,30 +1396,42 @@ async function lotOkRamer(req: Request, res: Response): Promise<LotOkRamer | nul
   }
 }
 
+type DestinataireContact = { email: string; name?: string; source: 'contact'; contactId: number }
+
+/** The dyer's contacts for a mail about a lot: those who receive the soumissions
+ *  pre-selected, its other visible contacts offered. `repliCommande`: a dyer
+ *  without any soumission contact (TAD) gets those of its bons de commande
+ *  pre-selected instead of an empty « À ». */
+async function destinatairesEnnoblisseur(idsousTraitant: number, repliCommande = false): Promise<{ selected: DestinataireContact[]; suggestions: DestinataireContact[] }> {
+  const lus = idsousTraitant > 0
+    ? await mpsPg()<{ id: number; nom: string | null; prenom: string | null; mail: string | null; soumission: number; commande: number; visible: number }[]>`
+        SELECT idcontact AS id, nom::text AS nom, prenom::text AS prenom, mail::text AS mail,
+               COALESCE(envoi_soumission, 0)::int AS soumission, COALESCE(envoi_commande, 0)::int AS commande,
+               COALESCE(est_visible, 1)::int AS visible
+        FROM contact WHERE idsous_traitant = ${idsousTraitant} ORDER BY idcontact`
+    : []
+  const sansSoumission = repliCommande && !lus.some((c) => Number(c.soumission) === 1 && Number(c.visible) !== 0)
+  const contacts = sansSoumission ? lus.map((c) => ({ ...c, soumission: c.commande })) : lus
+  const selected: DestinataireContact[] = []
+  const suggestions: DestinataireContact[] = []
+  const vus = new Set<string>()
+  for (const c of contacts) {
+    const mail = (c.mail ?? '').trim()
+    if (Number(c.visible) === 0 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail) || vus.has(mail.toLowerCase())) continue
+    vus.add(mail.toLowerCase())
+    const name = [c.prenom, c.nom].map((x) => (x ?? '').trim()).filter(Boolean).join(' ')
+    const r: DestinataireContact = { email: mail, source: 'contact', contactId: Number(c.id), ...(name ? { name } : {}) }
+    if (Number(c.soumission) === 1) selected.push(r)
+    else suggestions.push(r)
+  }
+  return { selected, suggestions }
+}
+
 suiviLotsRouter.get('/:id/ok-ramer/email-defaults', async (req: Request, res: Response) => {
   try {
     const l = await lotOkRamer(req, res)
     if (!l) return
-    // The dyer's contacts: those who receive the soumissions pre-selected.
-    const contacts = l.idsousTraitant > 0
-      ? await mpsPg()<{ id: number; nom: string | null; prenom: string | null; mail: string | null; soumission: number; visible: number }[]>`
-          SELECT idcontact AS id, nom::text AS nom, prenom::text AS prenom, mail::text AS mail,
-                 COALESCE(envoi_soumission, 0)::int AS soumission, COALESCE(est_visible, 1)::int AS visible
-          FROM contact WHERE idsous_traitant = ${l.idsousTraitant}`
-      : []
-    type Destinataire = { email: string; name?: string; source: 'contact'; contactId: number }
-    const selected: Destinataire[] = []
-    const suggestions: Destinataire[] = []
-    const vus = new Set<string>()
-    for (const c of contacts) {
-      const mail = (c.mail ?? '').trim()
-      if (Number(c.visible) === 0 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail) || vus.has(mail.toLowerCase())) continue
-      vus.add(mail.toLowerCase())
-      const name = [c.prenom, c.nom].map((x) => (x ?? '').trim()).filter(Boolean).join(' ')
-      const r: Destinataire = { email: mail, source: 'contact', contactId: Number(c.id), ...(name ? { name } : {}) }
-      if (Number(c.soumission) === 1) selected.push(r)
-      else suggestions.push(r)
-    }
+    const { selected, suggestions } = await destinatairesEnnoblisseur(l.idsousTraitant)
     const article = [l.reference, l.coloris].filter(Boolean).join(' · ')
     res.json({
       recipients: { selected, suggestions },
@@ -1651,6 +1663,113 @@ suiviLotsRouter.post('/:id/relance-client/email', async (req: Request, res: Resp
     res.json({ ok: true, messageId })
   } catch (err) {
     console.error('Error sending relance client:', err)
+    const message = err instanceof Error ? err.message : 'Internal server error'
+    res.status(500).json({ error: 'send_failed', message })
+  }
+})
+
+// ── « Relancer l'ennoblisseur » (Vincent 2026-11-27) ─────────────────────────
+//
+// A received lot has 5 working days for the dyer's controls; beyond, the lot is
+// red « relancer l'ennoblisseur ». The relance IS this e-mail, sent from ETM to
+// the dyer's contacts and recorded in relance_controle (lib/relance-controle.ts):
+// the lot is calm again for 2 working days, then red again, and so on
+// (lib/cycle-ennoblissement.ts `relanceControleDue`). Offered while the lot waits
+// for the dyer's controls, whatever the day.
+//   GET  /suivi-lots/:id/relance-ennoblisseur/email-defaults
+//   POST /suivi-lots/:id/relance-ennoblisseur/email
+
+interface LotRelanceEnnoblisseur extends LotControleARelancer {
+  id: number
+  idsousTraitant: number
+  sousTraitant: string
+}
+
+/** The lot, while it is received and waits for the dyer's controls. */
+async function lotRelanceEnnoblisseur(req: Request, res: Response): Promise<LotRelanceEnnoblisseur | null> {
+  const id = parseInt(req.params.id, 10)
+  if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return null }
+  const [s] = await mpsPg()<{ cmd: number; lot: string; sst: number; sst_nom: string | null; reference: string | null; coloris: string | null }[]>`
+    SELECT COALESCE(s.idcommande_sous_traitant, 0) AS cmd, trim(s.lot::text) AS lot, COALESCE(s.idsous_traitant, 0) AS sst,
+           st.nom::text AS sst_nom, rf.reference::text AS reference,
+           CASE WHEN COALESCE(rf.avec_teinture, 1) = 0 THEN ce.reference::text ELSE COALESCE(rfc.reference::text, ce.reference::text) END AS coloris
+    FROM suivilot s
+    LEFT JOIN sous_traitant st ON st.idsous_traitant = s.idsous_traitant
+    LEFT JOIN ref_fini rf ON rf.idref_fini = s.idref_fini
+    LEFT JOIN ref_fini_colori rfc ON rfc.idref_fini_colori = s.idcoloris
+    LEFT JOIN colori_ecru ce ON ce.idcolori_ecru = s.idcoloris
+    WHERE s.idsuivilot = ${id}`
+  if (!s) { res.status(404).json({ error: 'Lot introuvable' }); return null }
+  const cycle = await etapeDuLot(id)
+  if (!cycle || cycle.etape !== 'attente_mesures' || !cycle.fait.reception) {
+    res.status(409).json({ error: 'pas_en_attente', message: 'Ce lot n’attend pas les contrôles de l’ennoblisseur.' })
+    return null
+  }
+  return {
+    id, commande: Number(s.cmd), lot: s.lot, recuLe: cycle.fait.reception, relances: cycle.fait.relancesControle ?? [],
+    manque: cycle.fait.manqueTeinturier ?? [], reference: (s.reference ?? '').trim(), coloris: (s.coloris ?? '').trim(),
+    idsousTraitant: Number(s.sst), sousTraitant: (s.sst_nom ?? '').trim(),
+  }
+}
+
+suiviLotsRouter.get('/:id/relance-ennoblisseur/email-defaults', async (req: Request, res: Response) => {
+  try {
+    const l = await lotRelanceEnnoblisseur(req, res)
+    if (!l) return
+    res.json({
+      recipients: await destinatairesEnnoblisseur(l.idsousTraitant, true),
+      ...mailRelanceEnnoblisseur(l), sousTraitantNom: l.sousTraitant, numero: l.lot,
+    })
+  } catch (err) {
+    console.error('Error building relance ennoblisseur email defaults:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+suiviLotsRouter.post('/:id/relance-ennoblisseur/email', async (req: Request, res: Response) => {
+  try {
+    if (!(await ensureResponsable(req, res))) return
+    const parsed = okRamerBody.safeParse(req.body)
+    if (!parsed.success) { res.status(400).json({ error: 'Validation failed', details: parsed.error.issues }); return }
+    const l = await lotRelanceEnnoblisseur(req, res)
+    if (!l) return
+    const nom = await nomUtilisateur(req.userId!)
+    const devSkip = parsed.data.dev_skip_send === true && process.env.NODE_ENV !== 'production'
+    let messageId: string
+    if (devSkip) {
+      messageId = `dev-skip-${Date.now()}`
+      console.log(`[dev-skip-send] relance ennoblisseur lot=${l.lot} — fake send to ${parsed.data.to.join(', ')}`)
+    } else {
+      const from = await getUserEmail(req.userId!)
+      if (!from) {
+        res.status(400).json({
+          error: 'no_sender_email',
+          message: "Aucune adresse email n'est associée à votre compte. Un administrateur doit en définir une dans Paramètres › Utilisateurs.",
+        })
+        return
+      }
+      const attachments = (parsed.data.extra_attachments ?? []).map((a) => ({
+        filename: a.filename, content: Buffer.from(a.content_base64, 'base64'), contentType: a.content_type,
+      }))
+      messageId = await sendMail({
+        from,
+        fromName: `${nom} — ETS Malterre`,
+        to: parsed.data.to,
+        cc: parsed.data.cc,
+        bcc: parsed.data.bcc,
+        subject: parsed.data.subject,
+        body: parsed.data.body,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      })
+    }
+    // The mail left: the relance is this fact.
+    await enregistrerRelanceControle({
+      idsuivilot: l.id, idcommande: l.commande, lot: l.lot,
+      par: { id: req.userId ?? 0, nom }, destinataires: [...parsed.data.to, ...(parsed.data.cc ?? [])],
+    })
+    res.json({ ok: true, messageId })
+  } catch (err) {
+    console.error('Error sending relance ennoblisseur:', err)
     const message = err instanceof Error ? err.message : 'Internal server error'
     res.status(500).json({ error: 'send_failed', message })
   }

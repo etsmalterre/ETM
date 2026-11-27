@@ -157,7 +157,7 @@ export async function lireJournalLot(idsuivilot: number, sql: Sql = mpsPg()): Pr
   const cle = cleLot(lot.lot)
   const memeLot = (l: string | null) => !!l && cleLot(String(l)) === cle
 
-  const [propres, soumissions, reponses, okRamer, rcs, dispenses, reprises, verdicts, labo, tricobot, relancesClient] = await Promise.all([
+  const [propres, soumissions, reponses, okRamer, rcs, dispenses, reprises, verdicts, labo, tricobot, relancesClient, relancesControle] = await Promise.all([
     sql<{ evenement: string; detail: string | null; par: string | null; le: Date; source: string }[]>`
       SELECT evenement, detail, par, le, source FROM journal_lot WHERE idsuivilot = ${idsuivilot} ORDER BY le, id`,
     sql<{ nature: string; lot: string; le: Date; par: string | null; destinataires: string | null; idsuivilot: number }[]>`
@@ -190,6 +190,9 @@ export async function lireJournalLot(idsuivilot: number, sql: Sql = mpsPg()): Pr
     // « Relancer le client »: the relance e-mails for a soumission's answer (lib/soumission-lot.ts, 0087).
     sql<{ nature: string; le: Date; par: string | null; destinataires: string | null }[]>`
       SELECT nature, relance_le AS le, relance_par AS par, destinataires FROM relance_soumission WHERE idsuivilot = ${idsuivilot}`,
+    // « Relancer l'ennoblisseur »: the relance e-mails for the dyer's controls (lib/relance-controle.ts, 0088).
+    sql<{ le: Date; par: string | null; destinataires: string | null }[]>`
+      SELECT relance_le AS le, relance_par AS par, destinataires FROM relance_controle WHERE idsuivilot = ${idsuivilot}`,
   ])
 
   const out: EntreeJournal[] = []
@@ -244,6 +247,13 @@ export async function lireJournalLot(idsuivilot: number, sql: Sql = mpsPg()): Pr
     out.push({
       le: iso(r.le), type: 'relance_client',
       titre: r.nature === 'coloris' ? 'Client relancé pour le coloris' : 'Client relancé pour les stabilités',
+      detail: r.destinataires ? `À ${r.destinataires}` : null, par: r.par, auteur: r.par ? 'personne' : 'inconnu',
+    })
+  }
+  // Not in the partner's journal (lib/espace-partenaire-journal.ts, a closed list): it received the mail.
+  for (const r of relancesControle) {
+    out.push({
+      le: iso(r.le), type: 'relance_ennoblisseur', titre: 'Ennoblisseur relancé pour ses contrôles',
       detail: r.destinataires ? `À ${r.destinataires}` : null, par: r.par, auteur: r.par ? 'personne' : 'inconnu',
     })
   }

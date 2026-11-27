@@ -8,6 +8,7 @@ import {
   depuisEtape,
   dernierContactClient,
   relanceClientDue,
+  relanceControleDue,
   joursOuvresDepuis,
   plusJoursOuvres,
   prealableAttendu,
@@ -214,6 +215,36 @@ describe('etatLot: whose move and when to chase', () => {
   })
   it('reprise: the dyer gives the date in the point, nothing computed', () => {
     expect(etatLot(lot({ etat: 2 }))).toMatchObject({ main: 'teinturier', relance: null })
+  })
+})
+
+describe('« Relancer l’ennoblisseur »: its controls, 2 working days after each relance (Vincent 2026-11-27)', () => {
+  // Received Thu 08/10: the control window ends Thu 15/10.
+  const recu = (relancesControle?: string[]) => lot({ reception: '2026-10-08', ...(relancesControle ? { relancesControle } : {}) })
+
+  it('the chase date: the end of the window, then the latest relance + 2', () => {
+    expect(relanceControleDue(recu())).toBe('2026-10-15')
+    expect(relanceControleDue(recu(['2026-10-16']))).toBe('2026-10-20')
+    expect(relanceControleDue(recu(['2026-10-16', '2026-10-20']))).toBe('2026-10-22')
+    // Chased early: the window is never shortened.
+    expect(relanceControleDue(recu(['2026-10-09']))).toBe('2026-10-15')
+    expect(relanceControleDue(lot({ reception: null }))).toBeNull()
+  })
+  it('the lot: red until we chase, calm, then red again', () => {
+    expect(urgenceLot(recu(), '2026-10-16')).toEqual({ niveau: 'rouge', raison: 'Relancer l’ennoblisseur depuis le 15/10' })
+    const relance = recu(['2026-10-16'])
+    expect(etatLot(relance)).toMatchObject({ etape: 'attente_mesures', main: 'teinturier', relance: '2026-10-20', fenetre: { depuis: '2026-10-16', delai: 2 } })
+    expect(urgenceLot(relance, '2026-10-16')).toBeNull()
+    expect(urgenceLot(relance, '2026-10-19')?.niveau).toBe('ambre')
+    expect(urgenceLot(relance, '2026-10-20')).toEqual({ niveau: 'rouge', raison: 'Relancer l’ennoblisseur aujourd’hui' })
+    expect(urgenceLot(recu(['2026-10-16', '2026-10-20']), '2026-10-20')).toBeNull()
+  })
+  it('a relance inside the window leaves the gauge on the reception', () => {
+    expect(etatLot(recu(['2026-10-09']))).toMatchObject({ relance: '2026-10-15', fenetre: { depuis: '2026-10-08', delai: 5 } })
+  })
+  it('only the dyer’s step: our own control keeps the window from the reception', () => {
+    expect(etatLot(lot({ reception: '2026-10-08', mesuresTeinturier: true, relancesControle: ['2026-10-16'] })))
+      .toMatchObject({ etape: 'attente_tirelle', main: 'nous', relance: '2026-10-15', fenetre: { depuis: '2026-10-08', delai: 5 } })
   })
 })
 

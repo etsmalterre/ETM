@@ -1,7 +1,8 @@
 // Qualité › Suivi lots — the right panel's « Journal » tab (Vincent 2026-11-10):
-// « Prochaines étapes » on top (moved out of the center body), then what was
-// done on the lot, by whom and when, newest first. Read from
-// GET /suivi-lots/:id/journal (API lib/journal-lot.ts).
+// what was done on the lot, by whom and when, newest first. Read from
+// GET /suivi-lots/:id/journal (API lib/journal-lot.ts). « Prochaines étapes »
+// sat on top of it until 2026-11-27: it is back on top of the lot's body, seen
+// as soon as the lot opens (CycleCard, LotCycle.tsx).
 
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -34,7 +35,6 @@ import {
 } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { CycleCard, type AttenduLot, type ClientRc, type EtapeLot, type PrealableLot, type RelanceClientLot } from './LotCycle'
 
 export interface EntreeJournal {
   le: string
@@ -58,6 +58,7 @@ const LOOK: Record<string, { icon: LucideIcon; color: string }> = {
   tirelle_boite_videe: { icon: Trash2, color: 'text-zinc-600 bg-zinc-500/10' },
   soumission: { icon: Send, color: 'text-violet-600 bg-violet-500/10' },
   relance_client: { icon: BellRing, color: 'text-violet-600 bg-violet-500/10' },
+  relance_ennoblisseur: { icon: BellRing, color: 'text-sky-600 bg-sky-500/10' },
   reponse_ok: { icon: ThumbsUp, color: 'text-green-700 bg-green-500/10' },
   reponse_refus: { icon: ThumbsDown, color: 'text-red-600 bg-red-500/10' },
   ok_ramer: { icon: MailCheck, color: 'text-sky-600 bg-sky-500/10' },
@@ -156,17 +157,7 @@ export function JournalListe({ entrees, isLoading, error }: {
   )
 }
 
-export function JournalLotTab({
-  lotId, etape, prealables, etapes, attendu, clients, relance,
-}: {
-  lotId: number
-  etape: EtapeLot | null | undefined
-  prealables: string[]
-  etapes?: PrealableLot[]
-  attendu?: AttenduLot | null
-  clients: ClientRc[]
-  relance?: RelanceClientLot | null
-}) {
+export function JournalLotTab({ lotId }: { lotId: number }) {
   // Under ['suivi-lot', id]: every gesture on the lot already invalidates it.
   const { data, isLoading, error } = useQuery({
     queryKey: ['suivi-lot', lotId, 'journal'],
@@ -176,15 +167,5 @@ export function JournalLotTab({
     refetchOnMount: 'always',
   })
 
-  return (
-    <>
-      {etape && (
-        <section className="space-y-1.5">
-          <h3 className="text-[10px] font-semibold uppercase tracking-wide text-primary/70 px-0.5">Prochaines étapes</h3>
-          <CycleCard etape={etape} prealables={prealables} etapes={etapes} attendu={attendu} clients={clients} relance={relance} />
-        </section>
-      )}
-      <JournalListe entrees={data?.entrees ?? []} isLoading={isLoading} error={error} />
-    </>
-  )
+  return <JournalListe entrees={data?.entrees ?? []} isLoading={isLoading} error={error} />
 }

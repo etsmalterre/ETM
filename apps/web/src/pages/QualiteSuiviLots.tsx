@@ -2,7 +2,8 @@
 //
 // Master-detail screen mirroring SousTraitantsCommandes / EtudesColoris:
 //   - left list of lots (suivilot) with search + En cours / Terminé / Tous filter
-//   - center: Récapitulatif de la commande (read-only) + spec banner + Pièces du
+//   - center: Prochaines étapes (the step the lot waits for, first since
+//     2026-11-27) + Récapitulatif de la commande (read-only) + spec banner + Pièces du
 //     lot sub-table (read-only, per-roll Rdt = metrage/poids + Moyenne footer)
 //   - right sidebar tabs: Contrôles (editable) / Documents / Défauts / Client
 //   - status footer pill = the lot's computed STEP (LIVA #1304: attente contrôle
@@ -84,9 +85,11 @@ import {
   type LotBloque,
 } from '@/components/qualite/SoumissionLotPicker'
 import {
+  CycleCard,
   ETAPE_LOT_META,
   EtapeLotPill,
   LotCycleFooter,
+  MailMenuButton,
   RcMenuButton,
   RefusClientDialog,
   natureEnAttente,
@@ -95,11 +98,14 @@ import {
   type ClientRc,
   type EtapeLot,
   type GesteLot,
+  type MailLot,
   type NatureSoumission,
   type PrealableLot,
   type RelanceClientLot,
+  type RelanceEnnoblisseurLot,
   type SoumissionsLot,
 } from '@/components/qualite/LotCycle'
+import { FiniRollIcon } from '@/components/icons/FiniRollIcon'
 import { JournalLotTab } from '@/components/qualite/JournalLot'
 import { TableauMetrageLotDialog } from '@/components/etiquettes/TableauMetrageLotDialog'
 import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/components/stock/SmartSearchInput'
@@ -146,7 +152,6 @@ interface PieceRow {
   numero: string
   poids: number
   metrage: number
-  magasin_nom: string
   rdt: number | null
   valid: boolean | null
   quality: QualityEntry[]
@@ -251,6 +256,8 @@ interface SuiviLotDetail {
   /** 'YYYY-MM-DD': the « coloris validé » mailed to the dyer. */
   /** The client's answer to a soumission is waited: « Relancer le client » (API relanceClientDuDetail). */
   relance_client?: RelanceClientLot | null
+  /** A received lot waits for the dyer's controls: « Relancer l'ennoblisseur » (API relanceEnnoblisseurDuDetail). */
+  relance_ennoblisseur?: RelanceEnnoblisseurLot | null
   ok_ramer_le?: string | null
   /** The controls the lot's reference asks (Finis › Références, 2026-10-26). Absent = both. */
   controles?: {
@@ -535,6 +542,8 @@ export function QualiteSuiviLots() {
   const [okRamerOpen, setOkRamerOpen] = useState(false)
   // « Relancer le client »: the relance mail of a soumission whose answer is waited (2026-11-27).
   const [relanceClientOpen, setRelanceClientOpen] = useState(false)
+  // « Relancer l'ennoblisseur »: the relance mail for the dyer's controls of a received lot (same day).
+  const [relanceEnnoblisseurOpen, setRelanceEnnoblisseurOpen] = useState(false)
   const natureReponse: NatureSoumission = (detail?.etape && natureEnAttente(detail.etape)) ?? 'stabilites'
   const reponseMut = useMutation({
     mutationFn: (p: { accepte: boolean; commentaire?: string }) =>
@@ -555,6 +564,7 @@ export function QualiteSuiviLots() {
     else if (g === 'accepte') reponseMut.mutate({ accepte: true })
     else if (g === 'ok_ramer') setOkRamerOpen(true)
     else if (g === 'relance_client') setRelanceClientOpen(true)
+    else if (g === 'relance_ennoblisseur') setRelanceEnnoblisseurOpen(true)
     else setRefusOpen(true)
   }, [etatMut, reponseMut])
   // A refused lot is taken back for the client's reason — a refused coloris re-dyes it.
@@ -746,6 +756,7 @@ export function QualiteSuiviLots() {
               onSoumettre={() => setSoumissionPickerOpen(true)}
               onOkRamer={() => setOkRamerOpen(true)}
               onRelanceClient={() => setRelanceClientOpen(true)}
+              onRelanceEnnoblisseur={() => setRelanceEnnoblisseurOpen(true)}
               clientsRc={detail.clients_rc ?? []}
               onRapportControle={setRcClient}
             />
@@ -908,6 +919,22 @@ export function QualiteSuiviLots() {
           onSend={async (p) => {
             await postEmail(`${API_URL}/suivi-lots/${selectedId}/relance-client/email`, p)
             // The lot is calm again for 5 working days, here and on its dye order.
+            invalidateLotQualityCaches(queryClient)
+            queryClient.invalidateQueries({ queryKey: ['commande-sst-journal', cmdId] })
+          }}
+        />
+      )}
+      {selectedId !== null && relanceEnnoblisseurOpen && (
+        <SendEmailDialog
+          open
+          onClose={() => setRelanceEnnoblisseurOpen(false)}
+          title="Relancer l’ennoblisseur"
+          contextLabel={`Lot ${detail?.lot ?? ''}`}
+          queryKey={['suivi-lot-relance-ennoblisseur-email-defaults', selectedId, detail?.relance_ennoblisseur?.nombre ?? 0]}
+          loadDefaults={() => apiFetch(`/suivi-lots/${selectedId}/relance-ennoblisseur/email-defaults`)}
+          onSend={async (p) => {
+            await postEmail(`${API_URL}/suivi-lots/${selectedId}/relance-ennoblisseur/email`, p)
+            // The lot is calm again for 2 working days; its dye order's journal tells the relance.
             invalidateLotQualityCaches(queryClient)
             queryClient.invalidateQueries({ queryKey: ['commande-sst-journal', cmdId] })
           }}
@@ -1212,6 +1239,7 @@ function LotDetailHeader({
   onSoumettre,
   onOkRamer,
   onRelanceClient,
+  onRelanceEnnoblisseur,
   clientsRc,
   onRapportControle,
 }: {
@@ -1231,10 +1259,37 @@ function LotDetailHeader({
   onSoumettre: () => void
   onOkRamer: () => void
   onRelanceClient: () => void
+  onRelanceEnnoblisseur: () => void
   /** The lot's clients — the rapport de contrôle's possible recipients. */
   clientsRc: ClientRc[]
   onRapportControle: (c: ClientRc) => void
 }) {
+  // Every e-mail the lot can send leaves from ONE header button (Vincent 2026-11-27):
+  // a menu when there are several, the mail itself when there is one. §41: a red
+  // dot = a relance due, an amber one = a mail of ours to send.
+  const today = aujourdhuiIso()
+  const mails: MailLot[] = []
+  if (soumissionCount > 0) {
+    mails.push({
+      key: 'soumission',
+      label: natureSoumission === 'coloris' ? 'Soumettre le coloris au client' : 'Soumettre les stabilités au client',
+      icon: natureSoumission === 'coloris' ? Palette : Send,
+      niveau: detail.etape === 'a_soumettre' || detail.etape === 'coloris_a_soumettre' ? 'ambre' : null,
+      onSelect: onSoumettre,
+    })
+  }
+  if (detail.etape === 'ok_ramer_a_envoyer' || detail.etape === 'en_rame') {
+    mails.push({
+      key: 'ok_ramer', label: 'Transmettre la validation du coloris', icon: MailCheck,
+      niveau: detail.etape === 'ok_ramer_a_envoyer' ? 'ambre' : null, onSelect: onOkRamer,
+    })
+  }
+  if (detail.relance_client) {
+    mails.push({ key: 'relance_client', label: 'Relancer le client', icon: BellRing, niveau: detail.relance_client.due <= today ? 'rouge' : null, onSelect: onRelanceClient })
+  }
+  if (detail.relance_ennoblisseur) {
+    mails.push({ key: 'relance_ennoblisseur', label: 'Relancer l’ennoblisseur', icon: BellRing, niveau: detail.relance_ennoblisseur.due <= today ? 'rouge' : null, onSelect: onRelanceEnnoblisseur })
+  }
   return (
     <div className="flex-shrink-0 pt-0.5">
       <div className="flex items-center gap-3">
@@ -1301,41 +1356,7 @@ function LotDetailHeader({
               >
                 <LineChart className="h-4 w-4" />
               </Button>
-              {canManage && soumissionCount > 0 && (
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9 relative"
-                  title={natureSoumission === 'coloris' ? 'Soumettre le coloris au client' : 'Soumettre les stabilités au client'}
-                  onClick={onSoumettre}
-                >
-                  {natureSoumission === 'coloris' ? <Palette className="h-4 w-4" /> : <Send className="h-4 w-4" />}
-                  {(detail.etape === 'a_soumettre' || detail.etape === 'coloris_a_soumettre') && (
-                    <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-white" />
-                  )}
-                </Button>
-              )}
-              {canManage && (detail.etape === 'ok_ramer_a_envoyer' || detail.etape === 'en_rame') && (
-                <Button variant="outline" size="icon" className="h-9 w-9 relative" title="Transmettre la validation du coloris à l’ennoblisseur" onClick={onOkRamer}>
-                  <MailCheck className="h-4 w-4" />
-                  {detail.etape === 'ok_ramer_a_envoyer' && (
-                    <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-white" />
-                  )}
-                </Button>
-              )}
-              {canManage && detail.relance_client && (() => {
-                // §41: red = ours to chase now; before that day the button is there, without a dot.
-                const du = detail.relance_client.due <= aujourdhuiIso()
-                return (
-                  <Button
-                    variant="outline" size="icon" className="h-9 w-9 relative" onClick={onRelanceClient}
-                    title={du ? 'Relancer le client — à faire' : 'Relancer le client'}
-                  >
-                    <BellRing className="h-4 w-4" />
-                    {du && <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-white" />}
-                  </Button>
-                )
-              })()}
+              {canManage && <MailMenuButton mails={mails} />}
               {canManage && clientsRc.length > 0 && (
                 <RcMenuButton clients={clientsRc} onSelect={onRapportControle} />
               )}
@@ -1858,6 +1879,19 @@ function TrendChart({
 function RecapSection({ detail }: { detail: SuiviLotDetail }) {
   return (
     <div className="flex-1 min-h-0 overflow-auto space-y-4 scrollbar-transparent pr-1">
+      {/* Prochaines étapes: first, seen as soon as the lot opens (Vincent 2026-11-27). */}
+      {detail.etape && (
+        <CycleCard
+          etape={detail.etape}
+          prealables={detail.prealables ?? []}
+          etapes={detail.prealables_detail}
+          attendu={detail.attendu}
+          clients={detail.clients_rc ?? []}
+          relance={detail.relance_client}
+          relanceEnnoblisseur={detail.relance_ennoblisseur}
+        />
+      )}
+
       {/* Récapitulatif */}
       <div className="rounded-xl border bg-card shadow-sm p-4">
         <div className="flex items-center gap-2 mb-3">
@@ -1964,21 +1998,20 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
         ) : (
           <div className="px-2 pb-2">
             <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+              {/* No Magasin column (Vincent 2026-11-27): the lot's pieces are where its dyer delivered them. */}
               <colgroup>
+                <col style={{ width: '26%' }} />
+                <col style={{ width: '17%' }} />
+                <col style={{ width: '17%' }} />
                 <col style={{ width: '20%' }} />
-                <col style={{ width: '14%' }} />
-                <col style={{ width: '14%' }} />
-                <col style={{ width: '22%' }} />
-                <col style={{ width: '13%' }} />
-                <col style={{ width: '9%' }} />
-                <col style={{ width: '8%' }} />
+                <col style={{ width: '10%' }} />
+                <col style={{ width: '10%' }} />
               </colgroup>
               <thead>
                 <tr className="text-[11px] uppercase tracking-wide text-muted-foreground border-b border-border/60">
                   <th className="px-2 py-2 text-left font-semibold">Numéro</th>
                   <th className="px-2 py-2 text-right font-semibold">Poids</th>
                   <th className="px-2 py-2 text-right font-semibold">Métrage</th>
-                  <th className="px-2 py-2 text-left font-semibold">Magasin</th>
                   <th className="px-2 py-2 text-right font-semibold">Rdt</th>
                   <th className="px-2 py-2 text-center font-semibold">Conforme</th>
                   <th className="px-2 py-2 text-center font-semibold">Qualité</th>
@@ -1987,10 +2020,15 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
               <tbody>
                 {detail.pieces.map((p) => (
                   <tr key={p.IDstock_fini} className="border-b border-border/40">
-                    <td className="px-2 py-1.5 truncate" title={p.numero}>{p.numero}</td>
+                    <td className="px-2 py-1.5" title={p.numero}>
+                      {/* The fini roll's icon, as in every list of rolls (components/stock/RollTable.tsx). */}
+                      <span className="flex items-center gap-2 min-w-0">
+                        <span title="Fini" className="inline-flex flex-shrink-0"><FiniRollIcon className="h-4 w-4 text-green-700" /></span>
+                        <span className="truncate">{p.numero}</span>
+                      </span>
+                    </td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{fmtNum(p.poids, 2)}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{fmtNum(p.metrage, 2)}</td>
-                    <td className="px-2 py-1.5 truncate text-muted-foreground" title={p.magasin_nom}>{p.magasin_nom || '—'}</td>
                     <td className={cn(
                       'px-2 py-1.5 text-right tabular-nums',
                       p.valid === true && 'text-green-600 font-medium',
@@ -2024,8 +2062,8 @@ function RecapSection({ detail }: { detail: SuiviLotDetail }) {
                   <td className="px-2 py-2 text-right tabular-nums">
                     {fmtNum(detail.pieces.reduce((s, p) => s + (p.metrage || 0), 0), 2)} Ml
                   </td>
-                  <td className="px-2 py-2 text-right text-muted-foreground">Moyenne</td>
-                  <td className="px-2 py-2 text-right tabular-nums text-accent">
+                  <td className="px-2 py-2 text-right tabular-nums text-accent whitespace-nowrap">
+                    <span className="mr-2 font-normal text-muted-foreground">Moyenne</span>
                     {detail.moyenne_rdt != null ? fmtNum(detail.moyenne_rdt, 2) : '—'}
                   </td>
                   <td />
@@ -2194,15 +2232,7 @@ function LotSidebar({
           {activeTab === 'documents' && <DocumentsTab commandeId={detail.IDcommande_sous_traitant} />}
           {activeTab === 'actions' && <ActionsQualiteTab lotId={detail.IDsuivilot} canManage={canManage} />}
           {activeTab === 'journal' && (
-            <JournalLotTab
-              lotId={detail.IDsuivilot}
-              etape={detail.etape}
-              prealables={detail.prealables ?? []}
-              etapes={detail.prealables_detail}
-              attendu={detail.attendu}
-              clients={detail.clients_rc ?? []}
-              relance={detail.relance_client}
-            />
+            <JournalLotTab lotId={detail.IDsuivilot} />
           )}
         </div>
       </div>

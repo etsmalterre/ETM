@@ -48,7 +48,10 @@
 // relance_soumission, Vincent 2026-11-27) — and again that many days after each
 // relance. Our relances move only OUR next chase: the client's own delay
 // (depassementClient, the dyer's délai pushed by it) counts from the
-// soumission's send, whatever we did since. Delays below are first estimates, to be
+// soumission's send, whatever we did since. The DYER's controls of a received lot
+// are chased the same way (« Relancer l'ennoblisseur », relance_controle, same
+// day): red once the control window is over, calm RELANCE_J.relance_controle
+// working days after each relance. Delays below are first estimates, to be
 // corrected from PE's use like the point's rules.
 
 import { mpsPg } from './mps-pg.js'
@@ -118,6 +121,9 @@ export interface LotFait {
   /** The measures still missing of each control asked (for the reasons shown). */
   manqueTeinturier?: string[]
   manqueMalterre?: string[]
+  /** The days we chased the dyer for its controls since the lot came (back) to us
+   *  (« Relancer l'ennoblisseur », relance_controle), sorted. 'YYYY-MM-DD'. Absent = never. */
+  relancesControle?: string[]
   /** What the lot's reference asks. Absent = both controls. */
   controles?: ControlesRef
   coloris: SoumissionFait
@@ -148,6 +154,10 @@ export const RELANCE_J = {
    *  Red only after: relance the dyer or do the Malterre controls. The Point still
    *  asks the measures every day, only the colour waits. */
   controle: 5,
+  /** The dyer's days after we chased it for its controls, before it is ours to
+   *  chase again (Vincent 2026-11-27) — what it gets after a relance of its délai
+   *  too (lib/delai-sst.ts RELANCE_SUIVANTE_J). */
+  relance_controle: 2,
   /** The client answers a soumission; and, once we chased it, the days it gets
    *  again before the next relance (Vincent 2026-11-27: « repartir pour 5 jours »). */
   soumis: 5,
@@ -206,6 +216,19 @@ export function dernierContactClient(s: Pick<SoumissionFait, 'envoyeeLe' | 'rela
 export function relanceClientDue(s: Pick<SoumissionFait, 'envoyeeLe' | 'relances'>): string | null {
   const contact = dernierContactClient(s)
   return contact ? plusJoursOuvres(contact, RELANCE_J.soumis) : null
+}
+
+/** When it is ours to chase the dyer for the controls of a received lot: the end
+ *  of the control window (reception + RELANCE_J.controle), or
+ *  RELANCE_J.relance_controle working days after our latest relance when that is
+ *  later — calm in between, then due again, and so on. A relance sent before the
+ *  window ended never shortens it. null = not received. Pure. */
+export function relanceControleDue(l: Pick<LotFait, 'reception' | 'relancesControle'>): string | null {
+  if (!l.reception) return null
+  const fin = plusJoursOuvres(l.reception, RELANCE_J.controle)
+  const derniere = l.relancesControle?.at(-1)
+  const apres = derniere ? plusJoursOuvres(derniere, RELANCE_J.relance_controle) : null
+  return apres && apres > fin ? apres : fin
 }
 
 export function etapeLot(l: LotFait): EtapeLot {
@@ -301,10 +324,14 @@ const CONTROLE_RECU: EtapeLot[] = ['attente_mesures', 'attente_tirelle', 'colori
  *  before we chase (the same dates as etatLot's relance). The control steps share
  *  one window from the reception (« en contrôle » = 5 working days, 2026-11-03):
  *  2 days in is fine, 5 is a problem (Vincent 2026-11-05). A soumission's window
- *  is the client's 5 days since we last asked (the send, then each relance).
+ *  is the client's 5 days since we last asked (the send, then each relance); the
+ *  dyer's controls, once chased, the 2 days since that relance.
  *  null = no date known (en reprise, reteinture: the dyer gives it back in the point). */
 export function depuisEtape(l: LotFait, etape: EtapeLot = etapeLot(l)): { depuis: string; delai: number } | null {
   const r = l.reception
+  // The dyer chased once its window was over: its days since we last asked.
+  const relanceControle = etape === 'attente_mesures' && r ? l.relancesControle?.at(-1) : undefined
+  if (relanceControle && relanceControleDue(l)! > plusJoursOuvres(r!, RELANCE_J.controle)) return { depuis: relanceControle, delai: RELANCE_J.relance_controle }
   if (CONTROLE_RECU.includes(etape) && r) return { depuis: r, delai: RELANCE_J.controle }
   // The client's window starts again at each relance: the days since we last asked.
   if (etape === 'coloris_soumis' && l.coloris.envoyeeLe) return { depuis: dernierContactClient(l.coloris)!, delai: RELANCE_J.soumis }
@@ -329,7 +356,8 @@ export function etatLot(l: LotFait): EtatLot {
   const etape = etapeLot(l)
   const r = l.reception
   let relance: string | null = null
-  if (CONTROLE_RECU.includes(etape) && r) relance = plusJoursOuvres(r, RELANCE_J.controle)
+  if (etape === 'attente_mesures' && r) relance = relanceControleDue(l)
+  else if (CONTROLE_RECU.includes(etape) && r) relance = plusJoursOuvres(r, RELANCE_J.controle)
   else if (etape === 'coloris_soumis') relance = relanceClientDue(l.coloris)
   else if (etape === 'soumis') relance = relanceClientDue(l.stabilites)
   else if (etape === 'ok_ramer_a_envoyer' && l.coloris.reponse) relance = plusJoursOuvres(l.coloris.reponse.le.slice(0, 10), RELANCE_J.nous)
@@ -757,7 +785,7 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     SELECT idligne_commande_sous_traitant AS idl, to_char(ancien_delai, 'YYYY-MM-DD') AS a, to_char(delai_donne, 'YYYY-MM-DD') AS n
       FROM delai_sst_evenement
      WHERE type = 'report_delai' AND imputable = 'client' AND idcommande_sous_traitant = ANY(${cmdIds})`
-  const [entetes, lignes, envoisMail, envoisNature, reponses, oksRamer, relancesClient] = await Promise.all([
+  const [entetes, lignes, envoisMail, envoisNature, reponses, oksRamer, relancesClient, relancesControle] = await Promise.all([
     sql<{ id: number; est_soldee: number; idcommande_client: number }[]>`
       SELECT idcommande_sous_traitant AS id, est_soldee,
              COALESCE(idcommande_client, 0) AS idcommande_client
@@ -794,6 +822,10 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
              to_char(relance_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS jour,
              to_char(relance_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD HH24:MI:SS.MS') AS ts
       FROM relance_soumission WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
+    // « Relancer l'ennoblisseur »: our relances for its controls (0088).
+    sql<{ idsuivilot: number; jour: string }[]>`
+      SELECT idsuivilot, to_char(relance_le AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS jour
+      FROM relance_controle WHERE idcommande_sous_traitant = ANY(${cmdIds})`,
   ])
 
   const faitsDelai = await faitsDelaiP
@@ -969,6 +1001,14 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
     const k = `${r.cmd}:${cleLot(r.lot)}`
     relancesParCle.set(k, [...(relancesParCle.get(k) ?? []), { nature: r.nature, jour: r.jour, ts: r.ts }])
   }
+  const relancesControleParLot = new Map<number, string[]>()
+  for (const r of relancesControle) relancesControleParLot.set(Number(r.idsuivilot), [...(relancesControleParLot.get(Number(r.idsuivilot)) ?? []), r.jour])
+  /** Our relances of the dyer's controls since the lot came (back) to us: an
+   *  older one chased the controls of before its reprise. */
+  const relancesControleDuLot = (idsuivilot: number, reception: string | null, dernierRetour: string | null | undefined): string[] => {
+    const depuis = [reception, dernierRetour].filter((d): d is string => !!d).sort().at(-1)
+    return (relancesControleParLot.get(idsuivilot) ?? []).filter((j) => !depuis || j >= depuis).sort()
+  }
   const rcParLot = await clientsDesLots(lots.map((s) => ({ ligne: Number(s.ligne), lot: String(s.lot ?? '') })))
 
   /** The soumission facts of one lot. */
@@ -991,7 +1031,9 @@ export async function lireCommandesEnnoblissement(ids: number[]): Promise<Map<nu
       .map((s) => {
         const rep = reprises.get(`${Number(s.ligne)}:${String(s.lot).trim()}`)
         const k = `${id}:${cleLot(String(s.lot))}`
+        const relancesCtl = relancesControleDuLot(Number(s.idsuivilot), s.reception, rep?.dernierRetour)
         return {
+          ...(relancesCtl.length > 0 ? { relancesControle: relancesCtl } : {}),
           lot: String(s.lot).trim(),
           idsuivilot: Number(s.idsuivilot),
           idligne: Number(s.ligne),

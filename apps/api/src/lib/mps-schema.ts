@@ -2286,6 +2286,34 @@ ${grantApi('SELECT, INSERT', 'relance_soumission')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE relance_soumission_id_seq')}
 `,
   },
+  {
+    // « Relancer l'ennoblisseur » on a received lot whose dyer's controls are
+    // still missing (Vincent 2026-11-27, lib/relance-controle.ts): the twin of
+    // 0087 for the dyer. The lot has 5 working days from its reception; beyond,
+    // it was red « relancer l'ennoblisseur » and stayed red until the measures
+    // came, since nothing recorded that we had chased. One row per relance
+    // e-mail sent from Qualité › Suivi lots: who, when, to whom. The lot is then
+    // calm for RELANCE_J.relance_controle working days
+    // (lib/cycle-ennoblissement.ts `relanceControleDue`). Append-only: the API
+    // role may only SELECT / INSERT.
+    name: '0088_relance_controle',
+    sql: `
+CREATE TABLE relance_controle (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idsuivilot bigint NOT NULL,
+  idcommande_sous_traitant bigint NOT NULL,
+  lot text NOT NULL,
+  relance_le timestamptz NOT NULL DEFAULT now(),
+  relance_par_id bigint NOT NULL DEFAULT 0,
+  relance_par text,
+  destinataires text
+);
+CREATE INDEX relance_controle_commande ON relance_controle (idcommande_sous_traitant);
+CREATE INDEX relance_controle_lot ON relance_controle (idsuivilot);
+${grantApi('SELECT, INSERT', 'relance_controle')}
+${grantApi('USAGE, SELECT', 'SEQUENCE relance_controle_id_seq')}
+`,
+  },
 ]
 
 export interface MigrationStatus {

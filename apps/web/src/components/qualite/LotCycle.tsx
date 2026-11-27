@@ -7,18 +7,22 @@
 // the received rolls.
 // While the client's answer to a soumission is waited, « Relancer le client »
 // (Vincent 2026-11-27) sends the relance e-mail: the lot is calm for 5 working
-// days after it, then red again.
+// days after it, then red again. The dyer's controls of a received lot are
+// chased the same way (« Relancer l'ennoblisseur », 2 working days after it).
+// Every mail of the lot leaves from one header button (MailMenuButton).
 // The step and its blockers are computed by apps/api/src/lib/cycle-ennoblissement.ts.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   AlertCircle,
+  AtSign,
   BellRing,
   CheckCircle2,
   ChevronUp,
   ClipboardCheck,
   Droplets,
   Hourglass,
+  ListChecks,
   Loader2,
   MailCheck,
   Palette,
@@ -96,6 +100,17 @@ export interface RelanceClientLot {
   due: string
 }
 
+/** « Relancer l'ennoblisseur » (API `relanceEnnoblisseurDuDetail`): present while a
+ *  received lot waits for the dyer's controls. Dates 'YYYY-MM-DD'. */
+export interface RelanceEnnoblisseurLot {
+  recu_le: string
+  /** Our latest relance; null = not chased yet. */
+  derniere: string | null
+  nombre: number
+  /** The day it is ours to chase (again): the end of the control window, then 2 working days after each relance. */
+  due: string
+}
+
 /** The soumission the client is to answer at this step, if any. */
 export function natureEnAttente(etape: EtapeLot): NatureSoumission | null {
   return etape === 'coloris_soumis' ? 'coloris' : etape === 'soumis' ? 'stabilites' : null
@@ -138,7 +153,7 @@ const fmtJour = (iso: string | null) => (iso ? `${iso.slice(8, 10)}/${iso.slice(
 
 // ── Footer: the step pill + its gestures (§29.4) ─────────
 
-export type GesteLot = 'valider' | 'reprendre' | 'accepte' | 'refuse' | 'ok_ramer' | 'relance_client'
+export type GesteLot = 'valider' | 'reprendre' | 'accepte' | 'refuse' | 'ok_ramer' | 'relance_client' | 'relance_ennoblisseur'
 
 export function LotCycleFooter({
   etape, prealables, recu, canManage, isChanging, disabled, onGeste,
@@ -215,6 +230,7 @@ export function LotCycleFooter({
           {etape === 'soumis' && item('accepte', 'Le client accepte les stabilités', ThumbsUp, 'text-green-600')}
           {etape === 'soumis' && item('refuse', 'Le client refuse les stabilités…', ThumbsDown, 'text-red-600')}
           {(etape === 'coloris_soumis' || etape === 'soumis') && item('relance_client', 'Relancer le client…', BellRing, 'text-violet-600')}
+          {etape === 'attente_mesures' && recu && item('relance_ennoblisseur', 'Relancer l’ennoblisseur…', BellRing, 'text-sky-600')}
           {(etape === 'ok_ramer_a_envoyer' || etape === 'en_rame') && item(
             'ok_ramer', etape === 'en_rame' ? 'Retransmettre la validation du coloris à l’ennoblisseur…' : 'Transmettre la validation du coloris à l’ennoblisseur…', MailCheck, 'text-amber-600',
           )}
@@ -260,14 +276,16 @@ export interface PrealableLot {
   etape: EtapeLot | null
 }
 
-/** « Prochaines étapes » (top of the Journal tab since 2026-11-10): the step the
- *  lot waits for and how long it has been there against the days it gets
- *  (Vincent 2026-11-05: 2 days in « contrôle ennoblisseur » is fine, 5 is a
- *  problem), then what Malterre can already do and what others still owe.
- *  The gestures stay in the footer menu (no button on the card, 2026-11-05);
- *  the RC per client in the header button. */
+/** « Prochaines étapes », the first section of the lot's body (Vincent
+ *  2026-11-27: seen as soon as the lot opens; it sat on top of the Journal tab
+ *  from 2026-11-10): the step the lot waits for and how long it has been there
+ *  against the days it gets (Vincent 2026-11-05: 2 days in « contrôle
+ *  ennoblisseur » is fine, 5 is a problem), then what Malterre can already do
+ *  and what others still owe. The gestures stay in the footer menu and the
+ *  header's mail button (no button on the card, 2026-11-05); the RC per client
+ *  in its own header button. */
 export function CycleCard({
-  etape, prealables, etapes, attendu, clients, relance,
+  etape, prealables, etapes, attendu, clients, relance, relanceEnnoblisseur,
 }: {
   etape: EtapeLot
   prealables: string[]
@@ -278,6 +296,8 @@ export function CycleCard({
   clients: ClientRc[]
   /** The client's answer is waited: when it was asked and when we last chased. */
   relance?: RelanceClientLot | null
+  /** The dyer's controls are waited: when the lot came and when we last chased. */
+  relanceEnnoblisseur?: RelanceEnnoblisseurLot | null
 }) {
   const valide = etape === 'valide'
   const rcDus = clients.filter((c) => c.du)
@@ -306,6 +326,10 @@ export function CycleCard({
           : valide ? (rcDus.length ? 'border-l-amber-500' : 'border-l-green-500/60')
             : 'border-l-border',
     )}>
+      <div className="flex items-center gap-2 mb-3">
+        <ListChecks className="h-4 w-4 text-accent" />
+        <h2 className="text-sm font-semibold">Prochaines étapes</h2>
+      </div>
       {!valide && tete && (
         <div className="flex items-center gap-3">
           <div className="h-10 w-10 flex-shrink-0 rounded-lg flex items-center justify-center bg-zinc-100">
@@ -317,6 +341,12 @@ export function CycleCard({
               <p className="text-xs text-muted-foreground">
                 Soumis le {fmtJour(relance.soumis_le).slice(0, 5)}
                 {relance.derniere && ` · relancé le ${fmtJour(relance.derniere).slice(0, 5)}${relance.nombre > 1 ? ` (${relance.nombre} relances)` : ''}`}
+              </p>
+            )}
+            {relanceEnnoblisseur && (
+              <p className="text-xs text-muted-foreground">
+                Reçu le {fmtJour(relanceEnnoblisseur.recu_le).slice(0, 5)}
+                {relanceEnnoblisseur.derniere && ` · relancé le ${fmtJour(relanceEnnoblisseur.derniere).slice(0, 5)}${relanceEnnoblisseur.nombre > 1 ? ` (${relanceEnnoblisseur.nombre} relances)` : ''}`}
               </p>
             )}
           </div>
@@ -359,7 +389,7 @@ export function CycleCard({
       )}
 
       {!valide && (aFaire.length > 0 || enAttente.length > 0) && (
-        <div className="mt-3 pt-3 border-t border-border/60 space-y-2.5">
+        <div className="mt-3 pt-3 border-t border-border/60 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2.5">
           {aFaire.length > 0 && (
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">Déjà faisable chez Malterre</p>
@@ -405,6 +435,68 @@ export function CycleCard({
         </p>
       ))}
 
+    </div>
+  )
+}
+
+// ── Header: « Envoyer un email » — every mail of the lot from one button ──
+
+/** One e-mail the lot can send now (a soumission, a relance, the « coloris validé »). */
+export interface MailLot {
+  key: string
+  label: string
+  icon: LucideIcon
+  /** §41: 'rouge' = a relance due, 'ambre' = a mail of ours to send, null = offered. */
+  niveau?: 'rouge' | 'ambre' | null
+  onSelect: () => void
+}
+
+/** The lot's ONE mail button (Vincent 2026-11-27: no button per kind of mail — the
+ *  person sends an e-mail from the e-mail button): the §42 menu when several mails
+ *  are possible, the mail itself when there is one, nothing when there is none. */
+export function MailMenuButton({ mails }: { mails: MailLot[] }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDown = (e: MouseEvent) => { if (!rootRef.current?.contains(e.target as Node)) setMenuOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [menuOpen])
+  if (mails.length === 0) return null
+  const seul = mails.length === 1 ? mails[0] : null
+  const niveau = mails.some((m) => m.niveau === 'rouge') ? 'rouge' : mails.some((m) => m.niveau === 'ambre') ? 'ambre' : null
+  return (
+    <div ref={rootRef} className="relative">
+      <Button
+        variant="outline" size="icon" className="h-9 w-9 relative"
+        title={seul ? `${seul.label}${seul.niveau ? ' — à faire' : ''}` : niveau ? 'Envoyer un email — à faire' : 'Envoyer un email'}
+        onClick={() => (seul ? seul.onSelect() : setMenuOpen((v) => !v))}
+      >
+        <AtSign className="h-4 w-4" />
+        {niveau && <span className={cn('absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full ring-2 ring-white', niveau === 'rouge' ? 'bg-red-500' : 'bg-amber-500')} />}
+      </Button>
+      {!seul && menuOpen && (
+        <div className="absolute top-full right-0 mt-1 w-80 rounded-lg border bg-white shadow-lg overflow-hidden z-50">
+          {mails.map((m) => {
+            const ItemIcon = m.icon
+            return (
+              <button
+                key={m.key}
+                type="button"
+                onClick={() => { m.onSelect(); setMenuOpen(false) }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors hover:bg-zinc-100"
+              >
+                <ItemIcon className={cn('h-4 w-4 flex-shrink-0', m.niveau === 'rouge' ? 'text-red-600' : m.niveau === 'ambre' ? 'text-amber-600' : 'text-muted-foreground')} />
+                <span className="min-w-0 flex-1 truncate">{m.label}</span>
+                {m.niveau && (
+                  <span className={cn('text-[11px] font-medium flex-shrink-0', m.niveau === 'rouge' ? 'text-red-600' : 'text-amber-700')}>À faire</span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
