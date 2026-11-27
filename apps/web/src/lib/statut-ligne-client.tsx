@@ -4,10 +4,10 @@
 // ennoblisseur reuse the sous-traitant type hues (sst-type.tsx) so the line reads
 // with the same colour as the subcontractor it is waiting on.
 import type { ComponentType, ReactNode } from 'react'
-import { Archive, CalendarCheck, CircleDashed, Droplets, Factory, FlaskConical, PackageCheck, Truck, CalendarClock, UserRound } from 'lucide-react'
+import { Archive, CalendarCheck, CircleDashed, Droplets, Factory, FlaskConical, PackageCheck, PackageOpen, Truck, CalendarClock, UserRound } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'attente_fil' | 'planifiee' | 'a_lancer' | 'etude_client' | 'etude_labo'
+export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'attente_fil' | 'attente_stock' | 'planifiee' | 'a_lancer' | 'etude_client' | 'etude_labo'
 
 export interface StatutLigneClient {
   etat: EtatLigneClient
@@ -29,6 +29,9 @@ export const STATUT_LIGNE_META: Record<EtatLigneClient, { label: string; icon: C
   planifiee: { label: 'Planifiée', icon: CalendarCheck, classes: 'bg-white text-indigo-700 border-indigo-500/25' },
   // Yarn reserved on a supplier order still to receive (API lib/reservation-fil.ts).
   attente_fil: { label: 'Attente fil', icon: CalendarClock, classes: 'bg-violet-500/10 text-violet-700 border-violet-500/25' },
+  // A divers line still to ship whose stock on hand does not cover what is left (API etatAffiche): it waits
+  // for its matter like « attente fil », same hue. Neutral until its date.
+  attente_stock: { label: 'Attente stock', icon: PackageOpen, classes: 'bg-violet-500/10 text-violet-700 border-violet-500/25' },
   tricotage: { label: 'En tricotage', icon: Factory, classes: 'bg-amber-500/15 text-amber-800 border-amber-500/30' },
   ennoblisseur: { label: 'En ennoblissement', icon: Droplets, classes: 'bg-sky-500/10 text-sky-700 border-sky-500/25' },
   pae: { label: 'Prête à expédier', icon: PackageCheck, classes: 'bg-emerald-100 text-emerald-800 border-emerald-200' },

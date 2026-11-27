@@ -57,6 +57,13 @@
 // real figure, in time or not.
 // Never once D is passed: an urgency cannot save a date already missed.
 //
+// A divers line carries no production and nothing leaves without stock (lib/stock-divers-dispo.ts). While
+// the stock on hand does not cover what is left to ship, there is nothing to do at Malterre: the goods
+// are not there, and ETM does not know where a divers article comes from. Neutral until D, as a line
+// waiting for its yarn or its knitting (Vincent 2026-11-27: « stock à entrer » at D-3 named an action
+// nobody could take); once D has passed the promise is missed, red, « en retard, sans stock » (get the
+// goods in or report the date). With the stock on hand it is a ready line: amber ahead, red near D.
+//
 // The card says two things, never mixed: the liseré + reason = what there is to do (no date: the card
 // orients, the detail tells why; urgenceCommande), the pill = where the order stands (avancementCommande).
 
@@ -127,7 +134,7 @@ export interface LigneUrgence {
   /** …and whose step it is: the reason names who to chase. Absent = the knitter. */
   urgenceChez?: 'tricotage' | 'ennoblissement' | null
   /** divers line only: the stock on hand does not cover what is left to ship (lib/stock-divers-dispo.ts).
-   *  Nothing leaves without stock, so what there is to do is enter it, not ship. */
+   *  Nothing leaves without stock: the line waits for it, neutral until D, late after. */
   stockManquant?: boolean
 }
 
@@ -137,17 +144,23 @@ export function relanceAppelDe(v: unknown): number {
   return Number.isFinite(n) && n > 0 ? n : SEUILS_URGENCE.relanceAppel
 }
 
-/** A line that has not reached « prête à expédier » yet (divers: no production, ready by nature). */
-function enProduction(l: Pick<LigneUrgence, 'etat' | 'typeKind'>): boolean {
-  return l.etat === 'tricotage' || l.etat === 'ennoblisseur' || l.etat === 'attente_fil' || l.etat === 'planifiee' || (l.etat === 'a_lancer' && l.typeKind !== 3)
+/** A divers line still to ship whose stock on hand does not cover what is left: it waits for its stock. */
+function attendStock(l: Pick<LigneUrgence, 'etat' | 'typeKind' | 'stockManquant'>): boolean {
+  return l.etat === 'attente_stock' || (l.typeKind === 3 && l.etat === 'a_lancer' && !!l.stockManquant)
+}
+
+/** A line that has not reached « prête à expédier » yet (divers: no production, ready once its stock is in). */
+function enProduction(l: Pick<LigneUrgence, 'etat' | 'typeKind' | 'stockManquant'>): boolean {
+  return l.etat === 'tricotage' || l.etat === 'ennoblisseur' || l.etat === 'attente_fil' || l.etat === 'planifiee'
+    || (l.etat === 'a_lancer' && l.typeKind !== 3) || attendStock(l)
 }
 
 /** True while some line of the order is still in production: a « commande complète » line waits for it. */
-export function commandeIncomplete(lignes: readonly Pick<LigneUrgence, 'etat' | 'typeKind'>[]): boolean {
+export function commandeIncomplete(lignes: readonly Pick<LigneUrgence, 'etat' | 'typeKind' | 'stockManquant'>[]): boolean {
   return lignes.some(enProduction)
 }
 
-type Action = 'intenable' | 'relancer_urgence' | 'relancer_urgence_enno' | 'planif_tardive' | 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'entrer_stock' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
+type Action = 'intenable' | 'relancer_urgence' | 'relancer_urgence_enno' | 'planif_tardive' | 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'retard_stock' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
   | 'relancer_fournisseur' | 'fil_sans_date'
   | 'etude_labo' | 'etude_client' | 'etude_acceptee' | 'etude_annulee'
 
@@ -173,9 +186,11 @@ function joursAvant(date: string, today: Date): number {
  *  come is « planifiée » — a decision taken, nothing to do before the date (Vincent 2026-10-28). From
  *  the date on it is « à lancer » again, red. Divers lines have no launch. urgenceLigne keeps reading
  *  the computed a_lancer + lancementLe, so the colour rule does not move. Same for a line waiting for its
- *  étude coloris: « en étude » (lab) / « attente client », before à lancer on the order's scale. */
+ *  étude coloris: « en étude » (lab) / « attente client », before à lancer on the order's scale.
+ *  A divers line short of the stock to ship is « attente stock » (Vincent 2026-11-27). */
 export function etatAffiche(etat: EtatLigneClient, typeKind: number, lancementLe: string | null | undefined, today: Date,
-  etude?: { attente: AttenteEtude } | null): EtatLigneClient {
+  etude?: { attente: AttenteEtude } | null, stockManquant?: boolean): EtatLigneClient {
+  if (attendStock({ etat, typeKind, stockManquant })) return 'attente_stock'
   if (etat !== 'a_lancer' || typeKind === 3) return etat
   // Waiting for its étude coloris: who holds it (Vincent 2026-10-30). Accepted / cancelled = à lancer, red.
   if (etude?.attente === 'labo') return 'etude_labo'
@@ -208,23 +223,22 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     j <= rouge ? { niveau: 'rouge', action, jours: j, date } : j <= ambre ? { niveau: 'ambre', action, jours: j, date } : null
 
   // Divers lines carry no production: « à lancer » means « not shipped yet ».
-  if (l.etat === 'pae' || (l.etat === 'a_lancer' && l.typeKind === 3)) {
+  if (l.etat === 'pae' || l.etat === 'attente_stock' || (l.etat === 'a_lancer' && l.typeKind === 3)) {
     const mode = l.modeLivraison ?? 'des_que_prete'
     if ((mode === 'commande_complete' || l.groupee) && l.commandeIncomplete) return null
     if (mode === 'sur_appel') {
       return j < -relanceAppelDe(l.relanceAppel) ? { niveau: 'rouge', action: 'relancer', jours: j, date } : null
     }
-    // A divers line whose stock does not cover what is left cannot ship (Vincent 2026-11-27): same
-    // days, but the card names what there is to do, « stock à entrer ».
-    const expedier: Action = l.typeKind === 3 && l.stockManquant ? 'entrer_stock' : 'expedier'
+    if (j < -S.soldeApres) return { niveau: 'rouge', action: 'solder', jours: j, date }
+    // A divers line whose stock does not cover what is left cannot ship (Vincent 2026-11-27): it waits
+    // for its stock, neutral until D like any line waiting for its matter; late once D has passed.
+    if (attendStock(l)) return j < 0 ? { niveau: 'rouge', action: 'retard_stock', jours: j, date } : null
     if (mode === 'date_exacte') {
       // Leaves ON D: nothing to do before (shipping early is not what the client asked), « Expédier »
       // on the day; never amber.
-      if (j < -S.soldeApres) return { niveau: 'rouge', action: 'solder', jours: j, date }
-      return j <= 0 ? { niveau: 'rouge', action: expedier, jours: j, date } : null
+      return j <= 0 ? { niveau: 'rouge', action: 'expedier', jours: j, date } : null
     }
-    if (j < -S.soldeApres) return { niveau: 'rouge', action: 'solder', jours: j, date }
-    return palier(expedier, S.expedierRouge, S.expedierAmbre)
+    return palier('expedier', S.expedierRouge, S.expedierAmbre)
   }
   if (l.etat === 'attente_fil') {
     const due = ymd(l.filAttenduLe)
@@ -282,7 +296,7 @@ const LIBELLE: Record<Action, [string, string]> = {
   tricoter: ['ligne à tricoter', 'lignes à tricoter'],
   ennoblir: ['ligne à ennoblir', 'lignes à ennoblir'],
   expedier: ['ligne à expédier', 'lignes à expédier'],
-  entrer_stock: ['ligne : stock à entrer', 'lignes : stock à entrer'],
+  retard_stock: ['ligne en retard, sans stock', 'lignes en retard, sans stock'],
   solder: ['ligne à expédier ou solder', 'lignes à expédier ou solder'],
   relancer: ['ligne sur appel : relancer le client', 'lignes sur appel : relancer le client'],
   tricotage: ['ligne en tricotage en retard', 'lignes en tricotage en retard'],
@@ -318,7 +332,7 @@ export function urgenceCommande(lignes: readonly LigneUrgence[], today: Date): U
 }
 
 /** Most advanced last. */
-const ECHELLE: readonly EtatLigneClient[] = ['etude_labo', 'etude_client', 'a_lancer', 'planifiee', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
+const ECHELLE: readonly EtatLigneClient[] = ['etude_labo', 'etude_client', 'a_lancer', 'planifiee', 'attente_fil', 'attente_stock', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
 
 /** Where an order stands, on the line pills' own scale: its least advanced line still to deliver
  *  (that line holds the order back); « expediee » once every line left; « soldee » when closed.

@@ -285,7 +285,7 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
   const diversCmds = lignes.filter((l) => Number(l.type_kind) === 3).map((l) => Number(l.IDcommande_client))
   const [diversShipped, diversStock] = await Promise.all([
     diversShippedByCommandes(diversCmds),
-    // Nothing leaves without stock: a divers line short of it reads « stock à entrer », not « à expédier ».
+    // Nothing leaves without stock: a divers line short of it waits for it (« attente stock »).
     diversStockByArticle(lignes.filter((l) => Number(l.type_kind) === 3).map((l) => Number(l.IDreference) || 0)),
   ])
   const faits = await faitsLignesClient(lignes.map((l) => {
@@ -375,7 +375,7 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
   const today = new Date()
   for (const [cid, ls] of parCommande) {
     // Pill and tags show « planifiée »; the colour reads the computed état + its launch date.
-    const affiches = ls.map((x) => etatAffiche(x.etat, x.typeKind, x.lancementLe, today, x.etude))
+    const affiches = ls.map((x) => etatAffiche(x.etat, x.typeKind, x.lancementLe, today, x.etude, x.stockManquant))
     const restantes = ls.filter((x) => x.etat !== 'expediee' && x.etat !== 'soldee')
     out.set(cid, {
       urgence: urgenceCommande(ls, today),
@@ -1860,10 +1860,19 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
           : undefined,
       }
     }))
-    // A « commande complète » line waits while another line of the order is still in production.
+    // A divers line whose stock on hand does not cover what is left to ship: it waits for its stock.
+    const sansStock = (l: any): boolean => {
+      const f = faits.get(Number(l.IDligne_commande_client))
+      return Number(l.type_kind) === 3 && !!f && stockDiversManquant(
+        diversStock.get(diversKey(Number(l.IDreference) || 0, Number(l.IDVariation1) || 0, Number(l.IDVariation2) || 0)),
+        f.quantite - f.expedie,
+      )
+    }
+    // A « commande complète » line waits while another line of the order is still in production
+    // (or a divers line waits for its stock).
     const incomplete = commandeIncomplete(lignesFixed.flatMap((l) => {
       const f = faits.get(Number(l.IDligne_commande_client))
-      return f ? [{ etat: statutLigneClient(f, '').etat, typeKind: Number(l.type_kind) || 0 }] : []
+      return f ? [{ etat: statutLigneClient(f, '').etat, typeKind: Number(l.type_kind) || 0, stockManquant: sansStock(l) }] : []
     }))
 
     const [etudes, lancements, sansDate, exps] = await Promise.all([
@@ -2020,7 +2029,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
         // Shown état: « planifiée » while its launch date is to come (etatAffiche); the colour below
         // still reads the computed état + the date.
         statut: statut && !soldee
-          ? { ...statut, etat: etatAffiche(statut.etat, typeKind, lancements.get(Number(l.IDligne_commande_client))?.date, new Date(), etudeUrgence(etudeId, colId, etudes)) }
+          ? { ...statut, etat: etatAffiche(statut.etat, typeKind, lancements.get(Number(l.IDligne_commande_client))?.date, new Date(), etudeUrgence(etudeId, colId, etudes), sansStock(l)) }
           : statut,
         // The line's own colour on the list's rule (closed order: neutral), drives the délai's tint.
         urgence: statut && !soldee
@@ -2040,7 +2049,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
             preteAuPlusTot: auPlusTotLigne?.date ?? null,
             urgenceReponseLe: urgenceEtapeDe(auPlusTotLigne)?.reponseAttendue ?? null,
             urgenceChez: urgenceChezDe(auPlusTotLigne),
-            stockManquant: typeKind === 3 && !!f && stockDiversManquant(diversStock.get(diversKey(refId, v1, v2)), f.quantite - f.expedie),
+            stockManquant: sansStock(l),
           }, new Date())?.niveau ?? null
           : null,
       }

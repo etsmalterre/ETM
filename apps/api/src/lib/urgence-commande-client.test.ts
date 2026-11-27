@@ -24,15 +24,38 @@ describe('urgenceLigne', () => {
     expect(niveau(l('a_lancer', 5, 3))).toBe('ambre')
     expect(niveau(l('a_lancer', 30, 3))).toBe(null)
   })
-  it('a divers line without the stock to ship: same days, but the action is to enter the stock', () => {
-    const sansStock = (j: number): LigneUrgence => ({ ...l('a_lancer', j, 3), stockManquant: true })
-    expect(urgenceLigne(sansStock(3), today)).toMatchObject({ niveau: 'rouge', action: 'entrer_stock' })
-    expect(urgenceLigne(sansStock(8), today)).toMatchObject({ niveau: 'ambre', action: 'entrer_stock' })
-    expect(niveau(sansStock(30))).toBe(null)
-    expect(urgenceLigne(l('a_lancer', 3, 3), today)?.action).toBe('expedier')
+  it('a divers line without the stock to ship waits for it: neutral until its date, late after (3951)', () => {
+    const sansStock = (j: number, p: Partial<LigneUrgence> = {}): LigneUrgence => ({ ...l('a_lancer', j, 3), stockManquant: true, ...p })
+    // 3951: 10 units ordered, none in stock, due in 3 days — nothing to do at Malterre
+    expect(niveau(sansStock(3))).toBe(null)
+    expect(niveau(sansStock(8))).toBe(null)
+    expect(niveau(sansStock(0))).toBe(null)
+    expect(urgenceLigne(sansStock(-1), today)).toMatchObject({ niveau: 'rouge', action: 'retard_stock' })
+    expect(urgenceCommande([sansStock(-2), sansStock(-1)], today)).toEqual({ niveau: 'rouge', raison: '2 lignes en retard, sans stock' })
+    expect(urgenceCommande([sansStock(2)], today)).toBe(null)
+    // whatever its départ: a date exacte without stock cannot leave on D either
+    expect(niveau(sansStock(0, { modeLivraison: 'date_exacte' }))).toBe(null)
+    expect(urgenceLigne(sansStock(-1, { modeLivraison: 'date_exacte' }), today)?.action).toBe('retard_stock')
+    // a remainder nobody will take is still to close
+    expect(urgenceLigne(sansStock(-61), today)?.action).toBe('solder')
+    // with its stock on hand it is a ready line
+    expect(urgenceLigne(l('a_lancer', 3, 3), today)).toMatchObject({ niveau: 'rouge', action: 'expedier' })
+    expect(niveau(l('a_lancer', 8, 3))).toBe('ambre')
     // never on a roll line, whatever the flag says
     expect(urgenceLigne({ ...l('pae', 3), stockManquant: true }, today)?.action).toBe('expedier')
-    expect(urgenceCommande([sansStock(2), sansStock(1)], today)).toEqual({ niveau: 'rouge', raison: '2 lignes : stock à entrer' })
+  })
+  it('a divers line waiting for its stock reads « attente stock » and holds an order that ships together', () => {
+    expect(etatAffiche('a_lancer', 3, null, today, null, true)).toBe('attente_stock')
+    expect(etatAffiche('a_lancer', 3, null, today, null, false)).toBe('a_lancer')
+    expect(etatAffiche('a_lancer', 2, null, today, null, true)).toBe('a_lancer')
+    expect(etatAffiche('expediee', 3, null, today, null, true)).toBe('expediee')
+    expect(avancementCommande(['attente_stock', 'pae'], false)).toBe('attente_stock')
+    expect(avancementCommande(['attente_stock', 'a_lancer'], false)).toBe('a_lancer')
+    // « ensemble »: the ready roll line waits for the divers line's stock
+    const pret: LigneUrgence = { ...l('pae', 2), groupee: true }
+    const divers: LigneUrgence = { ...l('a_lancer', 2, 3), groupee: true, stockManquant: true }
+    expect(urgenceCommande([pret, divers], today)).toBe(null)
+    expect(urgenceCommande([pret, { ...divers, stockManquant: false }], today)?.raison).toBe('2 lignes à expédier')
   })
   it('a ready line 60+ days past its délai asks to ship or close', () => {
     expect(urgenceLigne(l('pae', -61), today)?.action).toBe('solder')

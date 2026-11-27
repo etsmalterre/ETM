@@ -128,8 +128,8 @@ export async function refusStockDivers(prises: readonly PriseDivers[]): Promise<
   }
 }
 
-/** Order lists: a divers line still to ship whose stock on hand does not cover what is left. The action
- *  on the card is then « stock à entrer », not « à expédier » (lib/urgence-commande-client.ts). */
+/** Order lists: a divers line still to ship whose stock on hand does not cover what is left. It waits
+ *  for its stock: « attente stock », neutral until its date (lib/urgence-commande-client.ts). */
 export function stockDiversManquant(enStock: number | undefined, reste: number): boolean {
   return reste > 0.005 && manqueStockDivers(enStock ?? 0, reste) > 0.005
 }

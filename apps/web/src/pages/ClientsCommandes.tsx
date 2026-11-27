@@ -1168,7 +1168,7 @@ const URGENCE_CARD: Record<NiveauUrgence, { lisere: string; selected: string; ho
 // One tag per line status present: an order carries it when at least one of its lines has it.
 // « À faire » / « Bientôt » are not tags: the counter pills right of the bar already filter on them.
 
-const ETAT_TAG_ORDER: EtatLigneClient[] = ['etude_labo', 'etude_client', 'a_lancer', 'planifiee', 'attente_fil', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
+const ETAT_TAG_ORDER: EtatLigneClient[] = ['etude_labo', 'etude_client', 'a_lancer', 'planifiee', 'attente_fil', 'attente_stock', 'tricotage', 'ennoblisseur', 'pae', 'expediee', 'soldee']
 
 function commandeTags(rows: CommandeListRow[]): SearchTagDef<CommandeListRow>[] {
   // « En préparation » is an ORDER state (doctrine des délais §5 ter), first: the orders to prepare.
@@ -2509,7 +2509,8 @@ function LineCard({
           {canAffect && !linesLocked && !line.date_lancement && urgencePrevue && (line.statut?.etat === 'tricotage' || line.statut?.etat === 'a_lancer') && (
             <UrgencePrevueLabel urgence={urgencePrevue} etape={line.etape_lancement} />
           )}
-          {/* A divers line has nothing to launch (#1362): « À lancer » there only meant « not shipped yet ». */}
+          {/* A divers line has nothing to launch (#1362): « À lancer » there only meant « not shipped yet ».
+              Short of stock it reads « Attente stock ». */}
           {line.statut && !(line.type === 3 && line.statut.etat === 'a_lancer') && <StatutLignePill statut={line.statut} />}
           {isEditing && !linesLocked && (
             <div className="flex gap-0.5">

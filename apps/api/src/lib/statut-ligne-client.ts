@@ -24,6 +24,8 @@
 //   etude_labo   a_lancer still waiting for its étude coloris at the dyer's lab / etude_client: submitted,
 //   etude_client waiting for the client's answer (lib/etude-ligne-client.ts). Shown by etatAffiche() too,
 //                never computed here; the colour still reads the étude's relance (Vincent 2026-10-30)
+//   attente_stock a divers line still to ship whose stock on hand does not cover what is left
+//                (lib/stock-divers-dispo.ts). Shown by etatAffiche() too, never computed here.
 // Divers lines (type 3) carry no rolls: a_lancer / expediee only, partial shown by the shipped share.
 
 import { query } from './hfsql-auto.js'
@@ -35,7 +37,7 @@ import { kgATricoterParLigne } from './tricotage-restant.js'
  *  open lines, 803 of 859 closed ones). Shared with the espace client (lib/espace-commandes.ts). */
 export const SEUIL_EXPEDIE = 0.9
 
-export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'attente_fil' | 'planifiee' | 'a_lancer' | 'etude_client' | 'etude_labo'
+export type EtatLigneClient = 'soldee' | 'expediee' | 'pae' | 'ennoblisseur' | 'tricotage' | 'attente_fil' | 'attente_stock' | 'planifiee' | 'a_lancer' | 'etude_client' | 'etude_labo'
 
 export interface FaitsLigneClient {
   quantite: number
