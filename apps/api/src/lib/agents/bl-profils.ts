@@ -46,6 +46,19 @@ export interface ProfilEnnoblisseur {
   ecritPoids: boolean
   /** Checks only this dyer needs, on the raw OCR text (several orders on one BL…). */
   controlesTexte?(ocr: string): Array<{ code: string; message: string }>
+  /** What the dyer wrote in the document's free « comment » field, about the whole
+   *  lot (v5). null = none, or the dyer's document has no such field. */
+  commentaire?(ocr: string): string | null
+}
+
+/** MATEL's header line « Commentaire <text> »: its remark on the whole lot
+ *  (« MAL UNI », « Traces d'aiguilles », « Unisson limite, vu Gilles »), printed on
+ *  about one BL in five and never read before v5. Read by the code, on the OCR
+ *  text: no list of worrying words, any real text counts (two letters at least,
+ *  so a stray « ? » or « , » of the OCR is not one). Pure. */
+export function commentaireMatel(ocr: string): string | null {
+  const c = /^Commentaire\b[ \t]*(.*)$/mi.exec(ocr)?.[1].replace(/\s+/g, ' ').trim() ?? ''
+  return /\p{L}{2}/u.test(c) ? c : null
 }
 
 // ── Prompts of the new dyers (MATEL keeps its versioned prompt) ─────────────
@@ -128,6 +141,7 @@ export const PROFILS: readonly ProfilEnnoblisseur[] = [
     bordereauRe: /^\d{6}[A-Z]?$/,
     lot: (e) => (chiffres(e.numero_bordereau, 6) ? `MA${chiffres(e.numero_bordereau, 6)}` : ''),
     ecritPoids: true,
+    commentaire: commentaireMatel,
   },
   {
     cle: 'bontemps',

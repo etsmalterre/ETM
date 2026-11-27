@@ -27,7 +27,8 @@ import { ocrPdf, chatJson } from '../mistral.js'
 import { notify } from '../notify.js'
 import { listerMessages, lireMessage, lireFil, lirePieceJointe, assurerLibelle, ajouterLibelle, retirerLibelle, type MessageInfo } from '../gmail-reader.js'
 import { traiterReponsePoint } from './flux-ennoblisseur/delais.js'
-import { enregistrerPointBl } from './flux-ennoblisseur/reception-bl.js'
+import { enregistrerPointBl, propositionDuBl, receptionnerProposition, seulPossible } from './flux-ennoblisseur/reception-bl.js'
+import { TRICOBOT } from './flux-ennoblisseur/saisies.js'
 import { CONTROLES_VERSIONS_LIVREES, DELAIS_VERSIONS_LIVREES } from './flux-ennoblisseur/lecture.js'
 import type { ModeCompetence } from './competences.js'
 import { relaisTriage, triesParTriage } from './triage/relais.js'
@@ -95,13 +96,23 @@ export const BL_ENNOBLISSEUR_VERSION_INITIALE: VersionInitiale = {
  *  unchanged again (the reading was never at fault), the behaviour changed,
  *  so its runs are scored under a new version.
  *  v4 (2026-10-30, from the v3 feedback, bl-diagnostics.ts): prompt unchanged,
- *  two checks against the stock and the BL itself. Never a version number in
- *  the note: the store numbers versions in publication order. */
+ *  two checks against the stock and the BL itself.
+ *  v5 (2026-11-27, from the v4 feedback): prompt unchanged again (0 reading
+ *  error on the 55 BLs v4 wrote). An order number that cannot be used is found
+ *  by the pieces (bl-diagnostics.ts), the dyer's header comment is read
+ *  (bl-profils.ts), and the skill may go autonomous (reception-bl.ts
+ *  `seulPossible`). Replayed on every stored run before shipping
+ *  (scripts/backtest-bl-v5.ts). Never a version number in the note: the store
+ *  numbers versions in publication order. */
 export const BL_ENNOBLISSEUR_PROMPT_LIVRE: VersionInitiale = {
   model: 'mistral-small-latest',
   prompt: BL_PROMPT_V1,
-  note: noteCourteDe('bl-ennoblisseur', 4),
+  note: noteCourteDe('bl-ennoblisseur', 5),
 }
+
+/** The warning of a BL whose dyer wrote a comment about the lot. Pure. */
+export const messageCommentaire = (ennoblisseur: string, commentaire: string) =>
+  `${ennoblisseur} a écrit un commentaire sur ce BL : « ${commentaire} ».`
 
 /** The mailbox n8n polled. Every dyer mails its BLs there (Bontemps asked to
  *  on 2026-09-28 — they used to write to Pierre-Emmanuel only). */
@@ -177,6 +188,10 @@ export interface Contexte {
   profilAttendu?: ProfilCle | null
   /** Benchmark: runs are returned but neither stored nor their files kept (mode must be essai). */
   simulation?: boolean
+  /** The BL skill in autonomie: draws whether this BL is done alone (store.ts
+   *  tirerCompetence). Only a mail of the flux gives one: a retraitement or a
+   *  PDF test never receives alone. */
+  tirerSeul?: () => Promise<boolean>
 }
 
 const LIBELLE_TYPE: Record<TypeDocument, string> = { bl: 'BL', mise_a_dispo: 'Mise à dispo' }
@@ -257,7 +272,12 @@ export async function traiterPdfs(pdfs: Array<{ nom: string; contenu: Buffer }>,
     const e = fusions[g]
     const b = base(mode)
     const controles = controlerExtraction(e, reglesDe(profil))
-    for (const c of profil.controlesTexte?.(pages.map((p) => p.ocr ?? '').join('\n')) ?? []) controles.push({ ...c, gravite: 'bloquant' })
+    const texte = pages.map((p) => p.ocr ?? '').join('\n')
+    for (const c of profil.controlesTexte?.(texte) ?? []) controles.push({ ...c, gravite: 'bloquant' })
+    // What the dyer wrote about the whole lot (v5): said to the person who
+    // receives, and enough for the BL never to be received alone.
+    const commentaire = profil.commentaire?.(texte) ?? null
+    if (commentaire) controles.push({ code: 'commentaire_entete', gravite: 'avertissement', message: messageCommentaire(profil.nom, commentaire) })
     if (ctx.profilAttendu && ctx.profilAttendu !== profil.cle) {
       controles.push({ code: 'expediteur', gravite: 'avertissement', message: `Document ${profil.nom} reçu d’un contact ${profilDe(ctx.profilAttendu)?.nom ?? ctx.profilAttendu}.` })
     }
@@ -266,10 +286,9 @@ export async function traiterPdfs(pdfs: Array<{ nom: string; contenu: Buffer }>,
     let statut: RunStatut
     let erreur: string | undefined
     try {
-      if (!controles.some((c) => c.code === 'commande_format')) {
-        resolution = await resoudreBl(e, profil, type)
-        controles.push(...resolution.controles)
-      }
+      // An unreadable order number is not looked up: the pieces say where the BL belongs (v5).
+      resolution = await resoudreBl(e, profil, type, { commandeIllisible: controles.some((c) => c.code === 'commande_format') })
+      controles.push(...resolution.controles)
       const deja = new Set(resolution?.dejaImportees ?? [])
       if (estBloquant(controles)) statut = 'a_verifier'
       else if (e.pieces.every((p) => deja.has(cleDeLigne(p.numero_piece, poidsEcrit(profil, p.poids), p.metrage)))) {
@@ -285,6 +304,23 @@ export async function traiterPdfs(pdfs: Array<{ nom: string; contenu: Buffer }>,
       else if (mode === 'actif') {
         ecriture = await ecrireBl(e, resolution!, pages.map((p) => p.contenu), jourParisYmd(), profil)
         statut = 'ecrit'
+        // Autonomie (v5, doctrine §2): every written BL takes its turn in the
+        // draw; drawn « alone », it is received by Tricobot only when it raised
+        // not a single check. Anything else, or a réception refused, leaves it
+        // to a person exactly as in supervisé.
+        if (ctx.tirerSeul && !ctx.simulation && await ctx.tirerSeul()) {
+          if (!seulPossible(controles, resolution)) ecriture.seulRefuse = 'Un contrôle a été levé sur ce BL : il attend une personne.'
+          else {
+            try {
+              const rouleaux = await receptionnerProposition(resolution.commandeId!, resolution.ligneId!, propositionDuBl(e, profil, resolution.lot), TRICOBOT)
+              if (rouleaux > 0) ecriture.seul = { le: new Date().toISOString(), rouleaux }
+              else ecriture.seulRefuse = 'Aucun rouleau à réceptionner : ils le sont déjà.'
+            } catch (err) {
+              ecriture.seulRefuse = err instanceof Error ? err.message : String(err)
+              console.error('[bl-ennoblisseur] réception seule refusée, BL laissé à une personne :', ecriture.seulRefuse)
+            }
+          }
+        }
       } else statut = 'simule'
     } catch (err) {
       statut = 'erreur'
@@ -310,7 +346,7 @@ export async function traiterPdfs(pdfs: Array<{ nom: string; contenu: Buffer }>,
       statut,
       erreur,
       resultat: resultat as unknown as Record<string, unknown>,
-      resume: resumer(e, profil, type, statut, ecriture, controles),
+      resume: resumer(e, profil, type, statut, ecriture, controles, resolution?.commandeProbable),
       coutUsd: pages.reduce((s, p) => s + p.coutUsd, 0),
       dureeMs: Date.now() - t0,
     })
@@ -327,13 +363,16 @@ export async function traiterPdfs(pdfs: Array<{ nom: string; contenu: Buffer }>,
   return runs
 }
 
-function resumer(e: BlExtraction, profil: ProfilEnnoblisseur, type: TypeDocument, statut: RunStatut, ecriture: ResultatBl['ecriture'], controles: Controle[]): string {
+function resumer(e: BlExtraction, profil: ProfilEnnoblisseur, type: TypeDocument, statut: RunStatut, ecriture: ResultatBl['ecriture'], controles: Controle[], commandeProbable?: number): string {
   const num = type === 'mise_a_dispo' ? (e.numero_of ? `OF ${e.numero_of}` : '') : e.numero_bordereau
   const bl = `${profil.nom} · ${LIBELLE_TYPE[type]}${num ? ` ${num}` : ' illisible'}`
   const cmd = e.numero_commande ? ` · commande ${e.numero_commande}` : ''
   const n = `${e.pieces.length} pièce${e.pieces.length > 1 ? 's' : ''}`
   switch (statut) {
-    case 'ecrit': return `${bl}${cmd} · ${ecriture?.lignesEcrites ?? 0} pièce(s) enregistrée(s)`
+    case 'ecrit': {
+      const seul = ecriture?.seul ? ` · ${ecriture.seul.rouleaux} rouleau${ecriture.seul.rouleaux > 1 ? 'x' : ''} réceptionné${ecriture.seul.rouleaux > 1 ? 's' : ''} seul` : ''
+      return `${bl}${cmd} · ${ecriture?.lignesEcrites ?? 0} pièce(s) enregistrée(s)${seul}`
+    }
     case 'simule': return `${bl}${cmd} · ${n} prête(s) à enregistrer (mode essai)`
     case 'deja_importe':
       // TAD's BL after the mise à dispo: the shipment, not a duplicate.
@@ -344,7 +383,8 @@ function resumer(e: BlExtraction, profil: ProfilEnnoblisseur, type: TypeDocument
     case 'a_verifier': {
       const bloquants = controles.filter((c) => c.gravite === 'bloquant')
       const c = bloquants.find((x) => x.code === 'plusieurs_commandes') ?? bloquants[0]
-      return `${bl}${cmd} · ${c?.message ?? 'à vérifier'}`
+      // The order its pieces name (v5), said with the reason it was not written.
+      return `${bl}${cmd} · ${c?.message ?? 'à vérifier'}${commandeProbable && c?.code !== 'commande_probable' ? ` Commande probable d’après les pièces : ${commandeProbable}.` : ''}`
     }
     default: return `${bl}${cmd} · ${n}`
   }
@@ -464,6 +504,7 @@ export async function traiterMessage(
   const blRuns = await traiterPdfs(pdfs, {
     mode: bl === 'essai' ? 'essai' : mode, version, source, message, lancePar,
     profilAttendu: sst != null ? profilDuSousTraitant(sst)?.cle ?? null : null,
+    ...(bl === 'autonomie' ? { tirerSeul: () => tirerCompetence(BL_ENNOBLISSEUR_SLUG, BL_ENNOBLISSEUR_VERSION_INITIALE, 'bl', 'supervise') } : {}),
   })
   await etiqueter(m.id, blRuns)
   await prevenir(blRuns)

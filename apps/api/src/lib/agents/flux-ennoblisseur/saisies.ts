@@ -478,6 +478,34 @@ export async function receptionFaite(idligne: number, lot: string, corrections: 
   }
 }
 
+/** A person corrected or removed a roll of a lot (« Corriger la réception », a
+ *  roll deleted): a BL Tricobot received alone on that line for that lot was
+ *  wrong on it. Its point, still « non revu », is corrected, with what changed
+ *  as the why (doctrine §4: an autonomous point corrected later is a fiabilité
+ *  failure). A point waiting in supervisé is not touched: the réception judges
+ *  it (`receptionFaite`). Never fails the write. Returns how many were judged. */
+export async function rouleauCorrige(idligne: number, lot: string, quoi: string, par: Auteur | null): Promise<number> {
+  try {
+    const sql = mpsPg()
+    const seuls = (await sql`
+      SELECT * FROM saisie_agent WHERE idligne_commande_sous_traitant = ${idligne}
+        AND competence = 'bl' AND champ = ${CHAMP_RECEPTION} AND decision = 'saisie' AND statut = 'autonome'`).map(versSaisie)
+    const cible = lotNormalise(lot)
+    const qui = par ?? { id: 0, nom: 'Inconnu' }
+    let n = 0
+    for (const s of seuls) {
+      if (lotNormalise(lireReception(s.proposition)?.lot ?? '') !== cible) continue
+      await marquer(s.id, 'corrigee', qui, quoi.slice(0, 4000), 'Rouleau corrigé après la réception faite seul par Tricobot.', sql)
+      await retourBl(s, false, '', qui, [quoi])
+      n++
+    }
+    return n
+  } catch (e) {
+    console.error('[saisies] roll edit not reflected on Tricobot’s BL point', idligne, lot, e)
+    return 0
+  }
+}
+
 /** An aide settled: the value the person writes (or none), and their answer to
  *  « Tu as bien fait de me demander ? » — the Discernement measure, asked apart
  *  from the value (a right proposal can still be worth asking about). A « non »

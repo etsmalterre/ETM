@@ -251,3 +251,64 @@ export function messageEcartsRecus(es: readonly EcartRecu[]): string {
   const parts = es.map((e) => `${e.numero} (BL ${fr(e.bl)} ${unite(e)}, en stock ${fr(e.stock)} ${unite(e)})`)
   return `Pièce(s) déjà réceptionnée(s) avec d’autres valeurs que ce BL : ${parts.join(', ')}. BL rectifié : « Corriger la réception » de ces pièces ; reprise : ouvrez-la sur le lot (Qualité › Suivi lots, « Reprendre ») avant de réceptionner.`
 }
+
+// ── v5 (2026-11-27, from the v4 feedback) ────────────────
+//
+//   - BL 109884A printed « Commande n° 91788 » (a typo at MATEL for 9172). The
+//     agent stopped at « numéro illisible » and never looked at the pieces,
+//     while its 15 pieces were all affected to the 9172. When the printed
+//     number cannot be used (unreadable, unknown, another dyer's), the pieces
+//     now say where the BL belongs: every piece on ONE order of this dyer =
+//     that order, named and proposed, still left to a person. Anything less
+//     (a piece elsewhere, unaffected or not in stock) is no guess: the agent
+//     only says where the pieces are.
+//   - Bontemps BL 3979 printed « Commande N°4501 », an order of another
+//     subcontractor: the aide was hung on that stranger's order and told to
+//     affect the pieces to it. A number that is not this dyer's is no longer
+//     resolved against: the pieces speak, or nobody's order is touched.
+
+/** Where one printed piece number was found. */
+export interface PlacePiece {
+  numero: string
+  /** In the stock at all (an écru, or a roll already received). */
+  trouve: boolean
+  /** The sst orders of the lines it is affected to / was received on (none = affected to no order). */
+  commandes: number[]
+}
+
+/** The order a BL belongs to, read from its pieces alone: the ONE order every
+ *  printed piece is on, and only when it is an order of this dyer. A piece not
+ *  in stock, affected to no order, or on another order = no answer. Pure. */
+export function commandeDesPieces(places: readonly PlacePiece[], sstDe: ReadonlyMap<number, number>, idSousTraitant: number): number | null {
+  if (places.length === 0) return null
+  if (places.some((p) => !p.trouve || p.commandes.length === 0)) return null
+  const communes = places.slice(1).reduce<number[]>((cs, p) => cs.filter((c) => p.commandes.includes(c)), [...new Set(places[0].commandes)])
+  if (communes.length !== 1) return null
+  return sstDe.get(communes[0]) === idSousTraitant ? communes[0] : null
+}
+
+/** The blocking message of a BL whose order was found by its pieces. */
+export function messageCommandeProbable(nbPieces: number, commande: number, ennoblisseur: string): string {
+  const quoi = nbPieces > 1 ? `Les ${nbPieces} pièces de ce BL sont toutes affectées` : 'La pièce de ce BL est affectée'
+  return `${quoi} à la commande ${commande} (${ennoblisseur}) : c’est probablement la sienne. Vérifiez avant de réceptionner dessus.`
+}
+
+/** The blocking message of a BL whose printed order is a real one of the dyer,
+ *  while every piece is on another (the dyer mixed two numbers up). */
+export function messageMalNumerote(imprimee: number, nbPieces: number, commande: number, ennoblisseur: string): string {
+  const quoi = nbPieces > 1 ? `ses ${nbPieces} pièces sont toutes affectées` : 'sa pièce est affectée'
+  return `BL probablement mal numéroté : commande ${imprimee} imprimée, mais ${quoi} à la commande ${commande} (${ennoblisseur}). Vérifiez avant de réceptionner dessus.`
+}
+
+/** What the pieces say when they name no single order: where each one is. */
+export function messagePiecesSansCommande(places: readonly PlacePiece[]): string {
+  const absentes = places.filter((p) => !p.trouve).map((p) => p.numero)
+  const libres = places.filter((p) => p.trouve && p.commandes.length === 0).map((p) => p.numero)
+  const parCommande = new Map<number, string[]>()
+  for (const p of places) for (const c of p.commandes) parCommande.set(c, [...(parCommande.get(c) ?? []), p.numero])
+  const parts: string[] = []
+  for (const [c, ns] of [...parCommande].sort((a, b) => a[0] - b[0])) parts.push(`${ns.join(', ')} → commande ${c}`)
+  if (libres.length) parts.push(`${libres.join(', ')} : affectée${libres.length > 1 ? 's' : ''} à aucune commande`)
+  if (absentes.length) parts.push(`${absentes.join(', ')} : introuvable${absentes.length > 1 ? 's' : ''} dans le stock`)
+  return `Les pièces ne désignent pas une seule commande : ${parts.join(' ; ')}.`
+}

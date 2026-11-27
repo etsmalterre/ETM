@@ -16,8 +16,13 @@ describe('the short note of a stored version', () => {
   })
   it('keeps a shipped version published: its stored copy is read with the same note', () => {
     const livre = AGENTS.find((a) => a.slug === 'bl-ennoblisseur')!.promptLivre!
-    const stockee = { prompt: livre.prompt, note: noteCourte('bl-ennoblisseur', 4, 'Retours de la v3, prompt inchangé : un métrage sans rapport…') }
+    const stockee = { prompt: livre.prompt, note: noteCourte('bl-ennoblisseur', 5, noteCourteDe('bl-ennoblisseur', 5)) }
     expect(estPublie(livre, [stockee])).toBe(true)
+  })
+  it('offers the BL v5 to a state that stops at v4: same prompt, another note', () => {
+    const livre = AGENTS.find((a) => a.slug === 'bl-ennoblisseur')!.promptLivre!
+    const v4 = { prompt: livre.prompt, note: noteCourte('bl-ennoblisseur', 4, 'Retours de la v3, prompt inchangé : un métrage sans rapport…') }
+    expect(estPublie(livre, [v4])).toBe(false)
   })
 })
 

@@ -95,7 +95,8 @@ import { noterLot } from '../lib/journal-lot.js'
 import { lireJournalCommandeSst, noterCommandeSst } from '../lib/journal-commande-sst.js'
 import { journaliserEnvoiRc } from '../lib/rapport-controle-lot.js'
 import { adressesDuClient, clientEnCopie, nomFichierRc, PHRASE_RC_SOUMISSION, PIECE_RC, rcPourSoumission, renderRapportControle } from '../lib/rc-soumission.js'
-import { compteursParCommande, ligneModifiee } from '../lib/agents/flux-ennoblisseur/saisies.js'
+import { compteursParCommande, ligneModifiee, rouleauCorrige } from '../lib/agents/flux-ennoblisseur/saisies.js'
+import { correctionsRouleau } from '../lib/agents/flux-ennoblisseur/reception-bl.js'
 import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.js'
 import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
 import { contexteMailUrgence, demanderUrgence, GESTES_MAIL, joursReponseUrgence, leverUrgence, noterMailUrgence, noterReponseUrgence, refuserUrgence, refusUrgenceNouvelleLigne, texteMailUrgence, UrgenceRefusee, urgencesLignes, type UrgenceLigne } from '../lib/urgence-sst.js'
@@ -7589,8 +7590,10 @@ commandesSousTraitantRouter.delete(
         IDligne_expedition: number | null
         IDligne_commande_client: number | null
         destockage: number | null
+        numero: string | null
+        lot: string | null
       }>(
-        `SELECT IDref_commande_source, IDligne_expedition, IDligne_commande_client, destockage
+        `SELECT IDref_commande_source, IDligne_expedition, IDligne_commande_client, destockage, numero, lot
          FROM stock_fini
          WHERE IDstock_fini = ${stockFiniId}`,
       )
@@ -7613,6 +7616,11 @@ commandesSousTraitantRouter.delete(
       await query(`DELETE FROM stock_fini WHERE IDstock_fini = ${stockFiniId}`)
       // A grouped roll frees every component piece with it.
       await deleteFiniSources([stockFiniId])
+      // A roll Tricobot received alone and a person removes: his BL point is corrected by it.
+      await rouleauCorrige(
+        ligneId, String(v.lot ?? ''), `${String(v.numero ?? '').trim()} retiré du stock`,
+        req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null,
+      )
       res.json(await fetchPiecesPayload(ctx, ligneId))
     } catch (err) {
       console.error('Error deleting stock_fini reception:', err)
@@ -7682,8 +7690,9 @@ commandesSousTraitantRouter.patch(
       const verify = await query<{
         IDref_commande_source: number | null; lot: string | null
         IDetat_stock_fini: number | null; IDligne_expedition: number | null
+        numero: string | null; poids: number | null; metrage: number | null
       }>(
-        `SELECT IDref_commande_source, lot, IDetat_stock_fini, IDligne_expedition FROM stock_fini WHERE IDstock_fini = ${stockFiniId}`,
+        `SELECT IDref_commande_source, lot, IDetat_stock_fini, IDligne_expedition, numero, poids, metrage FROM stock_fini WHERE IDstock_fini = ${stockFiniId}`,
       )
       if (verify.length === 0) { res.status(404).json({ error: 'Stock fini not found' }); return }
       if (Number(verify[0].IDref_commande_source) !== ligneId) {
@@ -7712,6 +7721,19 @@ commandesSousTraitantRouter.patch(
       if (d.IDetat_stock_fini !== undefined) setParts.push(`IDetat_stock_fini = ${d.IDetat_stock_fini}`)
       if (setParts.length > 0) {
         await query(`UPDATE stock_fini SET ${setParts.join(', ')} WHERE IDstock_fini = ${stockFiniId}`)
+      }
+
+      // « Corriger la réception » on a roll Tricobot received alone (BL in
+      // autonomie): his point on that lot is corrected by it. A roll back from
+      // reprise (état 2) is another gesture: its new figures are no error of his.
+      if (etatAvant !== 2) {
+        const corrections = correctionsRouleau(
+          { numero: verify[0].numero, lot: verify[0].lot, poids: verify[0].poids, metrage: verify[0].metrage }, d,
+        )
+        if (corrections.length) {
+          const par = req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null
+          await rouleauCorrige(ligneId, String(verify[0].lot ?? ''), corrections.join(' ; '), par)
+        }
       }
 
       // Lot migration: suivilot rows are keyed on (ligne, lot), so when the

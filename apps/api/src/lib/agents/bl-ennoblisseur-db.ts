@@ -21,8 +21,9 @@ import { nomGed, PROFILS, type ProfilEnnoblisseur, type TypeDocument } from './b
 import { mpsPg } from '../mps-pg.js'
 import { consumedEcruIds } from '../fini-sources.js'
 import {
-  candidatProbable, commandesImprimees, controlesAilleurs, ecartsRecus, listeCommandes, messageEcartsRecus, messageIntrouvables,
-  messagePlusieursCommandes, type ArticleLigne, type EcartRecu, type Valeurs,
+  candidatProbable, commandeDesPieces, commandesImprimees, controlesAilleurs, ecartsRecus, listeCommandes, messageCommandeProbable,
+  messageEcartsRecus, messageIntrouvables, messageMalNumerote, messagePiecesSansCommande, messagePlusieursCommandes,
+  type ArticleLigne, type EcartRecu, type PlacePiece, type Valeurs,
 } from './bl-diagnostics.js'
 
 /** ged.IDtype_doc — « BL retour ennoblisseur » (whitelist in routes/commandes-sous-traitant.ts). */
@@ -59,6 +60,9 @@ export interface Resolution {
   /** Rolls already received, no reprise open, that the stock holds with other
    *  figures than this BL's (v4). Absent before 2026-10-30. */
   ecartsRecus?: EcartRecu[]
+  /** The printed order number could not be used and every piece is on this
+   *  order of the dyer (v5): the BL is resolved on it, and stays blocked. */
+  commandeProbable?: number
 }
 
 /** Identity of a data_bl_tricotbot row: same piece, same poids, same métrage
@@ -80,8 +84,63 @@ const chunks = <T,>(xs: readonly T[], n: number): T[][] => {
  *  on a 0). Every dedupe key is built on it. */
 export const poidsEcrit = (profil: ProfilEnnoblisseur, poids: number | null) => (profil.ecritPoids ? poids ?? 0 : 0)
 
-/** Find the order, pick its line, check every piece. Read-only. */
-export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, type: TypeDocument = 'bl'): Promise<Resolution> {
+/** Where each printed piece of a BL is: the sst orders of the lines its écru is
+ *  affected to, or its roll was received on (a reprise BL). Read-only. */
+async function placesDesPieces(e: BlExtraction): Promise<{ places: PlacePiece[]; sstDe: Map<number, number> }> {
+  const tous = [...new Set(e.pieces.flatMap((p) => p.composants).map((n) => n.trim()).filter(Boolean))]
+  const trouves = new Set<string>()
+  const lignesDe = new Map<string, Set<number>>()
+  const noter = (numero: unknown, ligne: unknown) => {
+    const n = String(numero ?? '').trim()
+    trouves.add(n)
+    const l = Number(ligne) || 0
+    if (l > 0) lignesDe.set(n, (lignesDe.get(n) ?? new Set<number>()).add(l))
+  }
+  for (const part of chunks(tous.filter((n) => /^[\d/+-]+$/.test(n)), 50)) {
+    const inList = part.map((n) => `'${esc(n)}'`).join(',')
+    for (const r of await query<{ numero: string; IDref_commande_affectation: number }>(
+      `SELECT numero, IDref_commande_affectation FROM stock_ecru WHERE numero IN (${inList})`,
+    )) noter(r.numero, r.IDref_commande_affectation)
+    for (const r of await query<{ numero: string; IDref_commande_source: number }>(
+      `SELECT numero, IDref_commande_source FROM stock_fini WHERE numero IN (${inList})`,
+    )) noter(r.numero, r.IDref_commande_source)
+  }
+  const commandeDe = new Map<number, number>()
+  for (const part of chunks([...new Set([...lignesDe.values()].flatMap((s) => [...s]))], 50)) {
+    for (const r of await query<{ IDligne_commande_sous_traitant: number; IDcommande_sous_traitant: number }>(
+      `SELECT IDligne_commande_sous_traitant, IDcommande_sous_traitant FROM ligne_commande_sous_traitant WHERE IDligne_commande_sous_traitant IN (${part.join(',')})`,
+    )) commandeDe.set(Number(r.IDligne_commande_sous_traitant), Number(r.IDcommande_sous_traitant) || 0)
+  }
+  const sstDe = new Map<number, number>()
+  for (const part of chunks([...new Set([...commandeDe.values()].filter((c) => c > 0))], 50)) {
+    for (const r of await query<{ IDcommande_sous_traitant: number; IDsous_traitant: number }>(
+      `SELECT IDcommande_sous_traitant, IDsous_traitant FROM commande_sous_traitant WHERE IDcommande_sous_traitant IN (${part.join(',')})`,
+    )) sstDe.set(Number(r.IDcommande_sous_traitant), Number(r.IDsous_traitant) || 0)
+  }
+  const places = tous.map((numero) => ({
+    numero,
+    trouve: trouves.has(numero),
+    // A line that is no sst order line any more names no order.
+    commandes: [...new Set([...(lignesDe.get(numero) ?? [])].map((l) => commandeDe.get(l) ?? 0).filter((c) => sstDe.has(c)))],
+  }))
+  return { places, sstDe }
+}
+
+export interface OptionsResolution {
+  /** The format check refused the printed order number (bl-extraction.ts
+   *  `commande_format`): it is not looked up, only the pieces can name the order. */
+  commandeIllisible?: boolean
+}
+
+/** Find the order, pick its line, check every piece. Read-only.
+ *  When the printed order number cannot be used (unreadable, unknown, another
+ *  dyer's), the pieces say where the BL belongs (v5, `commandeDesPieces`): it
+ *  is then resolved on that order, and stays blocked for a person. */
+export function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, type: TypeDocument = 'bl', opts: OptionsResolution = {}): Promise<Resolution> {
+  return resoudre(e, profil, type, opts.commandeIllisible ?? false, true)
+}
+
+async function resoudre(e: BlExtraction, profil: ProfilEnnoblisseur, type: TypeDocument, illisible: boolean, parLesPieces: boolean): Promise<Resolution> {
   const controles: Controle[] = []
   const bloque = (code: string, message: string) => controles.push({ code, gravite: 'bloquant', message })
   const lot = profil.lot(e)
@@ -89,8 +148,24 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
     commandeId: null, sousTraitantId: null, lignes: [], ligneId: null, lot, nomGed: lot ? nomGed(lot, type, e.numero_bordereau) : '',
     pieces: [], dejaImportees: [], gedExistant: null, controles, reprise: null,
   }
-  const cmds = commandesImprimees(e.numero_commande)
-  if (!cmds) return res
+  /** No order to resolve on: the pieces name it, or say where they are. Never
+   *  twice (the order they name is an existing order of this dyer). */
+  const sansCommande = async (): Promise<Resolution> => {
+    if (!parLesPieces) return res
+    const { places, sstDe } = await placesDesPieces(e)
+    const probable = commandeDesPieces(places, sstDe, profil.idSousTraitant)
+    if (probable == null) {
+      if (places.length) bloque('commande_par_pieces', messagePiecesSansCommande(places))
+      return res
+    }
+    const r = await resoudre({ ...e, numero_commande: String(probable) }, profil, type, false, false)
+    r.controles.unshift(...controles)
+    r.controles.push({ code: 'commande_probable', gravite: 'bloquant', message: messageCommandeProbable(e.pieces.length, probable, profil.nom) })
+    r.commandeProbable = probable
+    return r
+  }
+  const cmds = illisible ? null : commandesImprimees(e.numero_commande)
+  if (!cmds) return sansCommande()
   const cmd = cmds[0]
   const plusieurs = cmds.length > 1
 
@@ -101,14 +176,17 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
   const inconnuesCmd = cmds.filter((n) => !sstDe.has(n))
   if (inconnuesCmd.length) {
     bloque('commande_inconnue', `La commande sous-traitant n° ${listeCommandes(inconnuesCmd)} n’existe pas.`)
-    return res
+    return sansCommande()
   }
-  res.commandeId = cmd
-  res.sousTraitantId = sstDe.get(cmd) ?? 0
+  // Another subcontractor's order is never resolved against (v5: Bontemps BL
+  // 3979 printed « 4501 », and its aide hung on that stranger's order).
   const autreSst = cmds.filter((n) => sstDe.get(n) !== profil.idSousTraitant)
   if (autreSst.length) {
     bloque('commande_autre_sst', `La commande n° ${listeCommandes(autreSst)} n’est pas une commande ${profil.nom}.`)
+    return sansCommande()
   }
+  res.commandeId = cmd
+  res.sousTraitantId = sstDe.get(cmd) ?? 0
 
   type LigneArticle = { IDligne_commande_sous_traitant: number; IDcommande_sous_traitant: number; IDreference: number; IDColoris: number }
   const article = (l: LigneArticle): ArticleLigne => ({
@@ -178,6 +256,24 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
     res.pieces.push({ numero_piece: p.numero_piece, statut, composants })
   }
 
+  // The pieces and the printed number disagree (v5, Vincent 2026-11-27: the
+  // pieces say where a BL goes, the printed number cross-checks them). Every
+  // piece on ONE other order of this dyer = the BL was misnumbered (109401A
+  // printed 9045, its 12 pieces on the 9040): resolved on the pieces' order
+  // and left to a person, like an unusable number. Pieces spread, unaffected
+  // or not in stock name no order: the checks below say where each one is.
+  if (parLesPieces && !plusieurs && res.pieces.some((p) => p.statut === 'affectee_ailleurs')) {
+    const lieux = await placesDesPieces(e)
+    const autre = commandeDesPieces(lieux.places, lieux.sstDe, profil.idSousTraitant)
+    if (autre != null && autre !== cmd) {
+      const r = await resoudre({ ...e, numero_commande: String(autre) }, profil, type, false, false)
+      r.controles.unshift(...controles)
+      r.controles.push({ code: 'commande_probable', gravite: 'bloquant', message: messageMalNumerote(cmd, e.pieces.length, autre, profil.nom) })
+      r.commandeProbable = autre
+      return r
+    }
+  }
+
   // Pieces not found at all: the order's écrus still awaited a typo away
   // (BL 109400A: 3570/50 printed, 3572/50 on the order) are named, never used.
   const inconnues = e.pieces.filter((_, i) => res.pieces[i].statut === 'inconnue')
@@ -196,7 +292,9 @@ export async function resoudreBl(e: BlExtraction, profil: ProfilEnnoblisseur, ty
     ))
   }
 
-  // Pieces off these lines: name the other order (and spot a misnumbered BL).
+  // Pieces off these lines: name the other order. (A BL whose pieces are ALL on
+  // one other order of the dyer was resolved on it above; what reaches here is
+  // a part of the pieces, another dyer's order, or pieces affected to none.)
   const horsLignes = res.pieces.filter((p) => p.statut === 'affectee_ailleurs' || p.statut === 'non_affectee')
   if (horsLignes.length) {
     const lignesAutres = [...new Set([...ailleurs.values()].filter((l) => l > 0))]
@@ -354,6 +452,11 @@ export interface Ecriture {
   ids?: number[]
   /** Set once an « échec » removed the rows. */
   retire?: { le: string; lignes: number } | null
+  /** Autonomie (v5): the BL was drawn « alone », raised no check at all, and
+   *  Tricobot received its rolls himself. Absent = it waits for a person. */
+  seul?: { le: string; rouleaux: number } | null
+  /** Drawn « alone » and handed back to a person all the same: why. */
+  seulRefuse?: string
 }
 
 /** File the document's PDF on the order (type « BL retour ennoblisseur »), one

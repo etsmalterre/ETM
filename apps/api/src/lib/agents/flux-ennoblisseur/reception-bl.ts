@@ -24,7 +24,7 @@ import { esc } from '../../sst-shared.js'
 import { consumedEcruIds, mergedNumero } from '../../fini-sources.js'
 import type { AgentRun } from '../store.js'
 import { composantsDe, type BlExtraction, type Controle } from '../bl-extraction.js'
-import { profilDe } from '../bl-profils.js'
+import { profilDe, type ProfilEnnoblisseur } from '../bl-profils.js'
 import type { Resolution } from '../bl-ennoblisseur-db.js'
 import { enregistrerSaisie, GesteRefuse, type Auteur, type NouvelleSaisie } from './saisies.js'
 
@@ -87,6 +87,7 @@ interface ResultatLu {
   extraction?: BlExtraction | null
   resolution?: Partial<Resolution> | null
   controles?: Controle[] | null
+  ecriture?: { seul?: { le: string; rouleaux: number } | null } | null
 }
 
 /** The pieces of a BL as the réception receives them: a piece printed twice
@@ -108,8 +109,42 @@ export function piecesProposees(e: BlExtraction, ecritPoids: boolean): PieceProp
   return [...parNumero.values()]
 }
 
+/** What Tricobot proposes to receive for a BL: its rolls as read, under its lot. Pure. */
+export function propositionDuBl(e: BlExtraction, profil: Pick<ProfilEnnoblisseur, 'nom' | 'ecritPoids'> | null | undefined, lot: string): PropositionReception {
+  return { bordereau: e.numero_bordereau, lot, ennoblisseur: profil?.nom ?? null, pieces: piecesProposees(e, profil?.ecritPoids ?? false) }
+}
+
+/** May a BL drawn « alone » be received without a person (doctrine §2: a doubt
+ *  always wins over the draw)? Only a BL that raised not a single check, not
+ *  even a warning, resolved on a line and a lot, and that is no reprise (rolls
+ *  coming back are re-received by their own gesture). Pure. */
+export function seulPossible(controles: readonly Controle[], resolution: Partial<Resolution> | null | undefined): boolean {
+  return controles.length === 0 && !!resolution && !resolution.reprise
+    && (resolution.commandeId ?? 0) > 0 && (resolution.ligneId ?? 0) > 0 && !!resolution.lot?.trim()
+}
+
+/** What a person changed on a received roll (« Corriger la réception »), one
+ *  line each in the réception's own words (« 3505/14 poids 21,4 → 24,1 kg »).
+ *  A field left out or given its current value is no change. Pure. */
+export function correctionsRouleau(
+  avant: { numero: string | null; lot: string | null; poids: number | null; metrage: number | null },
+  apres: { numero?: string; lot?: string; poids?: number; metrage?: number },
+): string[] {
+  const piece = String(avant.numero ?? '').trim() || '?'
+  const fr = (v: number | null | undefined) => String(Math.round((Number(v) || 0) * 100) / 100).replace('.', ',')
+  const autre = (a: number | null, b: number | undefined) => b !== undefined && Math.abs((Number(a) || 0) - b) > 0.005
+  const out: string[] = []
+  if (apres.numero !== undefined && apres.numero.trim() !== piece) out.push(`${piece} numéro ${piece} → ${apres.numero.trim() || '(vide)'}`)
+  if (apres.lot !== undefined && lotNormalise(apres.lot) !== lotNormalise(String(avant.lot ?? ''))) out.push(`${piece} lot ${String(avant.lot ?? '').trim() || '(vide)'} → ${apres.lot.trim() || '(vide)'}`)
+  if (autre(avant.poids, apres.poids)) out.push(`${piece} poids ${fr(avant.poids)} → ${fr(apres.poids)} kg`)
+  if (autre(avant.metrage, apres.metrage)) out.push(`${piece} métrage ${fr(avant.metrage)} → ${fr(apres.metrage)} Ml`)
+  return out
+}
+
 /** The point a BL run leaves, or null (essai, a PDF test, an error, a BL
- *  already imported, a mail that is no BL). Pure. */
+ *  already imported, a mail that is no BL). A BL Tricobot received alone
+ *  (`ecriture.seul`, autonomie) leaves an autonomous point: written, nobody has
+ *  to look, still correctable. Pure. */
 export function pointDuRunBl(run: AgentRun): NouvelleSaisie | null {
   if (run.mode !== 'actif' || run.source === 'essai_manuel') return null
   if ((run.competence ?? 'bl') !== 'bl') return null
@@ -119,14 +154,10 @@ export function pointDuRunBl(run: AgentRun): NouvelleSaisie | null {
   if (!e) return null
   const profil = profilDe(res.profil)
   const lot = res.resolution?.lot ?? ''
-  const proposition: PropositionReception = {
-    bordereau: e.numero_bordereau,
-    lot,
-    ennoblisseur: profil?.nom ?? null,
-    pieces: piecesProposees(e, profil?.ecritPoids ?? false),
-  }
+  const proposition = propositionDuBl(e, profil, lot)
   const n = proposition.pieces.length
   const decision = run.statut === 'ecrit' ? 'saisie' : 'aide'
+  const seul = decision === 'saisie' && !!res.ecriture?.seul
   const bloquants = (res.controles ?? []).filter((c) => c.gravite === 'bloquant' && c.message.trim()).map((c) => c.message.trim())
   return {
     agent: run.slug,
@@ -135,7 +166,7 @@ export function pointDuRunBl(run: AgentRun): NouvelleSaisie | null {
     runId: run.id,
     messageId: run.message?.id ?? null,
     threadId: run.message?.threadId ?? null,
-    mode: 'supervise',
+    mode: seul ? 'autonome' : 'supervise',
     decision,
     idsousTraitant: res.resolution?.sousTraitantId ?? profil?.idSousTraitant ?? 0,
     idcommande: res.resolution?.commandeId ?? 0,
@@ -144,9 +175,9 @@ export function pointDuRunBl(run: AgentRun): NouvelleSaisie | null {
     valeurAvant: null,
     etatAvant: null,
     proposition: n > 0 || decision === 'saisie' ? texteReception(proposition) : null,
-    ecrit: false,
+    ecrit: seul,
     explication: decision === 'saisie'
-      ? `Chaque pièce du BL est un tombé de métier affecté à cette ligne, et les totaux imprimés tombent juste : ${n} rouleau${n > 1 ? 'x' : ''} à réceptionner sous le lot ${lot}.`
+      ? `Chaque pièce du BL est un tombé de métier affecté à cette ligne, et les totaux imprimés tombent juste : ${n} rouleau${n > 1 ? 'x' : ''} ${seul ? 'réceptionné' + (n > 1 ? 's' : '') : 'à réceptionner'} sous le lot ${lot}.`
       : (bloquants.length ? bloquants.join('\n') : 'BL laissé à vérifier.'),
     citation: '',
   }

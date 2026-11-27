@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   aUnCaractereDe,
   candidatProbable,
+  commandeDesPieces,
   commandesImprimees,
+  messageCommandeProbable,
+  messageMalNumerote,
+  messagePiecesSansCommande,
+  type PlacePiece,
   controlesAilleurs,
   ecartsRecus,
   listeCommandes,
@@ -154,5 +159,55 @@ describe('ecartsRecus', () => {
     const s = stock([['3589/5', 21, 46.8]])
     expect(ecartsRecus(p, s, new Map(), false)).toEqual([])
     expect(ecartsRecus(p, s, new Map(), true)).toEqual([{ numero: '3589/5', champ: 'poids', bl: 19.4, stock: 21 }])
+  })
+})
+
+// v5 (2026-11-27): the order read from the pieces when the printed number cannot be used.
+describe('commandeDesPieces', () => {
+  const MATEL = 9
+  const BONTEMPS = 38
+  const sst = new Map([[9172, MATEL], [9170, MATEL], [9154, BONTEMPS], [4501, 12]])
+  const sur = (numero: string, ...commandes: number[]): PlacePiece => ({ numero, trouve: true, commandes })
+
+  it('BL 109884A (« Commande n° 91788 »): its pieces are all on the 9172, a MATEL order', () => {
+    const places = ['3608/28', '3607/74', '3608/85', '3618/1', '3618/2'].map((n) => sur(n, 9172))
+    expect(commandeDesPieces(places, sst, MATEL)).toBe(9172)
+    expect(messageCommandeProbable(15, 9172, 'MATEL')).toBe(
+      'Les 15 pièces de ce BL sont toutes affectées à la commande 9172 (MATEL) : c’est probablement la sienne. Vérifiez avant de réceptionner dessus.',
+    )
+    expect(messageCommandeProbable(1, 9172, 'MATEL')).toContain('La pièce de ce BL est affectée à la commande 9172')
+  })
+  it('never guesses: one piece on another order, affected to none, or not in stock', () => {
+    expect(commandeDesPieces([sur('3618/1', 9172), sur('3618/2', 9170)], sst, MATEL)).toBeNull()
+    expect(commandeDesPieces([sur('3618/1', 9172), sur('3618/2')], sst, MATEL)).toBeNull()
+    expect(commandeDesPieces([sur('3618/1', 9172), { numero: '3618/2', trouve: false, commandes: [] }], sst, MATEL)).toBeNull()
+    expect(commandeDesPieces([], sst, MATEL)).toBeNull()
+  })
+  it('never names another subcontractor’s order (Bontemps BL 3979 printed « 4501 »)', () => {
+    expect(commandeDesPieces([sur('3614/1', 4501), sur('3614/2', 4501)], sst, BONTEMPS)).toBeNull()
+    expect(commandeDesPieces([sur('3614/1', 9154), sur('3614/2', 9154), sur('3614/3', 9154)], sst, BONTEMPS)).toBe(9154)
+    expect(commandeDesPieces([sur('3614/1', 9154)], sst, MATEL)).toBeNull()
+  })
+  it('a piece known on two orders (an écru and its roll) is settled by the others, or not at all', () => {
+    expect(commandeDesPieces([sur('3592/1', 9170, 9172), sur('3592/2', 9172)], sst, MATEL)).toBe(9172)
+    expect(commandeDesPieces([sur('3592/1', 9170, 9172)], sst, MATEL)).toBeNull()
+  })
+  it('BL 109401A (« Commande n° 9045 », a real MATEL order): its pieces name the 9040, the printed number is the error', () => {
+    const tout = new Map([[9040, MATEL], [9045, MATEL]])
+    const places = ['3568/10', '3568/11', '3568/12'].map((n) => sur(n, 9040))
+    expect(commandeDesPieces(places, tout, MATEL)).toBe(9040)
+    expect(messageMalNumerote(9045, 12, 9040, 'MATEL')).toBe(
+      'BL probablement mal numéroté : commande 9045 imprimée, mais ses 12 pièces sont toutes affectées à la commande 9040 (MATEL). Vérifiez avant de réceptionner dessus.',
+    )
+    // One piece really on the printed order: the pieces no longer name one order, nothing is switched.
+    expect(commandeDesPieces([...places, sur('3568/22', 9045)], tout, MATEL)).toBeNull()
+  })
+  it('says where the pieces are when they name no single order', () => {
+    expect(messagePiecesSansCommande([sur('3614/1'), sur('3614/2'), sur('3614/3')])).toBe(
+      'Les pièces ne désignent pas une seule commande : 3614/1, 3614/2, 3614/3 : affectées à aucune commande.',
+    )
+    expect(messagePiecesSansCommande([sur('3574/1', 9061), sur('3574/3', 9120), { numero: '3574/9', trouve: false, commandes: [] }])).toBe(
+      'Les pièces ne désignent pas une seule commande : 3574/1 → commande 9061 ; 3574/3 → commande 9120 ; 3574/9 : introuvable dans le stock.',
+    )
   })
 })

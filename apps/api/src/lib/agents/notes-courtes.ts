@@ -39,6 +39,10 @@ const NOTES_COURTES: readonly NoteCourte[] = [
     note: 'Un métrage incohérent avec le poids bloque le BL. Un BL reçu sur des pièces déjà réceptionnées est comparé au stock. Prompt inchangé.',
   },
   {
+    slug: 'bl-ennoblisseur', version: 5, debut: 'Un numéro de commande inutilisable',
+    note: 'Un numéro de commande inutilisable : la commande est retrouvée par les pièces et proposée. Le commentaire de l’ennoblisseur est signalé. Un BL sans aucun doute peut être réceptionné seul (mode autonome). Prompt inchangé.',
+  },
+  {
     slug: 'superviseur', version: 3, debut: 'Version 3 — un mail archivé',
     note: 'Un mail archivé compte comme traité. Une commande reçue par mail est comparée ligne à ligne. Un client qui « reviendra vers nous » n’attend rien.',
   },

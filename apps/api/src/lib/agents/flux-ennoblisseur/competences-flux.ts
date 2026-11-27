@@ -133,9 +133,11 @@ export const COMPETENCES_FLUX: readonly CompetenceDef[] = [
   {
     cle: 'bl',
     nom: 'BL',
-    description: 'Lit les bordereaux de livraison et propose la réception des rouleaux. En supervisé, chaque BL attend sa validation dans Sous-traitants › Ennoblissement : valider, c’est réceptionner.',
-    // Supervisé for now: autonomy (Tricobot receiving a BL alone) comes step by step (Vincent, 2026-11-11).
-    modes: ['off', 'essai', 'supervise'],
+    description: 'Lit les bordereaux de livraison et propose la réception des rouleaux. En supervisé, chaque BL attend sa validation dans Sous-traitants › Ennoblissement : valider, c’est réceptionner. En autonome, un BL tiré au sort et sans aucun contrôle levé est réceptionné seul.',
+    // Autonomy since v5 (2026-11-27), step by step (Vincent, 2026-11-11): a BL
+    // drawn « alone » is received by Tricobot only when it raised not a single
+    // check (reception-bl.ts `seulPossible`).
+    modes: ['off', 'essai', 'supervise', 'autonomie'],
     defaut: 'supervise',
     // Since 2026-11-11 a BL leaves a point in saisie_agent (reception-bl.ts);
     // the runs before it are still read from the history.

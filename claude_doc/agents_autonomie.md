@@ -121,11 +121,10 @@ comparaison avec la réception passe dans le même passage horaire. Code :
   les mêmes créneaux, donc les mêmes types de mails.
 - **Un doute garde la priorité** : une exécution tirée « seule » où l'agent
   doute passe quand même la main.
-- Une compétence déclare les modes qu'elle offre. Le BL offre aujourd'hui
-  `supervise` au plus, **sans que ce soit un plafond** (Vincent, 2026-11-11) :
-  il recevra de l'autonomie très progressivement, et réceptionnera alors seul
-  les BL dont il est sûr (le Journal dira « réception de N pièces par Tricobot
-  le … »). La réception passe déjà par le serveur pour cela (§7).
+- Une compétence déclare les modes qu'elle offre. Le BL offre l'autonomie
+  depuis sa v5 (2026-11-27), **très progressivement** (Vincent, 2026-11-11) :
+  il réceptionne alors seul les BL dont il est sûr, et le Journal du lot dit
+  « réception … par Tricobot ». Ce que « sûr » veut dire pour un BL : §7.
 - On ne vise pas 100 % d'autonomie. Rien dans le code ne l'interdit, mais on en
   reparlera.
 - Monter d'un cran est la décision d'une personne. L'écran affiche le critère
@@ -319,6 +318,65 @@ runs, libellés Gmail, notification `notif_agent_bl`) ; seul le nom change.
   - Jeux d'essai en dev : `scripts/seed-bl-tricobot-dev.ts` (un BL à valider,
     un BL à trancher), `scripts/seed-delais-tricobot-dev.ts` (deux délais à
     valider, un à trancher).
+  - **La v5 (2026-11-27, retours de la v4, prompt inchangé)** : sur les 55 BL
+    écrits par la v4, aucune erreur de lecture. Trois choses changent, toutes
+    dans le code.
+    - **La commande par les pièces.** Quand le numéro de commande imprimé est
+      inutilisable (illisible, inconnu, ou celui d'un autre sous-traitant), les
+      pièces disent où va le BL (`commandeDesPieces`, `bl-diagnostics.ts`) :
+      si TOUTES ses pièces sont sur UNE seule commande de cet ennoblisseur,
+      c'est elle. Le BL est résolu dessus (ligne, lot, pièces), reste **bloqué**
+      (« commande probable ») et sa demande s'accroche à cette commande, sa
+      proposition prête : « Appliquer ma proposition » réceptionne. Une pièce
+      ailleurs, affectée à aucune commande ou absente du stock = pas de
+      réponse : il dit seulement où sont les pièces, sans deviner. Une commande
+      d'un autre sous-traitant n'est plus jamais prise comme base (le BL
+      Bontemps 3979 « commande 4501 » s'accrochait à la commande d'un tiers).
+      **Les pièces disent où va le BL, le numéro imprimé les recoupe** (Vincent,
+      2026-11-27) : la même règle vaut quand le numéro imprimé est une vraie
+      commande de l'ennoblisseur mais que toutes les pièces sont sur une autre
+      (le 109401A imprimait 9045, ses 12 pièces étaient sur la 9040). Le BL est
+      alors « probablement mal numéroté », résolu sur la commande des pièces et
+      sa demande s'y accroche, proposition prête. Avant la v5 il le disait mais
+      restait accroché à la commande imprimée, et ne le disait que pour une même
+      référence et un même coloris ; seules les pièces comptent désormais, une
+      personne valide de toute façon. Quand ils concordent, rien ne change.
+      Mesuré le numéro caché sur 113 BL écrits et validés : 110 fois la bonne
+      commande, 2 fois pas de réponse, 1 fois une autre (une pièce réaffectée
+      depuis à une surteinture, l'écart vient de la base d'aujourd'hui).
+    - **Le commentaire de l'ennoblisseur.** MATEL imprime sur un BL sur cinq un
+      « Commentaire » d'en-tête qui parle du lot entier (« MAL UNI », « Traces
+      d'aiguilles », « Unisson limite, vu Gilles »), jamais lu jusque-là. Il est
+      lu par le code sur le texte OCR (`commentaireMatel`, `bl-profils.ts`),
+      **sans liste de mots inquiétants** : tout vrai texte compte. C'est un
+      avertissement : la bulle le dit (« À savoir »), la décision ne change pas.
+    - **L'autonomie.** En mode autonome, chaque BL écrit prend son tour dans le
+      tirage (§2). Tiré « seul », il n'est réceptionné par Tricobot que s'il
+      n'a levé **aucun contrôle, pas même un avertissement** (donc aucun
+      commentaire), sur une commande, une ligne et un lot connus, et que ce
+      n'est pas une reprise (`seulPossible`, `reception-bl.ts`). Sinon, ou si
+      la réception est refusée, il attend une personne comme en supervisé. Un
+      retraitement ou un PDF de test ne réceptionne jamais seul. Le point est
+      « autonome » : rien à faire, non revu tant que personne n'y touche. Un
+      rouleau de ce lot corrigé (« Corriger la réception ») ou retiré du stock
+      le juge : corrigé, avec ce qui a changé (`rouleauCorrige`), et l'écran
+      propose de redescendre (§5). Un rouleau qui revient de reprise n'est pas
+      une correction.
+    - Rejoué avant livraison sur toutes les exécutions gardées
+      (`scripts/backtest-bl-v5.ts` : l'ancien et le nouveau code sur la même
+      base, rien n'est écrit). Sur 166 BL : aucune décision ne change, 132
+      identiques, 27 avec le commentaire en plus, 7 différents : les 4
+      exécutions au numéro inutilisable, le 109401A mal numéroté, et deux BL
+      (109256A, 109612A) dont les pièces ont été réaffectées depuis à une
+      surteinture sur une autre commande (le rejeu lit la base d'aujourd'hui :
+      le jour du BL, pièces et numéro concordaient). Un vieux BL relu après une
+      telle réaffectation serait dit « probablement mal numéroté » à tort ; il
+      reste bloqué. Avec les règles de la v5, 105 des 147 BL écrits
+      auraient pu être réceptionnés seuls ; les 83 qu'une personne a jugés
+      étaient tous justes, et les 3 BL écrits puis corrigés n'en font pas
+      partie (commentaire, métrage suspect, poids incohérent).
+      `scripts/essai-bl-v5-dev.ts` rejoue de vrais BL en dev par tout le
+      pipeline.
 - **Délais** : les réponses des teinturiers au « Point du JJ/MM ». Depuis la
   v2 (2026-11-05), le modèle lit la réponse entière avec son prompt
   (`flux-ennoblisseur/lecture.ts`) et la liste des commandes que le Point

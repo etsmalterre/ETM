@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   cleDocument,
+  commentaireMatel,
   correspond,
   detecterProfil,
   estPieceCandidate,
@@ -184,5 +185,27 @@ describe('the prompt a dyer is read with', () => {
   it('lists MATEL first in the Prompt tab, the one prompt that is the version\'s own', () => {
     expect(PROMPTS_PAR_ENNOBLISSEUR.map((x) => x.cle)).toEqual(['matel', 'tad', 'bontemps'])
     expect(PROMPTS_PAR_ENNOBLISSEUR.filter((x) => x.defaut === null).map((x) => x.cle)).toEqual(['matel'])
+  })
+})
+
+// v5: MATEL's header « Commentaire », as the Mistral OCR gives it (prod runs, 2026-09 to 2026-11).
+describe('the dyer’s comment on a MATEL BL', () => {
+  const entete = (commentaire: string) => `Commande n° 8982\n\nQualité 015a\n\nColoris laurel wreath 2506 63840/1\n\n${commentaire}\n\nRoanne le 28/09/2026\n\nLigne 1\n\n\n|  Tricoteur Bordereau | Numéro de pièce | Poids | Métrage | Observations |`
+  it('reads what MATEL wrote about the lot, whatever it says (no list of words)', () => {
+    expect(commentaireMatel(entete('Commentaire MAL UNI'))).toBe('MAL UNI')
+    expect(commentaireMatel(entete('Commentaire Traces d\'aiguilles'))).toBe('Traces d\'aiguilles')
+    expect(commentaireMatel(entete('Commentaire 2e choix, pas un seul m OK (trous+fausses coutures)'))).toBe('2e choix, pas un seul m OK (trous+fausses coutures)')
+    expect(commentaireMatel(entete('Commentaire  Unisson limite,   vu Gilles '))).toBe('Unisson limite, vu Gilles')
+  })
+  it('is none on an empty field (four BLs in five), or on a stray sign of the OCR', () => {
+    expect(commentaireMatel(entete('Commentaire'))).toBeNull()
+    expect(commentaireMatel('Ligne 1\n\nCommentaire\n\n\n|  Tricoteur Bordereau | Numéro de pièce |')).toBeNull()
+    for (const bruit of ['?', ',', '1']) expect(commentaireMatel(entete(`Commentaire ${bruit}`))).toBeNull()
+    expect(commentaireMatel(OCR_MATEL)).toBeNull()
+  })
+  it('is MATEL’s only: the other dyers’ documents have no such field', () => {
+    expect(profilDe('matel')!.commentaire).toBe(commentaireMatel)
+    expect(profilDe('tad')!.commentaire).toBeUndefined()
+    expect(profilDe('bontemps')!.commentaire).toBeUndefined()
   })
 })
