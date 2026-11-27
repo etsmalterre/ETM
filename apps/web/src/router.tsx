@@ -46,7 +46,6 @@ import { SousTraitantsCommandes } from '@/pages/SousTraitantsCommandes'
 import { SstCommandesRedirect } from '@/pages/sous-traitants/SstCommandesRedirect'
 import { SousTraitantsGestion } from '@/pages/SousTraitantsGestion'
 import { SousTraitantsFactures } from '@/pages/SousTraitantsFactures'
-import { SousTraitantsPoint } from '@/pages/SousTraitantsPoint'
 
 // Transferts pages (real)
 import { TransfertsRouleaux } from '@/pages/TransfertsRouleaux'
@@ -119,7 +118,8 @@ export const router = createBrowserRouter([
       // The old address (mails, notifications): sent to the order's menu.
       { path: 'sous-traitants/commandes', element: <SstCommandesRedirect /> },
       { path: 'sous-traitants/factures', element: <SousTraitantsFactures /> },
-      { path: 'sous-traitants/point', element: <SousTraitantsPoint /> },
+      // The daily Point is gone (2026-11-27): its relances leave from Gestion and from each order.
+      { path: 'sous-traitants/point', element: <Navigate to="/sous-traitants/gestion" replace /> },
       { path: 'sous-traitants/gestion', element: <SousTraitantsGestion /> },
 
       // Transferts

@@ -520,7 +520,7 @@ export const PERMISSION_KEYS = [
   {
     key: 'edit_ref_fini_controles',
     label: 'Contrôles des lots',
-    description: 'Autorise la modification des switches « Contrôle ennoblisseur » et « Contrôle Malterre », qui décident de ce que « Valider le lot », le Point sous-traitant et les relances demandent sur chaque lot de la référence. Cocher « Modifier une référence » ne l’accorde PAS, il se coche à part.',
+    description: 'Autorise la modification des switches « Contrôle ennoblisseur » et « Contrôle Malterre », qui décident de ce que « Valider le lot » et les relances demandent sur chaque lot de la référence. Cocher « Modifier une référence » ne l’accorde PAS, il se coche à part.',
     category: 'Finis › Références',
     parent: 'edit_ref_fini',
     cascade: false,

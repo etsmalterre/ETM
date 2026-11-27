@@ -5,7 +5,14 @@
 // and in Agents IA (a Délais / Contrôles run's dialog, routes/agents-ia.ts).
 
 import { mpsPg } from '../../mps-pg.js'
-import { SECTIONS } from '../../point-sst/regles.js'
+
+// The daily Point is no longer prepared nor sent (screen and automate removed
+// 2026-11-27); the points sent until then stay in `point_sst`, and these are the
+// headings of the two sections a reply was read against.
+const TITRES: Record<2 | 5, string> = {
+  2: 'Puis-je avoir vos contrôles des lots suivants :',
+  5: 'Pouvez-vous me confirmer les délais pour les commandes suivantes :',
+}
 
 export interface LigneQuestion { commande: string; idligne: number; article: string; commentaire: string }
 export interface SectionQuestion { titre: string; lignes: LigneQuestion[] }
@@ -31,7 +38,7 @@ export async function pointDuRun(idpoint: number): Promise<PointQuestion | null>
     SELECT section, commande, reference, coloris, idligne_commande_sous_traitant AS idligne, commentaire
     FROM point_sst_ligne WHERE idpoint_sst = ${idpoint} AND section IN (2, 5) AND NOT retiree ORDER BY section, ordre`
   const section = (n: 2 | 5): SectionQuestion => ({
-    titre: SECTIONS.find((x) => x.n === n)!.titre,
+    titre: TITRES[n],
     lignes: lignes.filter((l) => Number(l.section) === n).map((l) => ({
       commande: String(l.commande).trim(),
       idligne: Number(l.idligne) || 0,

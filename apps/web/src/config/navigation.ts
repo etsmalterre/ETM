@@ -193,7 +193,6 @@ export const mainNavigation: MainMenuItem[] = [
       { title: 'Ennoblissement', href: '/sous-traitants/ennoblissement' },
       { title: 'Tricotage', href: '/sous-traitants/tricotage' },
       { title: 'Factures', href: '/sous-traitants/factures' },
-      { title: 'Point', href: '/sous-traitants/point' },
       { title: 'Gestion', href: '/sous-traitants/gestion' },
     ],
   },
@@ -325,7 +324,6 @@ export const routeTitles: Record<string, string> = {
   '/sous-traitants/ennoblissement': 'Ennoblissement',
   '/sous-traitants/tricotage': 'Tricotage',
   '/sous-traitants/factures': 'Factures',
-  '/sous-traitants/point': 'Point',
   '/sous-traitants/gestion': 'Gestion',
   // Transferts
   '/transferts': 'Transferts',

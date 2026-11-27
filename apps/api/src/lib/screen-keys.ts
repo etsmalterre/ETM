@@ -84,7 +84,6 @@ export const SCREEN_MENUS: readonly MenuDef[] = [
       { href: '/sous-traitants/ennoblissement', label: 'Ennoblissement' },
       { href: '/sous-traitants/tricotage', label: 'Tricotage' },
       { href: '/sous-traitants/factures', label: 'Factures' },
-      { href: '/sous-traitants/point', label: 'Point' },
       { href: '/sous-traitants/gestion', label: 'Gestion' },
     ],
   },

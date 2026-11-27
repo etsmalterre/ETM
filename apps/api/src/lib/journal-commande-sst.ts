@@ -51,7 +51,8 @@ const TYPE_DOC_SOUMISSION = 15
 const MEME_CLIC_MS = 3 * 60 * 1000
 const jjmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
 
-/** What one line of a Point asked the sous-traitant (its section, lib/point-sst/regles.ts SECTIONS). */
+/** What one line of a Point asked the sous-traitant (its section, 1 to 6 in `point_sst_ligne`).
+ *  History only: the daily Point is no longer sent (removed 2026-11-27). */
 function demandePoint(l: { section: number; date_prevue: string | null; commentaire: string }): string {
   const c = (l.commentaire ?? '').trim()
   switch (l.section) {

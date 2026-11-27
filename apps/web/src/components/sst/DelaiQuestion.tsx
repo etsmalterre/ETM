@@ -78,7 +78,7 @@ function ReportDialog({ open, commandeId, echeance, onClose }: { open: boolean; 
         </DialogHeader>
         <div className="mt-4 space-y-3">
           <p className="text-xs text-muted-foreground">
-            Le délai n’est pas attendu avant cette date : la commande sort du Point du jour et ne passe plus en rouge d’ici là.
+            Le délai n’est pas attendu avant cette date : la commande ne passe plus en rouge d’ici là.
             {echeance ? ` Échéance actuelle : ${jjmmaaaa(echeance)}.` : ''}
           </p>
           <div className="space-y-1">

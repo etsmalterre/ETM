@@ -152,12 +152,11 @@ interface SendEmailDialogProps {
   title?: string
   /** A quiet alternative left of Annuler (e.g. « Réclamer sans email »). */
   secondaryAction?: { label: string; onClick: () => void }
-  /** A « Programmer » button next to Envoyer (Sous-traitants › Point: sent at
-   *  8:00 by the automate). Clicking it calls onSend with `programme: true`.
-   *  `disabledReason` greys it out and becomes its tooltip. `parDefaut`: while
-   *  it is available, it is the primary button and Envoyer becomes the outline
-   *  « Envoyer maintenant » — the point was sent at once for ten days because
-   *  the eye went to the filled Envoyer (2026-10-22). */
+  /** A « Programmer » button next to Envoyer. Clicking it calls onSend with
+   *  `programme: true`. `disabledReason` greys it out and becomes its tooltip.
+   *  `parDefaut`: while it is available, it is the primary button and Envoyer
+   *  becomes the outline « Envoyer maintenant » (the eye goes to the filled
+   *  button). No caller since the daily Point was removed (2026-11-27). */
   programmer?: { label: string; title?: string; disabledReason?: string | null; parDefaut?: boolean }
 
   /** Free-text context chip shown in the dialog header (e.g. fournisseur name). */

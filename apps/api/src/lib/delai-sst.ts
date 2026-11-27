@@ -20,8 +20,9 @@
 // Two dates come out of them:
 //   - the ÉCHÉANCE: from when the délai is due — the latest report, else
 //     date_notif, else bon + 3 working days; bon + 1 when every écru piece of
-//     the order was already at the dyer before the bon (v9 of the Point). The Point asks from that day on,
-//     every day until answered (lib/point-sst/regles.ts §5).
+//     the order was already at the dyer before the bon (v9 of the Point). The daily Point asked from that day
+//     on, every day until answered; it is no longer sent (removed 2026-11-27): the points
+//     sent until then still count as relances, the chase is now a mail from the order.
 //   - the RELANCE (what the card shows): the échéance, pushed back
 //     RELANCE_SUIVANTE_J working days after each relance. Red = it has come
 //     and nobody chased since: Malterre is the one holding things up.

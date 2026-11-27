@@ -17,7 +17,6 @@ import { stockDiversRouter } from './routes/stock-divers.js'
 import { commandesFilRouter } from './routes/commandes-fil.js'
 import { commandesSousTraitantRouter } from './routes/commandes-sous-traitant.js'
 import { facturesSstRouter } from './routes/factures-sst.js'
-import { pointsSstRouter } from './routes/points-sst.js'
 import { tricobotRouter } from './routes/tricobot.js'
 import { tricobotSaisiesRouter } from './routes/tricobot-saisies.js'
 import { commandesClientRouter } from './routes/commandes-client.js'
@@ -191,8 +190,6 @@ app.use('/api/commandes-fil', commandesFilRouter)
 app.use('/api/commandes-sous-traitant', commandesSousTraitantRouter)
 // The dyers' invoices stored by the agent « Factures Ennoblisseur » (LIVA #1255).
 app.use('/api/factures-sst', facturesSstRouter)
-// The daily « Point du JJ/MM » to a dyer (Sous-traitants › Point, automate « Point sous-traitant »).
-app.use('/api/points-sst', pointsSstRouter)
 // Tricobot feedback given where the work is done (lib/agents/retours.ts).
 app.use('/api/tricobot/saisies', tricobotSaisiesRouter)
 app.use('/api/tricobot', tricobotRouter)

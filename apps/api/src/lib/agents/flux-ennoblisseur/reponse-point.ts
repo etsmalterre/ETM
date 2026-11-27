@@ -1,8 +1,10 @@
-// Flux Ennoblisseur — reading a dyer's reply to our « Point du JJ/MM »
-// (lib/point-sst/). Pure, tested on the real replies (reponse-point.test.ts).
+// Flux Ennoblisseur — reading a dyer's reply to our « Point du JJ/MM ».
+// Pure, tested on the real replies (reponse-point.test.ts). The Point itself
+// is no longer sent (its screen and automate were removed 2026-11-27): this
+// reads the replies to the points sent until then.
 //
-// MATEL answers the Point section by section, in the order of SECTIONS
-// (point-sst/regles.ts):
+// MATEL answers the Point section by section, in the order of its six
+// sections (1 sorties, 2 contrôles, 3 soumissions, 4 métrages, 5 délais, 6 études):
 //
 //   2) lot 109579     laize = 156cm     poids = 166g/m²     stabs     h = -3     l = -3     V = 4%
 //   3) cde 9094 métrages cet aprème
