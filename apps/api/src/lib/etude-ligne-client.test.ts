@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { etatEtude, etudeUrgence, type EtudeLigne } from './etude-ligne-client.js'
+import { attendEtude, dateEnEtude, etatEtude, etudeUrgence, MESSAGE_DATE_EN_ETUDE, type EtudeLigne } from './etude-ligne-client.js'
 
 const soum = (id: number, dateSoum: string, accepte = 0, dateReponse: string | null = null) => ({ id, dateSoum, dateReponse, accepte })
 
@@ -40,5 +40,32 @@ describe('etudeUrgence', () => {
     expect(etudeUrgence(7, 5311, etudes)).toBeUndefined()
     expect(etudeUrgence(7, 0, etudes)).toEqual({ attente: 'client', relanceLe: '20261022' })
     expect(etudeUrgence(99, 0, etudes)).toEqual({ attente: 'annulee', relanceLe: null })
+  })
+})
+
+describe('attendEtude', () => {
+  it('a line pointing at an étude, still without its coloris', () => {
+    expect(attendEtude(7, 0)).toBe(true)
+    expect(attendEtude('7', null)).toBe(true)
+    expect(attendEtude(7, 5311)).toBe(false)
+    expect(attendEtude(0, 0)).toBe(false)
+    expect(attendEtude(null, undefined)).toBe(false)
+  })
+})
+
+// Order 3944 (2026-11-10): validated, the line in étude took 27/01/2027 as an engagement, then two
+// reports « on attend le coloris ». A line in étude carries no date.
+describe('dateEnEtude', () => {
+  it('in préparation: no date, whatever was typed or left on the line', () => {
+    expect(dateEnEtude({ enPreparation: true, actuelle: '', demandee: '20270127' })).toEqual({ date: '' })
+    expect(dateEnEtude({ enPreparation: true, actuelle: '20270127', demandee: '20270127' })).toEqual({ date: '' })
+  })
+  it('validated, without a date: none may be written', () => {
+    expect(dateEnEtude({ enPreparation: false, actuelle: '', demandee: '20270127' })).toEqual({ refus: MESSAGE_DATE_EN_ETUDE })
+    expect(dateEnEtude({ enPreparation: false, actuelle: '', demandee: '' })).toEqual({ date: '' })
+  })
+  it('validated, already dated (before the rule): the ordinary rules, its date is an engagement', () => {
+    expect(dateEnEtude({ enPreparation: false, actuelle: '20261110', demandee: '20270120' })).toEqual({ date: '20270120' })
+    expect(dateEnEtude({ enPreparation: false, actuelle: '20261110', demandee: '20261110' })).toEqual({ date: '20261110' })
   })
 })

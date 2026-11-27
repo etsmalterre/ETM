@@ -74,6 +74,8 @@ export interface CommandeClientPdfData {
     montant: number
     /** dd/mm/yyyy or '' */
     date_livraison: string
+    /** A sentence under the coloris (ETM: a line in étude coloris has no date yet). */
+    mention?: string | null
   }>
 }
 
@@ -334,6 +336,7 @@ export function CommandeClientPdf({ data }: { data: CommandeClientPdfData }) {
               {l.designation && l.designation.trim()
                 ? <Text style={styles.designationLine}>{l.designation.trim()}</Text>
                 : null}
+              {l.mention ? <Text style={styles.designationLine}>{l.mention}</Text> : null}
             </View>
             <Text style={[styles.cellBase, styles.colQty]}>
               {fmtNum(l.quantite, l.unite_label === 'U' ? 0 : 1)}{l.unite_label ? ` ${l.unite_label}` : ''}

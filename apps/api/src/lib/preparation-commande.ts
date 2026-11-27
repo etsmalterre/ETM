@@ -4,6 +4,7 @@
 // confirmation, no shipment, not in the espace client. It is red from its creation: preparing it is
 // Malterre's to do now. Validation checks every line has its date and freezes the engagements
 // (delai_annonce = date_livraison); afterwards moving a date is a report (lib/report-ligne-client.ts).
+// A line waiting for its étude coloris is the exception: validated without a date (validerCommande).
 
 import type { Response } from 'express'
 import type { Sql } from 'postgres'
@@ -46,22 +47,29 @@ export async function validation(id: number): Promise<Validation> {
   return { validee_le: r?.v ? new Date(r.v).toISOString() : null, validee_par: r?.par ?? null }
 }
 
-/** « Valider la commande »: refused while a line has no date; then every date becomes the engagement. */
+/** « Valider la commande »: refused while a line has no date; then every date becomes the engagement.
+ *  Except a line waiting for its étude coloris (lib/etude-ligne-client.ts, Vincent 2026-11-27): no date
+ *  can be promised on a coloris that does not exist — it is validated without a date nor an engagement,
+ *  and takes both once its coloris is accepted. */
 /** `auPlusTot`: the earliest date (YYYYMMDD) a line without a date takes (lib/delai-au-plus-tot.ts). */
 export async function validerCommande(id: number, parId: number, par: string | null, auPlusTot: ReadonlyMap<number, string> = new Map()): Promise<{ ok: true } | { ok: false; message: string }> {
   return mpsPg().begin(async (t) => {
     const tx = t as unknown as Sql
-    const lignes = await tx<{ id: number; d: Date | null }[]>`
-      SELECT idligne_commande_client AS id, date_livraison AS d FROM ligne_commande_client WHERE idcommande_client = ${id}`
+    // `etude`: the line waits for its étude coloris (attendEtude of lib/etude-ligne-client.ts, in SQL).
+    const lignes = await tx<{ id: number; d: Date | null; etude: boolean }[]>`
+      SELECT idligne_commande_client AS id, date_livraison AS d, (idetude_col > 0 AND COALESCE(idcolori, 0) = 0) AS etude
+        FROM ligne_commande_client WHERE idcommande_client = ${id}`
     if (lignes.length === 0) return { ok: false as const, message: 'La commande n’a aucune ligne.' }
     for (const l of lignes) {
       const d = auPlusTot.get(Number(l.id))
-      if (l.d || !d) continue
+      if (l.etude || l.d || !d) continue
       await tx`UPDATE ligne_commande_client SET date_livraison = ${`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`}::date WHERE idligne_commande_client = ${l.id}`
       l.d = new Date()
     }
-    const sansDate = lignes.filter((l) => !l.d).length
+    const sansDate = lignes.filter((l) => !l.etude && !l.d).length
     if (sansDate > 0) return { ok: false as const, message: `${sansDate} ligne${sansDate > 1 ? 's n’ont' : ' n’a'} pas encore de date « Prête le ».` }
+    // A date left on a line in étude while the order was prepared was never an engagement: it goes.
+    await tx`UPDATE ligne_commande_client SET date_livraison = NULL WHERE idcommande_client = ${id} AND idetude_col > 0 AND COALESCE(idcolori, 0) = 0`
     await tx`UPDATE ligne_commande_client SET delai_annonce = date_livraison WHERE idcommande_client = ${id}`
     await tx`UPDATE commande_client SET validee_le = now(), validee_par_id = ${parId}, validee_par = ${par} WHERE idcommande_client = ${id}`
     return { ok: true as const }

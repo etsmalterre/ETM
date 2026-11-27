@@ -25,7 +25,7 @@
 
 import { rouleauxEstimesParLigne, type RouleauxEstimes } from '../lib/rouleaux-estimes.js'
 import { ecruATransferer, faitsLignesClient, filAttenduLe, statutLigneClient, type EtatLigneClient, type FaitsLigneClient } from '../lib/statut-ligne-client.js'
-import { etudesParId, etudeUrgence, enregistrerRelance, mailRelanceEtude, refusLienEtude, LIBELLE_COLORIS_EN_ETUDE } from '../lib/etude-ligne-client.js'
+import { attendEtude, dateEnEtude, etudesParId, etudeUrgence, enregistrerRelance, mailRelanceEtude, refusLienEtude, LIBELLE_COLORIS_EN_ETUDE, MENTION_DELAI_EN_ETUDE } from '../lib/etude-ligne-client.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { mpsPg } from '../lib/mps-pg.js'
 import { LIBELLE_ETAPE_COMMANDE, etatCommande, lireCommandesEnnoblissement } from '../lib/cycle-ennoblissement.js'
@@ -2274,10 +2274,12 @@ commandesClientRouter.post('/:id/valider', async (req: Request, res: Response) =
     if (isNaN(id)) { res.status(400).json({ error: 'Invalid ID' }); return }
     if (refuseIfSoldee(res, await loadCommandeSoldee(id))) return
     if (!(await estEnPreparation(id))) { res.status(409).json({ error: 'deja_validee', message: 'La commande est déjà validée.' }); return }
-    // A line without a date takes its earliest date (doctrine des délais §5 ter).
+    // A line without a date takes its earliest date (doctrine des délais §5 ter) — never a line waiting
+    // for its étude coloris: validated without a date, it takes one once the coloris is accepted.
     const lignes = await mpsPg()<{ id: number; t: number; r: number; c: number; u: number; q: number }[]>`
       SELECT idligne_commande_client AS id, type AS t, idreference AS r, idcolori AS c, unite AS u, quantite AS q
-        FROM ligne_commande_client WHERE idcommande_client = ${id} AND date_livraison IS NULL`
+        FROM ligne_commande_client WHERE idcommande_client = ${id} AND date_livraison IS NULL
+         AND NOT (idetude_col > 0 AND COALESCE(idcolori, 0) = 0)`
     const plusTot = await auPlusTotLignes(lignes.map((l) => ({
       id: Number(l.id), typeKind: Number(l.t) || 0, refId: Number(l.r) || 0, coloriId: Number(l.c) || 0, unite: Number(l.u) || 0, quantite: Number(l.q) || 0,
     })))
@@ -2638,10 +2640,17 @@ commandesClientRouter.post('/:id/lignes', async (req: Request, res: Response) =>
     // TYPE written uppercase (reserved word); IDcolori lowercase; commentaire
     // accent-safe via sqlText. The first délai is frozen in delai_annonce (accented
     // under HFSQL: named only where it can be).
-    const delai = d.date_livraison ? dateStr(d.date_livraison) : ''
+    const enPreparation = await estEnPreparation(id)
+    let delai = d.date_livraison ? dateStr(d.date_livraison) : ''
+    // A line born waiting for its étude coloris has no date: it takes one once the coloris is accepted.
+    if (etudeId > 0) {
+      const r = dateEnEtude({ enPreparation, actuelle: '', demandee: delai })
+      if ('refus' in r) { res.status(409).json({ error: 'date_en_etude', message: r.refus }); return }
+      delai = r.date
+    }
     if (await refuseDatePassee(res, id, delai)) return
     // In préparation nothing is an engagement yet: the validation freezes the dates (§5 ter).
-    const annonce = canNameAccented() && delai && !(await estEnPreparation(id))
+    const annonce = canNameAccented() && delai && !enPreparation
     await query(
       `INSERT INTO ligne_commande_client
          (IDcommande_client, IDligne_commande_ETM, TYPE, IDreference, IDcolori,
@@ -2690,6 +2699,7 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     let curEtude = 0
     let nextType = 0
     let nextRef = 0
+    let nextColori = 0
     // The unit to write, undefined = untouched. A divers line takes its reference's (LIVA #1371).
     let uniteEcrite: number | undefined = d.unite
 
@@ -2723,6 +2733,7 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
       if (commercialChange && await refuseIfContratExpire(res, commandeId, next)) return
       nextType = next.type
       nextRef = next.IDreference
+      nextColori = next.IDcolori
       if (next.type === TYPE_DIVERS) {
         // A line that keeps its article keeps a unit saved earlier until someone changes it;
         // a new article brings its own unit (lib/unite-divers.ts).
@@ -2784,14 +2795,21 @@ commandesClientRouter.put('/lignes/:lineId', async (req: Request, res: Response)
     // Moving a D already given is a report: why and who it is due to are required (QS, §8) — once the
     // order is validated; while it is prepared the dates move freely (doctrine des délais §5 ter).
     const enPreparation = await estEnPreparation(commandeId)
-    const nextDelai = d.date_livraison !== undefined ? dateStr(d.date_livraison) : curDelai.delai
+    let nextDelai = d.date_livraison !== undefined ? dateStr(d.date_livraison) : curDelai.delai
+    // Waiting for its étude coloris once saved: no date is written on it (lib/etude-ligne-client.ts).
+    const enEtude = attendEtude(etudeId, nextColori)
+    if (enEtude) {
+      const r = dateEnEtude({ enPreparation, actuelle: curDelai.delai, demandee: nextDelai })
+      if ('refus' in r) { res.status(409).json({ error: 'date_en_etude', message: r.refus }); return }
+      nextDelai = r.date
+    }
     const report = !enPreparation && estUnReport(curDelai.delai, nextDelai)
     if (report && !d.report) {
       res.status(400).json({ error: 'report_requis', message: 'La date était un engagement : indiquez pourquoi elle change et à qui le report est dû.' })
       return
     }
     if (enPreparation && nextDelai !== curDelai.delai && await refuseDatePassee(res, commandeId, nextDelai)) return
-    if (d.date_livraison !== undefined) {
+    if (d.date_livraison !== undefined || nextDelai !== curDelai.delai) {
       const next = nextDelai
       sets.push(`date_livraison = '${next}'`)
       // Freeze the first délai ever given: the one already on the line when this change
@@ -7351,6 +7369,7 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
     const resolved = resolveRefLabel(maps, refId, typeKind)
     const qty = Number(l.quantite) || 0
     const prix = Number(l.prix) || 0
+    const dateLivraison = formatHfsqlDateFr(l.date_livraison)
     // A divers article has no coloris: its variations (couleur, taille…) take
     // that slot, joined like the invoice line (LIVA #1299).
     const coloris = typeKind === 3
@@ -7365,7 +7384,9 @@ export async function buildClientPdfData(id: number): Promise<CommandeClientPdfD
       unite_label: uniteLabel(l.unite),
       prix,
       montant: qty * prix,
-      date_livraison: formatHfsqlDateFr(l.date_livraison),
+      date_livraison: dateLivraison,
+      // Validated without a date while its coloris is studied: the confirmation says when it will come.
+      mention: typeKind === 2 && attendEtude(l.IDetude_col, colId) && !dateLivraison ? MENTION_DELAI_EN_ETUDE : null,
     }
   })
 

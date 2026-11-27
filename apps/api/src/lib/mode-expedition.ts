@@ -47,7 +47,7 @@ export async function fixerExpedition(commandeId: number, p: { groupee: boolean 
 
 /** One « Prête le » written on several lines of the order at once. A line that already had another D is
  *  a report: one why / whom for all, journaled per line; the first D stays the engagement (delai_annonce:
- *  the old D, or this one on a line without). */
+ *  the old D, or this one on a line without). A line waiting for its étude coloris is left out. */
 export async function appliquerDateLignes(p: {
   commandeId: number; ligneIds: number[]; date: string
   report: { motif: string; imputable: Imputable } | null
@@ -59,10 +59,13 @@ export async function appliquerDateLignes(p: {
   if (!datePg) throw new Error('date invalide')
   return mpsPg().begin(async (t) => {
     const tx = t as unknown as Sql
+    // Never a line waiting for its étude coloris and still without a date (lib/etude-ligne-client.ts
+    // dateEnEtude): it takes its date once the coloris is accepted, the common one included.
     const rows = await tx<{ id: number; d: string | null; e: string | null }[]>`
       SELECT idligne_commande_client AS id, to_char(date_livraison, 'YYYYMMDD') AS d, to_char(delai_annonce, 'YYYYMMDD') AS e
         FROM ligne_commande_client
        WHERE idcommande_client = ${p.commandeId} AND idligne_commande_client = ANY(${p.ligneIds as any}::bigint[])
+         AND NOT (idetude_col > 0 AND COALESCE(idcolori, 0) = 0 AND date_livraison IS NULL)
        FOR UPDATE`
     const reports = p.engager ? rows.filter((r) => estUnReport(r.d ?? '', p.date)) : []
     if (reports.length > 0 && !p.report) return { ok: false as const, reportRequis: reports.length }

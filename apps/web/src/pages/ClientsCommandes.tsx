@@ -214,6 +214,11 @@ interface EtudeLigne {
   relance_le: string | null
   derniere_relance: string | null
 }
+/** A fini line waiting for its étude coloris: it points at one and has no coloris yet (API attendEtude). */
+const attendEtude = (l: { type: number; IDetude_col: number; IDcolori: number }) => l.type === 2 && l.IDetude_col > 0 && !l.IDcolori
+/** …and still without a date: it takes none before its coloris is accepted (API dateEnEtude, Vincent
+ *  2026-11-27) — validated as it is, left out of every « date à donner » count and of the common date. */
+const sansDateEnEtude = (l: { type: number; IDetude_col: number; IDcolori: number; date_livraison: string | null }) => attendEtude(l) && !l.date_livraison
 const ATTENTE_ETUDE_LABEL: Record<AttenteEtude, string> = {
   labo: 'attente ennoblisseur',
   client: 'soumis au client',
@@ -2463,7 +2468,7 @@ function LineCard({
   const shipPct = target > 0 ? Math.min(100, (line.expedie / target) * 100) : 0
   const variations = [line.variation1_label, line.variation2_label].filter(Boolean).join(' · ')
   // Waiting for its étude coloris: no coloris yet, no délai to give (API lib/etude-ligne-client.ts).
-  const enEtude = line.type === 2 && line.IDetude_col > 0 && !line.IDcolori
+  const enEtude = attendEtude(line)
   // Launched on its planned date, the line is ready after D (« planifiée trop tard », API planif_tardive):
   // both dates are in question, so both are red — unless the launch is planned « en urgence » and that
   // holds D (API lib/lancement-ligne.ts): neutral, the siren says how.
@@ -6799,7 +6804,7 @@ function LineFormDialog({
         report_motif: '',
         report_imputable: '',
         commentaire: line.commentaire ?? '',
-        enEtude: line.type === 2 && line.IDetude_col > 0 && !line.IDcolori,
+        enEtude: attendEtude(line),
         IDetude_col: line.IDetude_col || 0,
       })
       setPriceLocked(false) // preserve the saved price until the user re-locks
@@ -6993,7 +6998,9 @@ function LineFormDialog({
         prix: Number(form.prix) || 0,
         // In préparation the computed date is never stored: only a date the person picked. A divers line has
         // no computed date (#1362): whatever is in its field was typed.
-        date_livraison: form.date_livraison && (!commande.en_preparation || autreDate || form.type === 3) ? inputDateToHfsql(form.date_livraison) : '',
+        // A line waiting for its étude coloris takes no date (API 409 date_en_etude); one it already carries stays.
+        date_livraison: sansDateEtude ? ''
+          : form.date_livraison && (!commande.en_preparation || autreDate || form.type === 3) ? inputDateToHfsql(form.date_livraison) : '',
         ...(estReport ? { report: { motif: form.report_motif.trim(), imputable: form.report_imputable } } : {}),
         commentaire: form.commentaire,
         mode_livraison: form.mode_livraison,
@@ -7054,7 +7061,10 @@ function LineFormDialog({
   const dateSaisie = form.date_livraison ? inputDateToHfsql(form.date_livraison) : ''
   // While the order is prepared the dates move freely: no engagement, no report (doctrine des délais §5 ter).
   const valide = !commande.en_preparation
-  const estReport = valide && !isNew && !!line?.date_livraison && dateSaisie !== line.date_livraison
+  // Waiting for its étude coloris: no « Prête le » before the coloris is accepted (Vincent 2026-11-27).
+  // A line that already carries a date (given before this rule) keeps its field and its reports.
+  const sansDateEtude = form.type === 2 && form.enEtude && !(valide && line?.date_livraison)
+  const estReport = valide && !isNew && !sansDateEtude && !!line?.date_livraison && dateSaisie !== line.date_livraison
   const engagement = valide ? (line?.delai_initial || line?.date_livraison || null) : null
   const ecartEngagement = engagement && dateSaisie ? joursEntre(engagement, dateSaisie) : 0
 
@@ -7405,7 +7415,15 @@ function LineFormDialog({
               line has no date to type: the card shows its earliest date (doctrine §5 ter) and the validation gives
               it. Once validated, the date is an engagement: moving it asks why and who it is due to (QS). How the
               order leaves is set once for the whole order, in Info › Expédition. */}
-          {valide && (
+          {sansDateEtude && (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Prête le</label>
+              <div className="h-9 px-3 flex items-center rounded-md border border-dashed border-input bg-muted/40 text-sm text-muted-foreground italic">
+                Après l’étude coloris
+              </div>
+            </div>
+          )}
+          {valide && !sansDateEtude && (
             <div className={cn('space-y-1', !PICKER_DATE && 'sm:w-1/2')}>
               <label className="text-xs font-medium text-muted-foreground cursor-help" title="Prête à expédier à cette date : notre engagement">Prête le</label>
               {/* Same dashed box as Info › Expédition and the préparation branch (Vincent 2026-11-02): the date
@@ -7921,19 +7939,23 @@ function ValiderCommandeDialog({ open, commande, isPending, error, onCancel, onC
           <p className="text-sm">Ces dates deviennent nos engagements envers le client :</p>
           <div className="rounded-lg border border-border/60 bg-card shadow-sm divide-y divide-border/60 max-h-72 overflow-y-auto scrollbar-transparent">
             {lignes.map((l) => {
-              const date = l.date_livraison ?? l.au_plus_tot?.date ?? null
+              // Waiting for its étude coloris: validated without a date, it takes one once the coloris is accepted.
+              const etude = attendEtude(l)
+              const date = etude ? null : (l.date_livraison ?? l.au_plus_tot?.date ?? null)
               return (
                 <div key={l.IDligne_commande_client} className="px-3 py-2 text-sm">
                   <div className="flex items-baseline justify-between gap-3">
                   <span className="min-w-0 truncate">
-                    {[l.ref_label, l.colori_reference].filter(Boolean).join(' - ') || 'Ligne'}
+                    {[l.ref_label, etude ? `en étude : ${l.etude?.libelle || '—'}` : l.colori_reference].filter(Boolean).join(' - ') || 'Ligne'}
                     <span className="text-muted-foreground"> · {fmtNum(l.quantite)} {l.unite_label}</span>
                   </span>
-                  {date
+                  {etude
+                    ? <span className="flex-shrink-0 text-muted-foreground">après l’étude</span>
+                    : date
                     ? <span className="flex-shrink-0 tabular-nums">prête le <span className="font-semibold">{formatHfsqlDate(date)}</span>{!l.date_livraison && <span className="text-muted-foreground"> (au plus tôt)</span>}</span>
                     : <span className="flex-shrink-0 text-red-600">sans date</span>}
                   </div>
-                  {open && l.au_plus_tot?.sansMatiere && (l.type === 1 || l.type === 2) && (
+                  {open && !etude && l.au_plus_tot?.sansMatiere && (l.type === 1 || l.type === 2) && (
                     <MatiereLibreAvertissement commandeId={commande.IDcommande_client} ligne={l} />
                   )}
                 </div>
@@ -7973,7 +7995,7 @@ function ValidationKV({ commande }: { commande: CommandeDetail }) {
 
 /** The date every line still to ship shares (YYYYMMDD), '' when they differ or one has none. */
 function dateCommune(lignes: LigneCommande[]): string {
-  const ds = lignes.filter((l) => l.statut?.etat !== 'expediee' && l.statut?.etat !== 'soldee').map((l) => l.date_livraison ?? '')
+  const ds = lignesADater(lignes).map((l) => l.date_livraison ?? '')
   return ds.length > 0 && ds[0] && ds.every((d) => d === ds[0]) ? ds[0] : ''
 }
 
@@ -7985,6 +8007,10 @@ function dateCommune(lignes: LigneCommande[]): string {
  *  date is a report: one why / whom for all. Unticking keeps the dates (they are engagements). */
 const lignesAExpedier = (lignes: CommandeDetail['lignes']) =>
   lignes.filter((l) => l.statut?.etat !== 'expediee' && l.statut?.etat !== 'soldee')
+/** …of which the ones a date can be written on: a line waiting for its étude coloris has none yet. */
+function lignesADater(lignes: CommandeDetail['lignes']) {
+  return lignesAExpedier(lignes).filter((l) => !sansDateEnEtude(l))
+}
 
 /** Shown only when it says something (Vincent 2026-10-30): in view mode when « ensemble » is ticked (the
  *  default, each line on its own, is already on every line); in edit mode when at least 2 lines are left
@@ -8002,7 +8028,9 @@ function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
   onChange: (e: Expedition) => void
 }) {
   const queryClient = useQueryClient()
-  const restantes = lignesAExpedier(commande.lignes)
+  // The lines a date is written on: one waiting for its étude coloris joins once its coloris is accepted.
+  const restantes = lignesADater(commande.lignes)
+  const enEtude = lignesAExpedier(commande.lignes).length - restantes.length
   const dates = restantes.map((l) => l.date_livraison).filter((d): d is string => !!d).sort()
   const sansDate = restantes.length - dates.length
   const commune = dateCommune(commande.lignes)
@@ -8044,7 +8072,7 @@ function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
 
   const depart = expedition.groupee ? departCommande(commande.lignes) : null
   let pretes: React.ReactNode
-  if (restantes.length === 0) pretes = '—'
+  if (restantes.length === 0) pretes = enEtude > 0 ? 'Après l’étude coloris' : '—'
   else if (sansDate > 0 && commande.en_preparation) {
     // In préparation a line without a date reads its earliest date (the validation gives it), neutral.
     const eff = restantes.map((l) => l.date_livraison ?? l.au_plus_tot?.date ?? null)
@@ -8150,6 +8178,7 @@ function ExpeditionSection({ commande, isEditing, expedition, onChange }: {
         <>
           <p className="text-sm">{expedition.groupee ? phraseEnsemble(depart) : 'Chaque ligne part selon son départ'}</p>
           <KV label="Lignes prêtes" value={pretes} />
+          {enEtude > 0 && restantes.length > 0 && <KV label="En étude coloris" value={`${enEtude} ligne${enEtude > 1 ? 's' : ''}, sans date`} />}
         </>
       )}
     </div>

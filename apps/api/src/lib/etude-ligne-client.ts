@@ -13,6 +13,13 @@
 //   type received → first soumission (lab)     p50 13 j, p80 17 j   → relance l'ennoblisseur at 17 j
 //   soumission → client's answer               p50 12 j, p80 31 j   → relance le client at 21 j
 // A relance (etude_col_relance, append-only) restarts the clock. `screen_notes.md` § 3.
+//
+// No date either (Vincent 2026-11-27, order 3944: validated, the line took 27/01/2027 as an engagement,
+// then two reports « on attend le coloris » on a line whose coloris did not exist). « Valider la
+// commande » dates every line EXCEPT the ones waiting for their étude: they stay without « Prête le » and
+// without engagement, and no date is written on them while they wait (dateEnEtude). Once the coloris is
+// accepted the line is an ordinary one without a date — red « sans délai » — and the first date it is
+// given is its engagement, not a report.
 
 import { query, fixEncoding } from './hfsql-auto.js'
 import { mpsPg } from './mps-pg.js'
@@ -26,6 +33,8 @@ export const SEUILS_ETUDE = {
 
 /** What the coloris printed for a line still in étude (confirmation PDF, espace client). */
 export const LIBELLE_COLORIS_EN_ETUDE = 'Coloris en cours d’étude'
+/** …and under it on the confirmation, in place of a date it cannot carry yet (Vincent 2026-11-27). */
+export const MENTION_DELAI_EN_ETUDE = 'Délai communiqué à la validation du coloris'
 
 /** Who holds the étude now: the lab, the client, or nobody (accepted / cancelled). */
 export type AttenteEtude = 'labo' | 'client' | 'acceptee' | 'annulee'
@@ -140,10 +149,30 @@ export async function etudesParId(ids: readonly number[]): Promise<Map<number, E
   return out
 }
 
+/** A line waiting for its étude coloris: it points at one and has no coloris yet (with its coloris,
+ *  the étude is history). In SQL: `idetude_col > 0 AND COALESCE(idcolori, 0) = 0`. */
+export function attendEtude(idEtude: unknown, idColori: unknown): boolean {
+  return (Number(idEtude) || 0) > 0 && !((Number(idColori) || 0) > 0)
+}
+
+export const MESSAGE_DATE_EN_ETUDE = 'Ligne en étude coloris : sa date se donne une fois le coloris accepté.'
+
+/**
+ * The « Prête le » a write leaves on a line waiting for its étude (pure; dates YYYYMMDD, '' = none).
+ * In préparation: none, whatever was typed. Validated: a line without a date takes none (refused) —
+ * a line that already carries one (dated before this rule, or switched to an étude after its date was
+ * given) keeps the ordinary rules: its date is an engagement, moving it a report.
+ */
+export function dateEnEtude(p: { enPreparation: boolean; actuelle: string; demandee: string }): { date: string } | { refus: string } {
+  if (p.enPreparation) return { date: '' }
+  if (!p.actuelle && p.demandee) return { refus: MESSAGE_DATE_EN_ETUDE }
+  return { date: p.demandee }
+}
+
 /** The étude facts the urgency rule needs, or undefined when the line is not waiting for one
  *  (no étude, or its coloris is already set: the étude is history then). */
 export function etudeUrgence(idEtude: number, idColori: number, etudes: Map<number, EtudeLigne>) {
-  if (!(idEtude > 0) || idColori > 0) return undefined
+  if (!attendEtude(idEtude, idColori)) return undefined
   const e = etudes.get(idEtude)
   // A link to a deleted étude: nothing to chase, a coloris to choose.
   if (!e) return { attente: 'annulee' as const, relanceLe: null }
