@@ -52,6 +52,14 @@ export interface FaitsLigneClient {
   nbControle: number
   /** écru pieces reserved to the line and to a dyer line, not dyed yet */
   nbChezEnnoblisseur: number
+  /** fini line: écru pieces reserved to it, on no dyer order yet (not shipped, not dyed), and what they
+   *  make in the line's unit — the matter a dyer order from the line would take */
+  nbEcruLibre: number
+  ecruLibre: number
+  /** …of which at a dyer: the order can be made there (« Ennoblir chez X ») */
+  nbEcruLibreChezEnnoblisseur: number
+  /** …of which at the factory (magasin 0, « Malterre »): to transfer to the dyer first */
+  nbEcruLibreChezMalterre: number
   /** open dyer orders launched from the line */
   nbCommandesEnnoblisseur: number
   /** one of the line's open dyer lines is « Soumis au client » */
@@ -84,6 +92,11 @@ export function statutLigneClient(f: FaitsLigneClient, unite: string): StatutLig
   if (f.nbChezEnnoblisseur > 0) preuves.push(`${pluriel(f.nbChezEnnoblisseur, 'pièce')} écru chez l’ennoblisseur`)
   if (f.nbCommandesEnnoblisseur > 0 && f.nbChezEnnoblisseur === 0) preuves.push(`${pluriel(f.nbCommandesEnnoblisseur, 'commande')} ennoblisseur ouverte${f.nbCommandesEnnoblisseur > 1 ? 's' : ''}`)
   if (f.soumisClient) preuves.push('Soumis au client')
+  const horsEnnoblisseur = f.nbEcruLibre - f.nbEcruLibreChezEnnoblisseur
+  if (horsEnnoblisseur > 0) {
+    const ou = f.nbEcruLibreChezMalterre === horsEnnoblisseur ? 'chez Malterre' : 'hors de chez l’ennoblisseur'
+    preuves.push(`${pluriel(horsEnnoblisseur, 'pièce')} écru ${ou}, à transférer chez l’ennoblisseur`)
+  }
   if (f.kgTricotage > 0) preuves.push(`${fmt(f.kgTricotage)} kg restant à tricoter`)
   for (const a of f.filAttendu) {
     preuves.push(`${fmt(a.kg)} kg de fil attendus (cde fil N° ${a.commande}${a.date ? `, prévue le ${a.date.slice(6, 8)}/${a.date.slice(4, 6)}` : ''})`)
@@ -100,6 +113,15 @@ export function statutLigneClient(f: FaitsLigneClient, unite: string): StatutLig
   else if (f.pret > 0) etat = 'pae' // ready but short of the quantity: the remainder is launched nowhere
   else etat = 'a_lancer'
   return { etat, part, preuves }
+}
+
+/** The line's écru is knitted and reserved, covers what is left of the line, and none of it sits at a
+ *  dyer: a dyer order is made where the pieces are (« Ennoblir chez X »), so what there is to do now is
+ *  the transfer (order 3957, Vincent 2026-11-27: red « à lancer » with no gesture offered). With pieces
+ *  at a dyer, or écru short of the line, the line is plainly « à lancer ». */
+export function ecruATransferer(f: FaitsLigneClient): boolean {
+  if (f.nbEcruLibre <= 0 || f.nbEcruLibreChezEnnoblisseur > 0) return false
+  return f.expedie + f.pret + f.ecruLibre >= f.quantite * SEUIL_EXPEDIE
 }
 
 /** The earliest supplier date of the yarn a line waits for (urgenceLigne), null when none is given. */
@@ -137,7 +159,8 @@ const isTermine = (s: unknown) => String(s ?? '').startsWith('Termin')
 function vide(l: LigneClientMeta): FaitsLigneClient {
   return {
     quantite: l.quantite, soldee: l.soldee, expedie: 0, pret: 0, nbPret: 0, nbControle: 0,
-    nbChezEnnoblisseur: 0, nbCommandesEnnoblisseur: 0, soumisClient: false, kgTricotage: 0, filAttendu: [],
+    nbChezEnnoblisseur: 0, nbEcruLibre: 0, ecruLibre: 0, nbEcruLibreChezEnnoblisseur: 0, nbEcruLibreChezMalterre: 0,
+    nbCommandesEnnoblisseur: 0, soumisClient: false, kgTricotage: 0, filAttendu: [],
   }
 }
 
@@ -172,8 +195,9 @@ export async function faitsLignesClient(lignes: readonly LigneClientMeta[]): Pro
     queryIn<{ lid: number; metrage: number | null; poids: number | null; etat: number | null; lexp: number | null }>(ids, (inl) =>
       `SELECT IDligne_commande_client AS lid, metrage, poids, IDetat_stock_fini AS etat, IDligne_expedition AS lexp
        FROM stock_fini WHERE IDligne_commande_client IN (${inl}) AND (IDcommande_donation IS NULL OR IDcommande_donation = 0)`),
-    queryIn<{ IDstock_ecru: number; lid: number; metrage: number | null; poids: number | null; lexp: number | null; aff: number | null }>(ids, (inl) =>
-      `SELECT IDstock_ecru, IDligne_commande_client AS lid, metrage, poids, IDligne_expedition_ETM AS lexp, IDref_commande_affectation AS aff
+    queryIn<{ IDstock_ecru: number; lid: number; metrage: number | null; poids: number | null; lexp: number | null; aff: number | null; lieu: number | null }>(ids, (inl) =>
+      `SELECT IDstock_ecru, IDligne_commande_client AS lid, metrage, poids, IDligne_expedition_ETM AS lexp, IDref_commande_affectation AS aff,
+              IDmagasin AS lieu
        FROM stock_ecru WHERE IDligne_commande_client IN (${inl}) AND (IDcommande_donation IS NULL OR IDcommande_donation = 0)`),
     // Legacy shipments put rolls on a shipment line without reserving them first (espace-commandes rule).
     queryIn<{ IDligne_expedition: number; lid: number }>(ids, (inl) =>
@@ -205,6 +229,11 @@ export async function faitsLignesClient(lignes: readonly LigneClientMeta[]): Pro
     else if (etat === 3) { f.pret += qte; f.nbPret += 1 }
     else if (etat === 1 || etat === 2 || etat === 5) f.nbControle += 1
   }
+  // Where the free écru of the fini lines sits: a dyer (IDtype_sst 2), the factory (0), elsewhere.
+  const libres = ecru.filter((r) => num(r.lexp) === 0 && num(r.aff) === 0 && meta.get(num(r.lid))?.typeKind === 2)
+  const lieux = await queryIn<{ IDsous_traitant: number; IDtype_sst: number | null }>(libres.map((r) => num(r.lieu)), (inl) =>
+    `SELECT IDsous_traitant, IDtype_sst FROM sous_traitant WHERE IDsous_traitant IN (${inl})`)
+  const ennoblisseurs = new Set(lieux.filter((s) => num(s.IDtype_sst) === 2).map((s) => num(s.IDsous_traitant)))
   for (const r of ecru) {
     const lid = num(r.lid)
     const f = out.get(lid)
@@ -213,6 +242,12 @@ export async function faitsLignesClient(lignes: readonly LigneClientMeta[]): Pro
     if (num(r.lexp) > 0) add(expRes, lid, qte)
     else if (num(r.aff) > 0) f.nbChezEnnoblisseur += 1
     else if (meta.get(lid)?.typeKind === 1) { f.pret += qte; f.nbPret += 1 }
+    else {
+      f.nbEcruLibre += 1
+      f.ecruLibre += qte
+      if (ennoblisseurs.has(num(r.lieu))) f.nbEcruLibreChezEnnoblisseur += 1
+      else if (num(r.lieu) === 0) f.nbEcruLibreChezMalterre += 1
+    }
   }
 
   const lidParLe = new Map(le.map((r) => [num(r.IDligne_expedition), num(r.lid)]))

@@ -144,6 +144,19 @@ describe('urgenceLigne', () => {
     expect(urgenceCommande([held('fil')], today)?.raison).toBe(`1 ligne : fil à commander`)
     expect(niveau({ ...held('ennoblissement'), lancementLe: dans(3) })).toBe(null)
   })
+  it('écru reserved with us, none at a dyer: the red reason names the transfer (3957, 2026-11-27)', () => {
+    const chezNous = (p: Partial<LigneUrgence> = {}): LigneUrgence => ({ ...l('a_lancer', 45), ecruATransferer: true, ...p })
+    expect(urgenceLigne(chezNous(), today)).toMatchObject({ niveau: 'rouge', action: 'transferer' })
+    expect(urgenceCommande([chezNous(), l('a_lancer', 45)], today)?.raison).toBe('1 ligne : pièces à transférer')
+    // held by a launch date: neutral before it, the transfer from it (dyeing planned, or no step)
+    expect(niveau(chezNous({ lancementLe: dans(3), lancementEtape: 'ennoblissement' }))).toBe(null)
+    expect(urgenceLigne(chezNous({ lancementLe: dans(0), lancementEtape: 'ennoblissement' }), today)?.action).toBe('transferer')
+    expect(urgenceLigne(chezNous({ lancementLe: dans(0) }), today)?.action).toBe('transferer')
+    // another step was planned: its own action
+    expect(urgenceLigne(chezNous({ lancementLe: dans(0), lancementEtape: 'tricotage' }), today)?.action).toBe('tricoter')
+    // never on an écru line (its pieces are ready as they are)
+    expect(urgenceLigne({ ...chezNous(), typeKind: 1 }, today)?.action).toBe('lancer')
+  })
   it('a launch date planned too late is red now: the delay is already known (3892, 2026-10-30)', () => {
     const held = (prete: number | null): LigneUrgence => ({ ...l('a_lancer', 80), lancementLe: dans(70), lancementEtape: 'ennoblissement', preteSiLanceLe: prete == null ? null : dans(prete) })
     expect(niveau(held(95))).toBe('rouge')

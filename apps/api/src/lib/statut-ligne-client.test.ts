@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { statutLigneClient, type FaitsLigneClient } from './statut-ligne-client.js'
+import { ecruATransferer, statutLigneClient, type FaitsLigneClient } from './statut-ligne-client.js'
 
 const base: FaitsLigneClient = {
   quantite: 500, soldee: false, expedie: 0, pret: 0, nbPret: 0, nbControle: 0,
-  nbChezEnnoblisseur: 0, nbCommandesEnnoblisseur: 0, soumisClient: false, kgTricotage: 0, filAttendu: [],
+  nbChezEnnoblisseur: 0, nbEcruLibre: 0, ecruLibre: 0, nbEcruLibreChezEnnoblisseur: 0, nbEcruLibreChezMalterre: 0,
+  nbCommandesEnnoblisseur: 0, soumisClient: false, kgTricotage: 0, filAttendu: [],
 }
 const etat = (f: Partial<FaitsLigneClient>) => statutLigneClient({ ...base, ...f }, 'Ml').etat
 
@@ -40,6 +41,21 @@ describe('statutLigneClient', () => {
   })
   it('falls back to prête when rolls are ready but nothing else is launched', () => {
     expect(etat({ pret: 100, nbPret: 3 })).toBe('pae')
+  })
+  it('écru reserved with us and none at a dyer is to transfer, and the pill says where (3957)', () => {
+    // 3957: 32 Ml ordered, one piece of 35,1 Ml knitted, reserved, at the factory
+    const f: FaitsLigneClient = { ...base, quantite: 32, nbEcruLibre: 1, ecruLibre: 35.1, nbEcruLibreChezMalterre: 1 }
+    expect(statutLigneClient(f, 'Ml').etat).toBe('a_lancer')
+    expect(ecruATransferer(f)).toBe(true)
+    expect(statutLigneClient(f, 'Ml').preuves).toContain('1 pièce écru chez Malterre, à transférer chez l’ennoblisseur')
+    // a piece already at a dyer: the order can be made there
+    expect(ecruATransferer({ ...f, nbEcruLibre: 2, nbEcruLibreChezEnnoblisseur: 1 })).toBe(false)
+    // écru short of the line: there is still knitting to launch
+    expect(ecruATransferer({ ...f, ecruLibre: 20 })).toBe(false)
+    expect(ecruATransferer(base)).toBe(false)
+    // at another place than the factory or a dyer
+    expect(statutLigneClient({ ...f, nbEcruLibreChezMalterre: 0 }, 'Ml').preuves)
+      .toContain('1 pièce écru hors de chez l’ennoblisseur, à transférer chez l’ennoblisseur')
   })
   it('is à lancer with no fact', () => {
     expect(etat({})).toBe('a_lancer')

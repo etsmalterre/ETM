@@ -24,7 +24,7 @@
 //    stock_fini.IDligne_commande_client (distinct from the sst affectation).
 
 import { rouleauxEstimesParLigne, type RouleauxEstimes } from '../lib/rouleaux-estimes.js'
-import { faitsLignesClient, filAttenduLe, statutLigneClient, type EtatLigneClient, type FaitsLigneClient } from '../lib/statut-ligne-client.js'
+import { ecruATransferer, faitsLignesClient, filAttenduLe, statutLigneClient, type EtatLigneClient, type FaitsLigneClient } from '../lib/statut-ligne-client.js'
 import { etudesParId, etudeUrgence, enregistrerRelance, mailRelanceEtude, refusLienEtude, LIBELLE_COLORIS_EN_ETUDE } from '../lib/etude-ligne-client.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 import { mpsPg } from '../lib/mps-pg.js'
@@ -360,6 +360,7 @@ async function etatCommandesOuvertes(lignes: any[], relanceParCommande: Map<numb
       filAttenduLe: filAttenduLe(f),
       lancementLe: lancements.get(Number(l.IDligne_commande_client))?.date ?? null,
       lancementEtape: lancements.get(Number(l.IDligne_commande_client))?.etape ?? null,
+      ecruATransferer: ecruATransferer(f),
       preteSiLanceLe: planifies.get(Number(l.IDligne_commande_client))?.standard?.date ?? null,
       urgencePrevue: !!lancements.get(Number(l.IDligne_commande_client))?.urgencePrevue && !!planifies.get(Number(l.IDligne_commande_client))?.urgence?.tient,
       preteAuPlusTot: auPlusTot.get(Number(l.IDligne_commande_client))?.date ?? null,
@@ -2044,6 +2045,7 @@ commandesClientRouter.get('/:id', async (req: Request, res: Response) => {
             filAttenduLe: f ? filAttenduLe(f) : null,
             lancementLe: lancement?.date ?? null,
             lancementEtape: lancement?.etape ?? null,
+            ecruATransferer: !!f && ecruATransferer(f),
             preteSiLanceLe: preteSiLance,
             urgencePrevue: !!urgencePrevue?.tient,
             preteAuPlusTot: auPlusTotLigne?.date ?? null,

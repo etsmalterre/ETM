@@ -87,7 +87,7 @@ import { SmartSearchInput, filterRowsByTags, type SearchTagDef } from '@/compone
 import { EtiquettesSpTab } from '@/components/etiquettes/EtiquettesSpTab'
 import { FilEnStockZone, FilLigneTab, filLigneQueryKey, tricoteursPrets, useFilLigne, type FilPayload } from '@/components/fils/FilLigneTab'
 import { AffecteGauge, CartePoids, type PartPoids } from '@/components/commandes/ReservationParts'
-import { EcruLigneZone, PieceEcruLigne, PiecesEcruCarte, lieuxAEnnoblir, matiereEcruQueryKey, useMatiereEcru, type LieuEnnoblisseur } from '@/components/commandes/EcruLigneZone'
+import { EcruLigneZone, PieceEcruLigne, PiecesEcruCarte, ecruAEnnoblir, ecruATransferer, lieuxAEnnoblir, matiereEcruQueryKey, useMatiereEcru, type LieuEnnoblisseur } from '@/components/commandes/EcruLigneZone'
 import { BoutonsCommande, ZoneLigne, zoneActionClass } from '@/components/commandes/ZonesLigne'
 import { GESTES_TROP_TARD, LancementLabel, PlanifierBouton, UrgencePrevueBouton, UrgencePrevueLabel, type EtapeLancement, type UrgenceApresTricotage, type UrgencePrevue } from '@/components/commandes/LancementLigne'
 import { LotsFilPicker, LotsFilLecture, couvertureFils, avecLignesJointes, type ChoixLots, type FilALancer } from '@/components/fils/LotsFilPicker'
@@ -2832,13 +2832,16 @@ function AffectationDrawer({
   // « Planifier » next to the bottom zones' order buttons (Vincent 2026-10-28): the line's launch date
   // (lib/lancement-ligne.ts), the tab giving the step that waits. Shown only where it means something:
   // on a line still to launch, in the tab of the step the date holds (« Ennoblir le 16/11 »), or in a
-  // tab whose step could go now — écru reserved at a dyer, yarn lots reserved at a knitter, yarn still
-  // to order. A date without a step (before 0040) shows in every tab.
+  // tab whose step could go now — écru reserved to the line (at a dyer or still with us: holding the
+  // dyeing does not need the pieces to be there yet, Vincent 2026-11-27), yarn lots reserved at a
+  // knitter, yarn still to order. A date without a step (before 0040) shows in every tab.
   const aPlanifier: Record<EtapeLancement, boolean> = {
-    ennoblissement: lieuxAEnnoblir(matiereEcru).length > 0,
+    ennoblissement: ecruAEnnoblir(matiereEcru),
     tricotage: tricoteursPrets(filLigne).length > 0,
     fil: (filLigne?.yarns ?? []).some((y) => y.pourcentage > 0 && y.manque_kg > 0.05),
   }
+  // The line's écru sits with us, none at a dyer: why « Ennoblir » cannot be clicked yet (null otherwise).
+  const aTransferer = ecruATransferer(matiereEcru)
   // « En préparation »: an order button stays visible but waits for the validation (doctrine des délais §5 ter).
   const tantQuePreparation = <T extends { actif: boolean; titre: string }>(l: T): T =>
     enPreparation ? { ...l, actif: false, titre: 'Commande en préparation : validez-la (pied de page) avant de passer commande' } : l
@@ -3207,11 +3210,16 @@ function AffectationDrawer({
             actions={soldee ? null : <>{planifier('ennoblissement')}<BoutonsCommande
               icon={Droplets}
               verbe="Ennoblir"
-              lieux={lieuxAEnnoblir(matiereEcru).map((l) => tantQuePreparation({
-                key: l.IDsous_traitant, nom: l.location_nom, actif: true,
-                titre: `Envoyer chez ${l.location_nom} les ${l.nb} pièce${l.nb > 1 ? 's' : ''} réservée${l.nb > 1 ? 's' : ''} à la ligne (${fmtNum(l.kg, 1)} kg)`,
-                onClick: () => setCreateEnnoLocation({ IDsous_traitant: l.IDsous_traitant, location_nom: l.location_nom }),
-              }))}
+              lieux={[
+                ...lieuxAEnnoblir(matiereEcru).map((l) => tantQuePreparation({
+                  key: l.IDsous_traitant, nom: l.location_nom, actif: true,
+                  titre: `Envoyer chez ${l.location_nom} les ${l.nb} pièce${l.nb > 1 ? 's' : ''} réservée${l.nb > 1 ? 's' : ''} à la ligne (${fmtNum(l.kg, 1)} kg)`,
+                  onClick: () => setCreateEnnoLocation({ IDsous_traitant: l.IDsous_traitant, location_nom: l.location_nom }),
+                })),
+                // Écru reserved but none at a dyer: the order is made where the pieces are, so the
+                // button is there, greyed, and says what is missing (order 3957, Vincent 2026-11-27).
+                ...(aTransferer ? [{ key: 0, nom: '', actif: false, titre: aTransferer, onClick: () => {} }] : []),
+              ]}
             /></>}
           >
             <SupplyTable

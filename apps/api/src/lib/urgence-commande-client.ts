@@ -46,6 +46,10 @@
 // after its délai, so the delay is known today — red now, the person moves the planning, asks the
 // dyer for an urgency or calls the client for a report.
 //
+// A fini line « à lancer » whose écru is knitted and reserved but sits with us (the factory, never a
+// dyer) names the transfer, not the launch (Vincent 2026-11-27, order 3957): the dyer order is made
+// where the pieces are, so « à lancer » offered no gesture. Still red — moving the pieces is ours, now.
+//
 // A line without a délai is red (2026-10-22): giving the client a délai is ours to do now. Except a fini
 // line still waiting for its étude coloris (lib/etude-ligne-client.ts): no délai can be given, the only
 // action is to chase the lab or the client once they take longer than usual — red, never amber.
@@ -118,6 +122,9 @@ export interface LigneUrgence {
   lancementLe?: string | null
   /** what waits for that date (the tab where it was planned): the red reason names that action */
   lancementEtape?: 'fil' | 'tricotage' | 'ennoblissement' | null
+  /** fini line à lancer: its écru is reserved, covers the line, and none of it is at a dyer
+   *  (lib/statut-ligne-client.ts ecruATransferer): the action is the transfer */
+  ecruATransferer?: boolean
   /** the earliest ready date if the line is launched on lancementLe (lib/delai-au-plus-tot.ts from that
    *  day, YYYYMMDD); after dateLivraison = planned too late */
   preteSiLanceLe?: string | null
@@ -160,7 +167,7 @@ export function commandeIncomplete(lignes: readonly Pick<LigneUrgence, 'etat' | 
   return lignes.some(enProduction)
 }
 
-type Action = 'intenable' | 'relancer_urgence' | 'relancer_urgence_enno' | 'planif_tardive' | 'lancer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'retard_stock' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
+type Action = 'intenable' | 'relancer_urgence' | 'relancer_urgence_enno' | 'planif_tardive' | 'lancer' | 'transferer' | 'commander_fil' | 'tricoter' | 'ennoblir' | 'expedier' | 'retard_stock' | 'solder' | 'relancer' | 'tricotage' | 'ennoblisseur' | 'sans_delai'
   | 'relancer_fournisseur' | 'fil_sans_date'
   | 'etude_labo' | 'etude_client' | 'etude_acceptee' | 'etude_annulee'
 
@@ -251,6 +258,8 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
     return prete && prete > date ? { niveau: 'rouge', action: 'intenable', jours: j, date } : null
   }
   if (l.etat === 'a_lancer') {
+    // Its écru is with us, not at a dyer: what there is to do is the transfer (no dyer order without it).
+    const transferer = l.typeKind === 2 && !!l.ecruATransferer
     // Held on purpose until its launch date: nothing to do before it.
     const lancement = ymd(l.lancementLe)
     if (lancement) {
@@ -263,10 +272,12 @@ export function urgenceLigne(l: LigneUrgence, today: Date): Verdict | null {
       }
       if (jl > 0) return null
       const parEtape = { fil: 'commander_fil', tricotage: 'tricoter', ennoblissement: 'ennoblir' } as const
-      const action: Action = l.lancementEtape ? parEtape[l.lancementEtape] : 'lancer'
+      const etape = l.lancementEtape ?? null
+      const action: Action = transferer && (etape === null || etape === 'ennoblissement') ? 'transferer'
+        : etape ? parEtape[etape] : 'lancer'
       return { niveau: 'rouge', action, jours: jl, date: lancement }
     }
-    return { niveau: 'rouge', action: 'lancer', jours: j, date }
+    return { niveau: 'rouge', action: transferer ? 'transferer' : 'lancer', jours: j, date }
   }
   // tricotage / ennoblisseur: someone else acts; only a passed délai is ours to chase.
   if (j < 0) return { niveau: 'rouge', action: l.etat, jours: j, date }
@@ -292,6 +303,7 @@ const LIBELLE: Record<Action, [string, string]> = {
   relancer_urgence_enno: ['ligne : urgence demandée, relancer l’ennoblisseur', 'lignes : urgence demandée, relancer l’ennoblisseur'],
   planif_tardive: ['ligne planifiée trop tard', 'lignes planifiées trop tard'],
   lancer: ['ligne à lancer', 'lignes à lancer'],
+  transferer: ['ligne : pièces à transférer', 'lignes : pièces à transférer'],
   commander_fil: ['ligne : fil à commander', 'lignes : fil à commander'],
   tricoter: ['ligne à tricoter', 'lignes à tricoter'],
   ennoblir: ['ligne à ennoblir', 'lignes à ennoblir'],

@@ -98,6 +98,30 @@ export function lieuxAEnnoblir(data: MatiereEcru | undefined): (LieuEnnoblisseur
   return [...m.values()].sort((a, b) => a.location_nom.localeCompare(b.location_nom, 'fr'))
 }
 
+/** The pieces reserved to the line a dyer order would take: on no dyer order yet. */
+const piecesLibres = (data: MatiereEcru | undefined) => (data?.pieces ?? []).filter((p) => !(p.IDcommande_sous_traitant > 0))
+
+/** How many of those pieces sit in each place, « 1 pièce chez Malterre, 2 pièces chez MATEL ». */
+function piecesParLieu(pieces: PieceEcru[]): string {
+  const m = new Map<string, number>()
+  for (const p of pieces) m.set(p.magasin_nom || 'Malterre', (m.get(p.magasin_nom || 'Malterre') ?? 0) + 1)
+  return [...m].map(([lieu, n]) => `${n} pièce${n > 1 ? 's' : ''} chez ${lieu}`).join(', ')
+}
+
+/** The line holds écru a dyer order could take, wherever it sits: its dyeing can be planned. */
+export function ecruAEnnoblir(data: MatiereEcru | undefined): boolean {
+  return piecesLibres(data).length > 0
+}
+
+/** Why no dyer order can be made from the line yet although it holds écru: the pieces are with us (or
+ *  at a knitter), and the order is made where they are. Null when a dyer holds some, or none is held. */
+export function ecruATransferer(data: MatiereEcru | undefined): string | null {
+  const libres = piecesLibres(data)
+  if (libres.length === 0 || libres.some((p) => p.magasin_ennoblisseur)) return null
+  const lieux = [...new Set(libres.map((p) => p.magasin_nom || 'Malterre'))].join(', ')
+  return `Pièces chez ${lieux} : à transférer chez l’ennoblisseur (Transferts › Rouleaux)`
+}
+
 export function EcruLigneZone({ commandeId, ligneId, soldee, onChanged }: {
   commandeId: number
   ligneId: number
@@ -121,7 +145,7 @@ export function EcruLigneZone({ commandeId, ligneId, soldee, onChanged }: {
   const e = data?.stades.ecru
   // In the line's unit: Ml through the fini's rendement, else kg.
   const enUnite = (kg: number) => (data?.dim === 'metrage' ? kg * (data.rendement || 0) : kg)
-  const dispo = (data?.pieces ?? []).filter((p) => !(p.IDcommande_sous_traitant > 0))
+  const dispo = piecesLibres(data)
   const surCommande = (data?.pieces ?? []).filter((p) => p.IDcommande_sous_traitant > 0)
   const tenu = enUnite(dispo.reduce((x, p) => x + (Number(p.poids) || 0), 0))
   const chezEnnoblisseur = enUnite(surCommande.reduce((x, p) => x + (Number(p.poids) || 0), 0))
@@ -169,8 +193,9 @@ export function EcruLigneZone({ commandeId, ligneId, soldee, onChanged }: {
               <div className="px-2.5 py-2 flex items-center gap-2">
                 <TmRollIcon className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
                 <span className="flex-shrink-0 font-medium">{data.ecru_ref_label || 'Tombé de métier'}</span>
-                <span className="min-w-0 truncate text-muted-foreground">
-                  {dispo.length > 0 && <> · {dispo.length} pièce{dispo.length > 1 ? 's' : ''}</>}
+                {/* Where the pieces are: a dyer order is made there, so a piece with us is to transfer first. */}
+                <span className="min-w-0 truncate text-muted-foreground" title={dispo.length > 0 ? piecesParLieu(dispo) : undefined}>
+                  {dispo.length > 0 && <> · {piecesParLieu(dispo)}</>}
                 </span>
                 <span className={cn('ml-auto flex-shrink-0 inline-flex items-center gap-1 tabular-nums', couvert ? 'text-green-700 font-medium' : 'text-muted-foreground')}>
                   {couvert && <CheckCircle2 className="h-3.5 w-3.5" />}

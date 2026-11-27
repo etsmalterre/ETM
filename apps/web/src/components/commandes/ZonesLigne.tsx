@@ -58,7 +58,9 @@ export const zoneActionClass = 'h-7 px-2.5 text-xs'
 
 /** The bottom zone's order buttons: one per place holding matter reserved to the line (« Ennoblir chez
  *  MATEL »), active only when that matter allows the order (greyed, hover = what is missing there).
- *  Nothing reserved anywhere = no button (Vincent 2026-10-28): the top zone is the way to reserve. */
+ *  Nothing reserved anywhere = no button (Vincent 2026-10-28): the top zone is the way to reserve.
+ *  A place without a name = the bare verb, greyed: matter is reserved, but nowhere an order can be made
+ *  (écru with us, to transfer to the dyer first — Vincent 2026-11-27). */
 export function BoutonsCommande({ icon: Icon, verbe, lieux }: {
   icon: ComponentType<{ className?: string }>
   verbe: string
@@ -70,7 +72,7 @@ export function BoutonsCommande({ icon: Icon, verbe, lieux }: {
         // A span carries the hover of a disabled button (a disabled button gets no pointer events).
         <span key={l.key} title={l.titre} className="inline-flex">
           <Button size="sm" disabled={!l.actif} onClick={l.onClick} className={zoneActionClass}>
-            <Icon className="h-3.5 w-3.5 mr-1.5" />{verbe}{lieux.length > 1 || l.nom ? ` chez ${l.nom}` : ''}
+            <Icon className="h-3.5 w-3.5 mr-1.5" />{verbe}{l.nom ? ` chez ${l.nom}` : ''}
           </Button>
         </span>
       ))}
