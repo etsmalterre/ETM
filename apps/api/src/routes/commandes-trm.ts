@@ -70,7 +70,7 @@ import { getUserEmail } from '../lib/user-emails.js'
 import { loadEtmAffectation } from '../lib/affectation-fil-trm.js'
 import { horsRefParOf, type FilHorsRef } from '../lib/hors-ref-trm.js'
 import { noterDelaiRecu } from '../lib/delai-sst.js'
-import { refusAvanceDelai } from '../lib/report-delai-sst.js'
+import { noterAvanceDelai, refusAvanceDelai } from '../lib/report-delai-sst.js'
 import { enAttenteDeReponse, noterReponseUrgence, refuserUrgence, UrgenceRefusee, urgencesLignes, type UrgenceLigne } from '../lib/urgence-sst.js'
 import { nomUtilisateur } from '../lib/stock-fini-mesures.js'
 
@@ -1374,9 +1374,9 @@ commandesTrmRouter.put('/lignes/:lineId/delai', async (req: Request, res: Respon
     // A mirror is fine here (that is the point); a soldée order is not.
     if (refuseIfSoldee(res, g)) return
 
-    // On a mirror the date is ETM's sous-traitant délai too: never brought
-    // earlier once given (lib/report-delai-sst.ts, Vincent 2026-11-10). Checked
-    // before either ledger is written.
+    // On a mirror the date is ETM's sous-traitant délai too: brought earlier
+    // only to a date still to come (lib/report-delai-sst.ts). Checked before
+    // either ledger is written.
     if (g.IDcommande_ETM > 0) {
       const link = await query<{ IDligne_commande_ETM: number | null }>(
         `SELECT IDligne_commande_ETM FROM ligne_commande_client WHERE IDligne_commande_client = ${lineId}`,
@@ -1430,9 +1430,11 @@ commandesTrmRouter.put('/lignes/:lineId/delai', async (req: Request, res: Respon
           if (premierDelai || ((cur[0].sstatut ?? '').trim() === STATUT_ATTENTE_DELAI && r.sstatut !== STATUT_ATTENTE_DELAI)) {
             await noterDelaiRecu(sstLineId, r.date_livraison || null, req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
           }
+          const par = req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null
+          // TRM announced an earlier délai: a fact for ETM's Journal.
+          await noterAvanceDelai({ idligne: sstLineId, avant: cur[0], nouveau: r.date_livraison, par })
           // TRM moved the délai it had given while an urgency awaited: that is its answer.
-          await noterReponseUrgence(sstLineId, cur[0].date_livraison, r.date_livraison,
-            req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
+          await noterReponseUrgence(sstLineId, cur[0].date_livraison, r.date_livraison, par)
         }
       } catch (e: any) {
         console.error('[trm-bridge] DELAI: sst update failed for cc line', lineId, e)

@@ -2314,6 +2314,21 @@ ${grantApi('SELECT, INSERT', 'relance_controle')}
 ${grantApi('USAGE, SELECT', 'SEQUENCE relance_controle_id_seq')}
 `,
   },
+  {
+    // A sous-traitant's délai brought EARLIER (Vincent 2026-11-27, order 9161,
+    // lib/report-delai-sst.ts): accepted when the sous-traitant announces it
+    // ahead (the new date is still to come), and a fact of its own for the
+    // Journal — old date in ancien_delai, new one in delai_donne, no motif.
+    name: '0090_avance_delai_sst',
+    sql: `
+ALTER TABLE delai_sst_evenement DROP CONSTRAINT delai_sst_evenement_type_check;
+ALTER TABLE delai_sst_evenement ADD CONSTRAINT delai_sst_evenement_type_check
+  CHECK (type IN ('relance', 'report', 'delai_recu', 'report_delai', 'avance_delai'));
+ALTER TABLE delai_sst_evenement ADD CONSTRAINT delai_sst_evenement_avance_delai_check
+  CHECK (type <> 'avance_delai' OR (idligne_commande_sous_traitant > 0 AND delai_donne IS NOT NULL
+    AND ancien_delai IS NOT NULL AND delai_donne < ancien_delai));
+`,
+  },
 ]
 
 export interface MigrationStatus {

@@ -19,7 +19,7 @@ import { valeurStab } from '../../stabilites.js'
 import { query } from '../../hfsql-auto.js'
 import { esc, sstDelaiSets, STATUT_ATTENTE_DELAI, STATUT_NON_ENVOYE } from '../../sst-shared.js'
 import { noterDelaiRecu } from '../../delai-sst.js'
-import { dateDeReference, enregistrerReportDelai, estUnReportDelai, refusAvanceDelai } from '../../report-delai-sst.js'
+import { dateDeReference, enregistrerReportDelai, estUnReportDelai, noterAvanceDelai, refusAvanceDelai } from '../../report-delai-sst.js'
 import { noterReponseUrgence } from '../../urgence-sst.js'
 import type { Decision, PointMesure, StatutPoint } from '../competences.js'
 import { enregistrerRetour } from '../retours.js'
@@ -268,14 +268,17 @@ export async function lireEtatLigne(idligne: number): Promise<EtatLigne | null> 
 export async function ecrireDelai(idligne: number, delai: string, par: Auteur, citation?: string | null): Promise<EtatLigne> {
   const avant = await lireEtatLigne(idligne)
   if (!avant) throw new Error(`ligne ${idligne} introuvable`)
-  // Never brought earlier, by Tricobot either (lib/report-delai-sst.ts).
-  const avance = await refusAvanceDelai(Math.trunc(idligne), { date_livraison: avant.dateLivraison, date_delai: avant.dateDelai, sstatut: avant.sstatut }, delai)
+  // Brought earlier only to a date still to come, by Tricobot too (lib/report-delai-sst.ts).
+  const cur = { date_livraison: avant.dateLivraison, date_delai: avant.dateDelai, sstatut: avant.sstatut }
+  const avance = await refusAvanceDelai(Math.trunc(idligne), cur, delai)
   if (avance) throw new Error(avance)
-  const r = sstDelaiSets({ date_livraison: avant.dateLivraison, date_delai: avant.dateDelai, sstatut: avant.sstatut }, delai)
+  const r = sstDelaiSets(cur, delai)
   await query(`UPDATE ligne_commande_sous_traitant SET ${r.sets.join(', ')} WHERE IDligne_commande_sous_traitant = ${Math.trunc(idligne)}`)
   if (avant.sstatut === STATUT_ATTENTE_DELAI && r.sstatut !== STATUT_ATTENTE_DELAI && r.sstatut !== STATUT_NON_ENVOYE) {
     await noterDelaiRecu(idligne, r.date_livraison || null, par)
   }
+  // The dyer announced an earlier délai: a fact for the Journal.
+  await noterAvanceDelai({ idligne: Math.trunc(idligne), avant: cur, nouveau: r.date_livraison, par })
   // The dyer moved the délai it had given while an urgency awaited: that is its answer.
   await noterReponseUrgence(Math.trunc(idligne), avant.dateLivraison, r.date_livraison, par)
   if (estUnReportDelai(avant.dateLivraison, avant.dateDelai, r.date_livraison)) {

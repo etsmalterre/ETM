@@ -101,7 +101,7 @@ import { noterSaisieHumaine } from '../lib/agents/flux-ennoblisseur/observation.
 import { DELAI_PREMIERE_DEMANDE_J, DelaiRefuse, noterDelaiRecu, noterRelance, ouvresEntre, plusOuvres, repousserEcheance } from '../lib/delai-sst.js'
 import { contexteMailUrgence, demanderUrgence, GESTES_MAIL, joursReponseUrgence, leverUrgence, noterMailUrgence, noterReponseUrgence, refuserUrgence, refusUrgenceNouvelleLigne, texteMailUrgence, UrgenceRefusee, urgencesLignes, type UrgenceLigne } from '../lib/urgence-sst.js'
 import { fermetures } from '../lib/delais-standards.js'
-import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, refusAvanceDelai, reportsDelaiParLigne, retardClientReports, retardDelai } from '../lib/report-delai-sst.js'
+import { dateDeReference, enregistrerReportDelai, estUnReportDelai, lireReport, noterAvanceDelai, refusAvanceDelai, reportsDelaiParLigne, retardClientReports, retardDelai } from '../lib/report-delai-sst.js'
 import { ecrireMlNonFactures, validerSaisie } from '../lib/ml-non-factures.js'
 import { childNumero, cutBase, nextCutIndex } from '../lib/roll-cut.js'
 import { normaliserLot, refusLotSuffixe, reprisesParRouleau, retourRouleau } from '../lib/reprises.js'
@@ -5370,7 +5370,8 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     }
     // A date pushed later than the one given is a report (LIVA #1364): motif +
     // who it is due to, or refused. The first date is free; an earlier one is
-    // refused (the engagement stays true, Vincent 2026-11-10).
+    // accepted only when announced ahead (a date still to come, Vincent
+    // 2026-11-27) — lib/report-delai-sst.ts.
     if (d.date_livraison !== undefined) {
       const avance = await refusAvanceDelai(lineId, cur, d.date_livraison)
       if (avance) { res.status(409).json({ error: 'delai_avance', message: avance }); return }
@@ -5421,10 +5422,12 @@ commandesSousTraitantRouter.put('/lignes/:lineId', async (req: Request, res: Res
     await query(
       `UPDATE ligne_commande_sous_traitant SET ${sets.join(', ')} WHERE IDligne_commande_sous_traitant = ${lineId}`,
     )
-    // The délai the knitter had given moved while an urgency awaited: that is its answer.
     if (d.date_livraison !== undefined) {
-      await noterReponseUrgence(lineId, cur.date_livraison, delaiApres,
-        req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null)
+      const par = req.userId !== undefined ? { id: req.userId, nom: await nomUtilisateur(req.userId) } : null
+      // The sous-traitant announced an earlier délai: a fact for the Journal.
+      await noterAvanceDelai({ idligne: lineId, avant: cur, nouveau: delaiApres, par })
+      // The délai the knitter had given moved while an urgency awaited: that is its answer.
+      await noterReponseUrgence(lineId, cur.date_livraison, delaiApres, par)
     }
     // The dyer answered the délai question (LIVA #1314: Qualité de service).
     if ((cur.sstatut ?? '').trim() === STATUT_ATTENTE_DELAI && statutApres !== STATUT_ATTENTE_DELAI && statutApres !== STATUT_NON_ENVOYE) {

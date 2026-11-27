@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dateDeReference, estUneAvanceDelai, estUnReportDelai, lireReport, retardDelai } from './report-delai-sst.js'
+import { aujourdhuiParisYmd, dateDeReference, estUneAvanceAnnoncee, estUneAvanceDelai, estUnReportDelai, lireReport, retardDelai } from './report-delai-sst.js'
 
 describe('report de délai sous-traitant (LIVA #1364)', () => {
   it('the first date and an earlier one are free; a later one is a report', () => {
@@ -9,7 +9,21 @@ describe('report de délai sous-traitant (LIVA #1364)', () => {
     expect(estUnReportDelai('20261110', '20261105', '20261112')).toBe(true)
     expect(estUnReportDelai('20261110', '', '2026-11-12')).toBe(true)
   })
-  it('bringing a given délai earlier is an advance (refused); the first date and clearing are not', () => {
+  it('an advance is accepted when announced ahead: the new date is still to come (order 9161, 2026-11-27)', () => {
+    // MATEL confirms the 11/12 instead of the 17/12, on 27/11.
+    expect(estUneAvanceDelai('20261217', '20261217', '20261211')).toBe(true)
+    expect(estUneAvanceAnnoncee('20261211', '20261127')).toBe(true)
+    expect(estUneAvanceAnnoncee('2026-11-28', '20261127')).toBe(true)
+    // Today or past = a delivery read back into the délai: still refused.
+    expect(estUneAvanceAnnoncee('20261127', '20261127')).toBe(false)
+    expect(estUneAvanceAnnoncee('20261120', '20261127')).toBe(false)
+    expect(estUneAvanceAnnoncee('', '20261127')).toBe(false)
+  })
+  it('today is read in Paris', () => {
+    expect(aujourdhuiParisYmd(new Date('2026-11-27T23:30:00Z'))).toBe('20261128')
+    expect(aujourdhuiParisYmd(new Date('2026-07-01T21:59:00Z'))).toBe('20260701')
+  })
+  it('bringing a given délai earlier is an advance; the first date and clearing are not', () => {
     expect(estUneAvanceDelai('20261118', '20261118', '20261110')).toBe(true)
     expect(estUneAvanceDelai('', '20261118', '20261110')).toBe(true)
     expect(estUneAvanceDelai('', '', '20261110')).toBe(false)

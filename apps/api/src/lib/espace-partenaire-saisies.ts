@@ -11,9 +11,10 @@
 //  - the order / the lot is one the partner can open (lib/espace-partenaire-commandes.ts: its own, bon de
 //    commande e-mailed, in the twelve months) — anything else is « not found », never « not yours »;
 //  - a délai: the order is in progress and the line not delivered; a real date, from today, at most
-//    DELAI_MAX_J ahead (Tricobot's own doubt); never earlier than the one given (the engagement rule,
-//    lib/report-delai-sst.ts `refusAvanceDelai`, with its exceptions); a later one is a report, due to the
-//    sous-traitant, and needs the partner's reason;
+//    DELAI_MAX_J ahead (Tricobot's own doubt); earlier than the one given only as an announcement, a date
+//    still to come (the engagement rule, lib/report-delai-sst.ts `refusAvanceDelai`, with its exceptions:
+//    today's date is a delivery, read on the reception); a later one is a report, due to the sous-traitant,
+//    and needs the partner's reason;
 //  - measures: the lot is at a step where the partner measures (LOT_MESURABLE), never a validated one; only the
 //    measures the reference asks it; a measure left out keeps its value, an empty one erases it.
 // The partner's wording of a refusal is its own: it never reads ETM's (« engagement du sous-traitant »).
@@ -102,7 +103,7 @@ export function lireSaisieMesures(saisie: Partial<Record<CleMesure, unknown>>, a
 
 // ── The two writes ──────────────────────────────────────────
 
-/** The partner gives (or pushes back) its délai for one line of one of its orders. `par`: who typed, as the
+/** The partner gives (or pushes back, or brings earlier) its délai for one line of one of its orders. `par`: who typed, as the
  *  portal names its contact. Resolves to false when the line already carries that date. */
 export async function donnerDelaiPartenaire(
   idSousTraitant: number, idCommande: number, idLigne: number, saisie: { delai: unknown; motif?: unknown }, par: string,
@@ -121,7 +122,7 @@ export async function donnerDelaiPartenaire(
   const cur = { date_livraison: avant.dateLivraison, date_delai: avant.dateDelai, sstatut: avant.sstatut }
   if (await refusAvanceDelai(idLigne, cur, delai)) {
     throw new RefusSaisie(409, 'delai_avance',
-      `Votre délai du ${jjmmaaaa(dateDeReference(avant.dateLivraison, avant.dateDelai))} est un engagement : il peut être repoussé, pas avancé. Une livraison en avance se constate à la réception.`)
+      `Votre délai du ${jjmmaaaa(dateDeReference(avant.dateLivraison, avant.dateDelai))} ne s’avance qu’à une date à venir. Une livraison en avance se constate à la réception.`)
   }
   const motif = typeof saisie.motif === 'string' ? saisie.motif.replace(/\s+/g, ' ').trim().slice(0, 400) : ''
   const report = estUnReportDelai(avant.dateLivraison, avant.dateDelai, delai)

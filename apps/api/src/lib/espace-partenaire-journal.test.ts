@@ -9,6 +9,7 @@ describe('the order’s journal as the partner reads it', () => {
     expect(e('bon_commande', 'Bon de commande envoyé', 'À perrine@example.com')).toMatchObject({ titre: 'Bon de commande envoyé', detail: null, lot: null })
     expect(e('delai_recu', 'Délai reçu : 11/12/2026', '228/122')).toMatchObject({ titre: 'Délai enregistré : 11/12/2026', detail: null })
     expect(e('report', 'Délai repoussé du 20/11 au 18/12', '027A — De notre fait — fil en retard')).toMatchObject({ titre: 'Délai repoussé du 20/11 au 18/12', detail: null })
+    expect(e('delai_recu', 'Délai avancé du 17/12 au 11/12', '176A')).toMatchObject({ titre: 'Délai avancé du 17/12 au 11/12', detail: null })
     expect(e('urgence', 'Passage en urgence', '224A — souhaité pour le 11/12 — réponse attendue le 26/11 — client pressé'))
       .toMatchObject({ titre: 'Commande passée en urgence', detail: 'Souhaitée pour le 11/12' })
     expect(e('urgence', 'Urgence refusée par le sous-traitant : délai maintenu au 18/12')?.titre).toBe('Urgence refusée : délai maintenu au 18/12')

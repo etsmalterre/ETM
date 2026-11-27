@@ -9,15 +9,21 @@
 //     answer to a coloris soumission took more than its 5 working days —
 //     Vincent 2026-11-11, migration 0074), recorded as a `report_delai` row of
 //     delai_sst_evenement (append-only, migration 0073);
-//   - bringing it EARLIER is refused (Vincent 2026-11-10): the engagement stays
-//     true, a delivery ahead of it is read from the reception (Qualité de
-//     service), never by moving the délai — 30 délais had been set to « the day
-//     the rolls came in », which turned a half delivery red. Two exceptions: the
-//     bon de commande is not out yet (Non_Envoye, the date is hypothetical), and
-//     a typo the same day the date was given (delai_recu / report_delai today).
-//     And one case where we asked for it: an urgency awaits the partner's answer
-//     (lib/urgence-sst.ts, Vincent 2026-11-16) — the earlier délai is that answer,
-//     the engagement (`date_delai`) stays the first promise;
+//   - bringing it EARLIER is accepted only as an ANNOUNCEMENT (Vincent
+//     2026-11-27, order 9161: MATEL confirmed the 11/12 instead of the 17/12,
+//     which put the client order back on time): the new date is still to come
+//     (after today). The engagement (`date_delai`) stays the first promise, the
+//     current délai is what the client line's earliest date and the chase read,
+//     and the gesture is a fact `avance_delai` of delai_sst_evenement (migration
+//     0090) for the Journal. A date of today or past stays refused (Vincent
+//     2026-11-10): a delivery ahead of the délai is read from the reception
+//     (Qualité de service), never by moving the délai — 30 délais had been set
+//     to « the day the rolls came in », which turned a half delivery red. The
+//     other exceptions: the bon de commande is not out yet (Non_Envoye, the date
+//     is hypothetical), a typo the same day the date was given (delai_recu /
+//     report_delai / avance_delai today), and an urgency awaiting the partner's
+//     answer (lib/urgence-sst.ts, Vincent 2026-11-16) — the earlier délai is
+//     that answer, told by the urgency's own fact;
 //   - the delay a line carries = working days from the engagement to the current
 //     date, in the sous-traitant's own calendar, MINUS the days of the reports
 //     due to the client (retardClientReports): never the sous-traitant's. Clients › Commandes prints it
@@ -60,36 +66,81 @@ export function estUnReportDelai(dateLivraison: unknown, dateDelai: unknown, nou
   return !!avant && !!apres && apres > avant
 }
 
-/** True when writing `nouvelle` brings a given délai earlier (refused, see the
- *  header). Clearing the date is not. */
+/** True when writing `nouvelle` brings a given délai earlier (see the header:
+ *  accepted when announced ahead, refused otherwise). Clearing the date is not. */
 export function estUneAvanceDelai(dateLivraison: unknown, dateDelai: unknown, nouvelle: unknown): boolean {
   const avant = dateDeReference(dateLivraison, dateDelai)
   const apres = ymd(nouvelle)
   return !!avant && !!apres && apres < avant
 }
 
-export const MESSAGE_AVANCE_DELAI = (avant: string): string =>
-  `Le délai du ${avant.slice(6, 8)}/${avant.slice(4, 6)}/${avant.slice(0, 4)} est un engagement du sous-traitant : il ne s’avance pas. Une livraison en avance se lit à la réception.`
+/** Today in Paris, YYYYMMDD. */
+export function aujourdhuiParisYmd(maintenant: Date = new Date()): string {
+  return new Intl.DateTimeFormat('fr-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(maintenant).replace(/-/g, '')
+}
 
-/** The line's délai was given today (« délai reçu » or a report): a typo may
- *  still be corrected downwards. */
+/** True when an earlier délai is an ANNOUNCEMENT: the sous-traitant says ahead
+ *  that it will deliver sooner, so the new date is still to come. A date of
+ *  today or past is a delivery being read back into the délai (refused). */
+export function estUneAvanceAnnoncee(nouvelle: unknown, aujourdhui: string): boolean {
+  const apres = ymd(nouvelle)
+  return !!apres && apres > aujourdhui
+}
+
+export const MESSAGE_AVANCE_DELAI = (avant: string): string =>
+  `Le délai du ${avant.slice(6, 8)}/${avant.slice(4, 6)}/${avant.slice(0, 4)} ne s’avance qu’à une date à venir. Une livraison en avance se lit à la réception.`
+
+/** The line's délai was given today (« délai reçu », a report or an advance):
+ *  a typo may still be corrected downwards. */
 export async function delaiDonneAujourdhui(idligne: number, sql: Sql = mpsPg()): Promise<boolean> {
   const [r] = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n FROM delai_sst_evenement
-     WHERE idligne_commande_sous_traitant = ${idligne} AND type IN ('delai_recu', 'report_delai')
+     WHERE idligne_commande_sous_traitant = ${idligne} AND type IN ('delai_recu', 'report_delai', 'avance_delai')
        AND (le AT TIME ZONE 'Europe/Paris')::date = (now() AT TIME ZONE 'Europe/Paris')::date`
   return Number(r?.n ?? 0) > 0
 }
 
 /** The one check every writer of a sst line's délai runs (ETM line PUT, TRM's
- *  délai on a mirror, Tricobot): the refusal message, or null when allowed. */
+ *  délai on a mirror, Tricobot, the espace partenaire): the refusal message,
+ *  or null when allowed. */
 export async function refusAvanceDelai(idligne: number, cur: { date_livraison: unknown; date_delai: unknown; sstatut: unknown }, nouvelle: unknown, sql: Sql = mpsPg()): Promise<string | null> {
   if (!estUneAvanceDelai(cur.date_livraison, cur.date_delai, nouvelle)) return null
   if (String(cur.sstatut ?? '').trim() === 'Non_Envoye') return null
+  // Announced ahead by the sous-traitant: the date is still to come.
+  if (estUneAvanceAnnoncee(nouvelle, aujourdhuiParisYmd())) return null
   if (await delaiDonneAujourdhui(idligne, sql)) return null
   // We asked for it: an urgency awaits the partner's answer, and an earlier délai IS that answer.
   if (await urgenceEnAttente(idligne, cur.date_livraison, sql)) return null
   return MESSAGE_AVANCE_DELAI(dateDeReference(cur.date_livraison, cur.date_delai))
+}
+
+/** Called by every writer of a line's délai, AFTER the write and BEFORE
+ *  `noterReponseUrgence`: a délai brought earlier is a fact of its own for the
+ *  Journal (« Délai avancé du … au … »). Nothing while the bon de commande is
+ *  not out (the date was hypothetical) nor while an urgency awaits (the
+ *  urgency's `reponse` tells it). Never throws: the délai is written. */
+export async function noterAvanceDelai(p: {
+  idligne: number
+  avant: { date_livraison: unknown; date_delai: unknown; sstatut: unknown }
+  nouveau: unknown
+  par: { id: number; nom: string | null } | null
+}, sql: Sql = mpsPg()): Promise<void> {
+  try {
+    if (!estUneAvanceDelai(p.avant.date_livraison, p.avant.date_delai, p.nouveau)) return
+    if (String(p.avant.sstatut ?? '').trim() === 'Non_Envoye') return
+    if (await urgenceEnAttente(p.idligne, p.avant.date_livraison, sql)) return
+    const iso = (d: string) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`
+    const [l] = await sql<{ cmd: number }[]>`
+      SELECT idcommande_sous_traitant AS cmd FROM ligne_commande_sous_traitant WHERE idligne_commande_sous_traitant = ${p.idligne}`
+    if (!l) return
+    await sql`
+      INSERT INTO delai_sst_evenement (idcommande_sous_traitant, idligne_commande_sous_traitant, type, ancien_delai, delai_donne, par_id, par)
+      VALUES (${Number(l.cmd)}, ${p.idligne}, 'avance_delai', ${iso(dateDeReference(p.avant.date_livraison, p.avant.date_delai))}::date,
+              ${iso(ymd(p.nouveau))}::date, ${p.par?.id ?? 0}, ${p.par?.nom ?? null})`
+  } catch (err) {
+    console.error('[report-delai-sst] avance non notée pour la ligne', p.idligne, err)
+  }
 }
 
 /** Working days the current délai is behind the engagement (0 when on time or

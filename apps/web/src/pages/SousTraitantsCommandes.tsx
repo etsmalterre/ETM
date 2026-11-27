@@ -6801,9 +6801,11 @@ function dateDonnee(l: Pick<LigneCommande, 'date_livraison' | 'date_delai'>): st
 
 /** Under the line form's date: the first délai given is an engagement (said once, when it is
  *  being given); a later one is a report — why, and who it is due to (same shape as a client
- *  line's report, ClientsCommandes). An earlier date is refused by the API (Vincent 2026-11-10: the
- *  engagement stays true, a delivery ahead of it is read on the reception) except to correct a date
- *  given the same day; said here before the save, the API has the last word. */
+ *  line's report, ClientsCommandes). An earlier date still to come is the sous-traitant announcing
+ *  it will deliver sooner: accepted, nothing to say (Vincent 2026-11-27; the engagement shown under
+ *  the date stays). An earlier date of today or past is refused by the API (Vincent 2026-11-10: a
+ *  delivery ahead of the délai is read on the reception) except to correct a date given the same
+ *  day; said here before the save, the API has the last word. */
 function EngagementDelai({ delaiDonne, nouveau, engagement, report, setReport }: {
   /** YYYYMMDD the date the line holds, '' for none (a new line) */
   delaiDonne: string
@@ -6824,10 +6826,13 @@ function EngagementDelai({ delaiDonne, nouveau, engagement, report, setReport }:
     ) : null
   }
   if (saisi && nouveau < delaiDonne) {
+    const t = new Date()
+    const aujourdhui = `${t.getFullYear()}${String(t.getMonth() + 1).padStart(2, '0')}${String(t.getDate()).padStart(2, '0')}`
+    if (nouveau > aujourdhui) return null
     return (
       <p className="flex items-start gap-1.5 text-xs font-medium text-red-700">
         <Info className="h-3.5 w-3.5 flex-shrink-0 mt-px" />
-        Le délai du {formatHfsqlDate(delaiDonne)} est un engagement du sous-traitant : il ne s’avance pas (sauf pour corriger une saisie du jour). Une livraison en avance se lit à la réception.
+        Le délai du {formatHfsqlDate(delaiDonne)} ne s’avance qu’à une date à venir (sauf pour corriger une saisie du jour). Une livraison en avance se lit à la réception.
       </p>
     )
   }

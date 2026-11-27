@@ -173,6 +173,12 @@ export async function lireJournalCommandeSst(idcommande: number, sql: Sql = mpsP
         detail: [d.ref?.trim() || null, libelleImputable(d.imputable), d.motif].filter(Boolean).join(' — '),
         par: d.par, auteur: d.par === 'Tricobot' ? 'tricobot' : qui(d.par),
       }))
+    } else if (d.type === 'avance_delai') {
+      // A délai the sous-traitant announced earlier (Vincent 2026-11-27, lib/report-delai-sst.ts).
+      out.push(commande({
+        le: iso(d.le), type: 'delai_recu', titre: `Délai avancé du ${d.ancien ? jjmm(d.ancien) : '—'} au ${d.delai ? jjmm(d.delai) : '—'}`,
+        detail: d.ref?.trim() || null, par: d.par, auteur: d.par === 'Tricobot' ? 'tricobot' : qui(d.par),
+      }))
     } else if (d.type === 'report') {
       out.push(commande({
         le: iso(d.le), type: 'report', titre: `Échéance repoussée au ${d.echeance ? jjmm(d.echeance) : '—'}`,

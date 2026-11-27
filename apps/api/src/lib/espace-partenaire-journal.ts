@@ -9,7 +9,7 @@
 // otherwise — so a new kind of entry in ETM's journal, or one re-worded there, never reaches a partner by
 // accident (it disappears from the portal until it is listed here).
 //
-// Shown: the bon de commande sent, the délai recorded and pushed back, the urgency (asked, cancelled, its
+// Shown: the bon de commande sent, the délai recorded, brought earlier and pushed back, the urgency (asked, cancelled, its
 // answer), the order closed or reopened; for each lot: received, its controls recorded (the dyer's, Malterre's),
 // the coloris (submitted, validated, refused, to put on the stenter; and, since 2026-11-27, « Client relancé pour
 // le coloris »: Vincent — the partner's matter waits on that answer, it reads that Malterre chased it), a reprise
@@ -49,6 +49,8 @@ function deLaCommande(e: Pick<EntreeJournalCommande, 'type' | 'titre' | 'detail'
     case 'bon_commande':
       return t === 'Bon de commande envoyé' ? { titre: t } : null
     case 'delai_recu':
+      // The partner's own délai, announced earlier (lib/report-delai-sst.ts `avance_delai`).
+      if (/^Délai avancé du \d{2}\/\d{2} au \d{2}\/\d{2}$/.test(t)) return { titre: t }
       m = t.match(/^Délai reçu : (\d{2}\/\d{2}\/\d{4})$/)
       return m ? { titre: `Délai enregistré : ${m[1]}` } : null
     case 'report':

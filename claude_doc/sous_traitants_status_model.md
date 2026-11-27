@@ -212,7 +212,7 @@ three weeks without a date nor an alert (9127, cols / bandes). So:
   « Prochaines étapes » card under « En traitement » and the open lots, the
   colour through `urgenceCommande()` of `lib/cycle-ennoblissement.ts`.
   The answer is the knitter's délai — given, or brought EARLIER than the one in
-  place (the one case `refusAvanceDelai` lets through; the engagement stays the
+  place (`refusAvanceDelai` lets it through whatever the date while the urgency awaits; without one, only a date still to come is brought earlier, 2026-11-27; the engagement stays the
   first promise) — or « Refusée ». One rule for the card, `urgenceAvecDemande()`:
   an urgency whose answer did not come is red (« Urgence demandée : relancer le
   tricoteur »); while the answer is awaited on EVERY line still without its
